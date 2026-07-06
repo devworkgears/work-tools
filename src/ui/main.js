@@ -1,0 +1,325 @@
+// 状態管理層 + UI組み立て。単方向データフロー: UIイベント → 状態更新 → update()
+/* global d3, XLSX */
+import { parseDataset } from '../domain/parser.js';
+import { deriveLower, buildPolygon, convexHull } from '../domain/geometry.js';
+import { getFilterableColumns, distinctValues, applyFilters, getModelValue, groupBy } from '../domain/query.js';
+import { renderChart } from './chart.js';
+import { downloadSVG, downloadPNG } from './exporter.js';
+import { sampleSheets } from '../sample-data.js';
+
+const COLUMN_LABELS = { series: 'シリーズ', output_kw: '出力 [kW]', diameter_mm: '口径 [mm]' };
+const columnLabel = (col) => COLUMN_LABELS[col] ?? col;
+
+const state = {
+  fileName: null,
+  dataset: null, // parseDataset の結果
+  polygons: new Map(), // model名 -> { points, rule }
+  loadErrors: [], // 読み込み時エラー(parse + lower導出)
+  filters: {}, // 列名 -> Set<string>(チェック中の値)
+  mode: 'individual', // 'individual' | 'envelope'
+  envelopeBy: 'series',
+  selection: new Set(),
+  axis: { xmin: null, xmax: null, ymin: null, ymax: null },
+};
+
+const colorScale = d3.scaleOrdinal(d3.schemeTableau10);
+const el = (id) => document.getElementById(id);
+
+// ---------- データ読み込み ----------
+
+function workbookToSheets(wb) {
+  const rows = (name) => {
+    if (!wb.Sheets[name]) return null;
+    return XLSX.utils
+      .sheet_to_json(wb.Sheets[name], { defval: null })
+      .map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [String(k).trim(), v])));
+  };
+  return { models: rows('models'), curves: rows('curves'), config: rows('config') ?? [] };
+}
+
+function loadSheets(sheets, sourceName) {
+  const ds = parseDataset(sheets);
+  const errors = [...ds.errors];
+  const polygons = new Map();
+  for (const m of ds.models) {
+    const entry = ds.curvesByModel[m.model];
+    if (!entry || !entry.upper || entry.upper.length < 2) continue;
+    const lower = deriveLower(m, ds.curvesByModel, ds.config);
+    if (lower.error) {
+      errors.push({ sheet: 'models', row: null, model: m.model, message: `lower導出失敗: ${lower.error}` });
+      continue;
+    }
+    polygons.set(m.model, { points: buildPolygon(entry.upper, lower.points), rule: lower.rule });
+  }
+  state.dataset = ds;
+  state.polygons = polygons;
+  state.loadErrors = errors;
+  state.selection = new Set();
+  state.fileName = sourceName;
+  el('file-name').textContent = `${sourceName}(${polygons.size}モデル)`;
+  el('empty-hint').hidden = polygons.size > 0;
+  buildFilterPanel();
+  buildEnvelopeSelect();
+  renderErrors();
+  update();
+}
+
+async function handleFile(file) {
+  try {
+    const wb = XLSX.read(await file.arrayBuffer());
+    loadSheets(workbookToSheets(wb), file.name);
+  } catch (e) {
+    state.loadErrors = [{ sheet: '-', row: null, model: null, message: `ファイルを読み込めません: ${e.message}` }];
+    renderErrors();
+  }
+}
+
+function downloadTemplate() {
+  const { models, curves, config } = sampleSheets();
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(models), 'models');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(curves), 'curves');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(config), 'config');
+  XLSX.writeFile(wb, 'curve-chart-template.xlsx');
+}
+
+// ---------- サイドバーUI ----------
+
+function drawableModels() {
+  return state.dataset ? state.dataset.models.filter((m) => state.polygons.has(m.model)) : [];
+}
+
+function buildFilterPanel() {
+  const wrap = el('filters');
+  wrap.textContent = '';
+  const models = drawableModels();
+  state.filters = {};
+  for (const col of getFilterableColumns(models)) {
+    const values = distinctValues(models, col);
+    if (values.length === 0) continue;
+    state.filters[col] = new Set(values.map(String));
+
+    const fs = document.createElement('fieldset');
+    const legend = document.createElement('legend');
+    legend.textContent = columnLabel(col);
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'mini';
+    toggle.textContent = '全/無';
+    toggle.addEventListener('click', () => {
+      const set = state.filters[col];
+      const allOn = set.size === values.length;
+      set.clear();
+      if (!allOn) values.forEach((v) => set.add(String(v)));
+      fs.querySelectorAll('input').forEach((cb) => (cb.checked = !allOn));
+      state.selection.clear();
+      update();
+    });
+    legend.appendChild(toggle);
+    fs.appendChild(legend);
+
+    for (const v of values) {
+      const label = document.createElement('label');
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = true;
+      cb.addEventListener('change', () => {
+        const set = state.filters[col];
+        cb.checked ? set.add(String(v)) : set.delete(String(v));
+        state.selection.clear();
+        update();
+      });
+      label.appendChild(cb);
+      label.appendChild(document.createTextNode(` ${v}`));
+      fs.appendChild(label);
+    }
+    wrap.appendChild(fs);
+  }
+  if (!wrap.hasChildNodes()) wrap.textContent = 'データ未読み込み';
+}
+
+function buildEnvelopeSelect() {
+  const sel = el('envelope-by');
+  sel.textContent = '';
+  for (const col of getFilterableColumns(drawableModels())) {
+    const opt = document.createElement('option');
+    opt.value = col;
+    opt.textContent = columnLabel(col);
+    sel.appendChild(opt);
+  }
+  sel.value = state.envelopeBy = 'series';
+}
+
+function renderErrors() {
+  const box = el('errors');
+  box.textContent = '';
+  box.hidden = state.loadErrors.length === 0;
+  if (box.hidden) return;
+  const title = document.createElement('div');
+  title.className = 'errors-title';
+  title.textContent = `読み込みエラー ${state.loadErrors.length}件(該当データは表示から除外されています)`;
+  box.appendChild(title);
+  const ul = document.createElement('ul');
+  for (const e of state.loadErrors) {
+    const li = document.createElement('li');
+    const loc = [e.sheet, e.row ? `${e.row}行目` : null, e.model ? `[${e.model}]` : null].filter(Boolean).join(' ');
+    li.textContent = `${loc}: ${e.message}`;
+    ul.appendChild(li);
+  }
+  box.appendChild(ul);
+}
+
+// ---------- 描画アイテムの構築 ----------
+
+function buildItems() {
+  const models = applyFilters(drawableModels(), state.filters);
+  const dim = (id) => state.selection.size > 0 && !state.selection.has(id);
+
+  if (state.mode === 'individual') {
+    return {
+      models,
+      items: models.map((m) => ({
+        id: m.model,
+        label: m.model,
+        color: colorScale(m.series),
+        points: state.polygons.get(m.model).points,
+        meta: { type: 'model', model: m, rule: state.polygons.get(m.model).rule },
+        selected: state.selection.has(m.model),
+        dimmed: dim(m.model),
+      })),
+    };
+  }
+
+  // グループ外包モード: 対数空間での凸包(FR-3.2、方式は未決事項#3 → 初版は凸包)
+  const items = [];
+  for (const [key, ms] of groupBy(models, state.envelopeBy)) {
+    const logPts = ms
+      .flatMap((m) => state.polygons.get(m.model).points)
+      .map((p) => [Math.log(p.flow), Math.log(p.head)]);
+    const hull = convexHull(logPts).map(([lx, ly]) => ({ flow: Math.exp(lx), head: Math.exp(ly) }));
+    const id = `group:${key}`;
+    items.push({
+      id,
+      label: key,
+      color: colorScale(state.envelopeBy === 'series' ? key : `${state.envelopeBy}:${key}`),
+      points: hull,
+      meta: { type: 'group', key, col: state.envelopeBy, models: ms },
+      selected: state.selection.has(id),
+      dimmed: dim(id),
+    });
+  }
+  return { models, items };
+}
+
+// ---------- ツールチップ ----------
+
+function showTooltip(item, ev) {
+  const tip = el('tooltip');
+  if (!item) {
+    tip.hidden = true;
+    return;
+  }
+  const rows = [];
+  if (item.meta.type === 'model') {
+    const m = item.meta.model;
+    rows.push(`<b>${m.model}</b>`);
+    rows.push(`シリーズ: ${m.series}`);
+    rows.push(`出力: ${m.output_kw} kW`);
+    rows.push(`口径: ${m.diameter_mm} mm`);
+    for (const [k, v] of Object.entries(m.extras)) rows.push(`${k}: ${v}`);
+    rows.push(`<span class="muted">下限ルール: ${item.meta.rule}</span>`);
+  } else {
+    rows.push(`<b>${columnLabel(item.meta.col)} = ${item.meta.key}</b>`);
+    rows.push(`${item.meta.models.length}モデル: ${item.meta.models.map((m) => m.model).join(', ')}`);
+  }
+  tip.innerHTML = rows.join('<br>');
+  tip.hidden = false;
+  const wrap = el('chart-wrap').getBoundingClientRect();
+  const tx = Math.min(ev.clientX - wrap.left + 14, wrap.width - tip.offsetWidth - 8);
+  const ty = Math.min(ev.clientY - wrap.top + 14, wrap.height - tip.offsetHeight - 8);
+  tip.style.left = `${Math.max(0, tx)}px`;
+  tip.style.top = `${Math.max(0, ty)}px`;
+}
+
+// ---------- 再描画 ----------
+
+function update() {
+  const wrap = el('chart-wrap');
+  const { models, items } = state.dataset ? buildItems() : { models: [], items: [] };
+  renderChart(el('chart'), items, {
+    width: wrap.clientWidth,
+    height: wrap.clientHeight,
+    axis: state.axis,
+    onHover: showTooltip,
+    onClick: (item) => {
+      if (!item) state.selection.clear();
+      else state.selection.has(item.id) ? state.selection.delete(item.id) : state.selection.add(item.id);
+      update();
+    },
+  });
+  const total = drawableModels().length;
+  const modeLabel = state.mode === 'individual' ? '個別モデル' : `グループ外包(${columnLabel(state.envelopeBy)})`;
+  el('status-bar').textContent = state.dataset
+    ? `${modeLabel} | 表示 ${models.length}/${total} モデル | 選択 ${state.selection.size}`
+    : '';
+}
+
+// ---------- イベント配線 ----------
+
+function init() {
+  el('file-input').addEventListener('change', (ev) => {
+    if (ev.target.files[0]) handleFile(ev.target.files[0]);
+    ev.target.value = '';
+  });
+  el('btn-template').addEventListener('click', downloadTemplate);
+  el('btn-sample').addEventListener('click', () => loadSheets(sampleSheets(), 'サンプルデータ'));
+
+  document.querySelectorAll('input[name="mode"]').forEach((r) =>
+    r.addEventListener('change', () => {
+      state.mode = r.value;
+      state.selection.clear();
+      el('envelope-config').hidden = state.mode !== 'envelope';
+      update();
+    })
+  );
+  el('envelope-by').addEventListener('change', (ev) => {
+    state.envelopeBy = ev.target.value;
+    state.selection.clear();
+    update();
+  });
+
+  for (const key of ['xmin', 'xmax', 'ymin', 'ymax']) {
+    el(`axis-${key}`).addEventListener('change', (ev) => {
+      const n = Number(ev.target.value);
+      state.axis[key] = ev.target.value !== '' && Number.isFinite(n) && n > 0 ? n : null;
+      update();
+    });
+  }
+  el('btn-axis-reset').addEventListener('click', () => {
+    state.axis = { xmin: null, xmax: null, ymin: null, ymax: null };
+    ['xmin', 'xmax', 'ymin', 'ymax'].forEach((k) => (el(`axis-${k}`).value = ''));
+    update();
+  });
+
+  el('btn-svg').addEventListener('click', () => downloadSVG(el('chart')));
+  el('btn-png').addEventListener('click', () => downloadPNG(el('chart')));
+
+  // ドラッグ&ドロップ対応(FR-1.1)
+  const wrap = el('chart-wrap');
+  wrap.addEventListener('dragover', (ev) => ev.preventDefault());
+  wrap.addEventListener('drop', (ev) => {
+    ev.preventDefault();
+    const f = ev.dataTransfer.files[0];
+    if (f) handleFile(f);
+  });
+
+  let resizeTimer = null;
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(update, 100);
+  });
+
+  update();
+}
+
+init();

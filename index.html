@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>運転範囲 可視化ツール</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <h1>運転範囲<br>可視化ツール</h1>
+
+      <section>
+        <h2>データ入力</h2>
+        <label class="btn primary">
+          Excelを読み込む
+          <input type="file" id="file-input" accept=".xlsx,.xlsm" hidden>
+        </label>
+        <div class="btn-row">
+          <button type="button" class="btn" id="btn-sample">サンプル表示</button>
+          <button type="button" class="btn" id="btn-template">テンプレDL</button>
+        </div>
+        <div id="file-name" class="muted"></div>
+      </section>
+
+      <section>
+        <h2>表示モード</h2>
+        <label class="radio"><input type="radio" name="mode" value="individual" checked> 個別モデル</label>
+        <label class="radio"><input type="radio" name="mode" value="envelope"> グループ外包</label>
+        <div id="envelope-config" hidden>
+          <label class="row">集約軸
+            <select id="envelope-by"></select>
+          </label>
+        </div>
+      </section>
+
+      <section>
+        <h2>フィルタ</h2>
+        <div id="filters" class="muted">データ未読み込み</div>
+      </section>
+
+      <section>
+        <h2>軸範囲(空欄=自動)</h2>
+        <div class="axis-grid">
+          <label>Q最小 <input type="number" id="axis-xmin" step="any" min="0"></label>
+          <label>Q最大 <input type="number" id="axis-xmax" step="any" min="0"></label>
+          <label>H最小 <input type="number" id="axis-ymin" step="any" min="0"></label>
+          <label>H最大 <input type="number" id="axis-ymax" step="any" min="0"></label>
+        </div>
+        <button type="button" class="btn mini" id="btn-axis-reset">自動に戻す</button>
+      </section>
+
+      <section>
+        <h2>出力</h2>
+        <div class="btn-row">
+          <button type="button" class="btn" id="btn-svg">SVG</button>
+          <button type="button" class="btn" id="btn-png">PNG</button>
+        </div>
+      </section>
+    </aside>
+
+    <main id="main">
+      <div id="errors" hidden></div>
+      <div id="chart-wrap">
+        <svg id="chart"></svg>
+        <div id="tooltip" hidden></div>
+        <div id="empty-hint">「サンプル表示」を押すか、Excelファイル(.xlsx)をここにドロップしてください</div>
+      </div>
+      <div id="status-bar"></div>
+    </main>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+  <script type="module" src="./src/ui/main.js"></script>
+</body>
+</html>
