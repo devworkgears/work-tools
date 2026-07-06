@@ -106,11 +106,16 @@ label.radio {
   cursor: pointer;
 }
 
-label.row {
+label.row,
+div.row {
   display: flex;
   align-items: center;
   gap: 8px;
   margin-top: 6px;
+}
+
+div.row.indent {
+  padding-left: 4px;
 }
 
 select {

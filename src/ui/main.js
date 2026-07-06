@@ -1,7 +1,8 @@
 // 状態管理層 + UI組み立て。単方向データフロー: UIイベント → 状態更新 → update()
 /* global d3, XLSX */
 import { parseDataset } from '../domain/parser.js';
-import { deriveLower, buildPolygon, convexHull } from '../domain/geometry.js';
+import { deriveLower, buildPolygon } from '../domain/geometry.js';
+import { buildEnvelope } from '../domain/envelope.js';
 import { getFilterableColumns, distinctValues, applyFilters, getModelValue, groupBy } from '../domain/query.js';
 import { renderChart } from './chart.js';
 import { downloadSVG, downloadPNG } from './exporter.js';
@@ -18,6 +19,7 @@ const state = {
   filters: {}, // 列名 -> Set<string>(チェック中の値)
   mode: 'individual', // 'individual' | 'envelope'
   envelopeBy: 'series',
+  envelopeMethod: 'union', // 'union'(合併境界) | 'hull'(凸包)。未決事項#3の比較用に両対応
   selection: new Set(),
   axis: { xmin: null, xmax: null, ymin: null, ymax: null },
 };
@@ -182,7 +184,7 @@ function buildItems() {
         id: m.model,
         label: m.model,
         color: colorScale(m.series),
-        points: state.polygons.get(m.model).points,
+        rings: [state.polygons.get(m.model).points],
         meta: { type: 'model', model: m, rule: state.polygons.get(m.model).rule },
         selected: state.selection.has(m.model),
         dimmed: dim(m.model),
@@ -190,19 +192,19 @@ function buildItems() {
     };
   }
 
-  // グループ外包モード: 対数空間での凸包(FR-3.2、方式は未決事項#3 → 初版は凸包)
+  // グループ外包モード: 凸包 or 合併境界(FR-3.2、方式は未決事項#3 → 両対応でトグル比較)
   const items = [];
   for (const [key, ms] of groupBy(models, state.envelopeBy)) {
-    const logPts = ms
-      .flatMap((m) => state.polygons.get(m.model).points)
-      .map((p) => [Math.log(p.flow), Math.log(p.head)]);
-    const hull = convexHull(logPts).map(([lx, ly]) => ({ flow: Math.exp(lx), head: Math.exp(ly) }));
+    const rings = buildEnvelope(
+      ms.map((m) => state.polygons.get(m.model).points),
+      state.envelopeMethod
+    );
     const id = `group:${key}`;
     items.push({
       id,
       label: key,
       color: colorScale(state.envelopeBy === 'series' ? key : `${state.envelopeBy}:${key}`),
-      points: hull,
+      rings,
       meta: { type: 'group', key, col: state.envelopeBy, models: ms },
       selected: state.selection.has(id),
       dimmed: dim(id),
@@ -287,6 +289,12 @@ function init() {
     state.selection.clear();
     update();
   });
+  document.querySelectorAll('input[name="envelope-method"]').forEach((r) =>
+    r.addEventListener('change', () => {
+      state.envelopeMethod = r.value;
+      update();
+    })
+  );
 
   for (const key of ['xmin', 'xmax', 'ymin', 'ymax']) {
     el(`axis-${key}`).addEventListener('change', (ev) => {

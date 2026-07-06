@@ -28,7 +28,8 @@ function screenCentroid(pts) {
   return [cx / (3 * area), cy / (3 * area)];
 }
 
-// items: [{ id, label, color, points: [{flow, head}], meta, selected, dimmed }]
+// items: [{ id, label, color, rings: [ [{flow, head}, ...], ... ], meta, selected, dimmed }]
+//   rings は多角形の輪郭の配列(通常1本。union外包では飛び地・穴で複数になりうる)
 // opts: { width, height, axis: {xmin,xmax,ymin,ymax}(null=自動), onHover(item|null, event), onClick(item|null) }
 export function renderChart(svgEl, items, opts) {
   const { width, height } = opts;
@@ -42,12 +43,12 @@ export function renderChart(svgEl, items, opts) {
   svg.append('rect').attr('width', width).attr('height', height).attr('fill', '#ffffff');
   svg.on('click', () => opts.onClick?.(null));
 
-  const drawable = items.filter((it) => it.points.length >= 2);
+  const drawable = items.filter((it) => it.rings.some((r) => r.length >= 2));
   if (drawable.length === 0) return;
 
   const iw = width - MARGIN.left - MARGIN.right;
   const ih = height - MARGIN.top - MARGIN.bottom;
-  const allPts = drawable.flatMap((it) => it.points);
+  const allPts = drawable.flatMap((it) => it.rings.flat());
 
   const axis = opts.axis ?? {};
   const [dxmin, dxmax] = d3.extent(allPts, (p) => p.flow);
@@ -122,8 +123,9 @@ export function renderChart(svgEl, items, opts) {
     layer
       .append('path')
       .attr('class', 'polygon')
-      .attr('d', line(it.points) + 'Z')
+      .attr('d', it.rings.map((r) => line(r) + 'Z').join(''))
       .attr('fill', it.color)
+      .attr('fill-rule', 'evenodd')
       .attr('fill-opacity', it.selected ? 0.55 : 0.3)
       .attr('stroke', it.color)
       .attr('stroke-width', it.selected ? 2.5 : 1.2)
@@ -142,7 +144,9 @@ export function renderChart(svgEl, items, opts) {
   const labels = g.append('g').attr('clip-path', 'url(#plot-clip)');
   for (const it of ordered) {
     if (it.dimmed) continue;
-    const [cx, cy] = screenCentroid(it.points.map((p) => [x(p.flow), y(p.head)]));
+    // ラベルは最大リング(頂点数基準)の重心に置く
+    const main = it.rings.reduce((a, b) => (b.length > a.length ? b : a));
+    const [cx, cy] = screenCentroid(main.map((p) => [x(p.flow), y(p.head)]));
     labels
       .append('text')
       .attr('x', cx)
