@@ -100,3 +100,14 @@ test('任意列はextrasに入る(FR-4.6)', () => {
   });
   assert.deepEqual(ds.models[0].extras, { poles: 2, freq_hz: 60 });
 });
+
+test('axisFromConfig: 軸固定範囲の読み取りと不正値の無視', async () => {
+  const { axisFromConfig } = await import('../src/domain/parser.js');
+  assert.deepEqual(axisFromConfig({ axis_qmin: 0.05, axis_qmax: 3, axis_hmin: 2, axis_hmax: 80 }), {
+    xmin: 0.05, xmax: 3, ymin: 2, ymax: 80,
+  });
+  assert.deepEqual(axisFromConfig({ axis_qmin: 'abc', axis_hmax: -5 }), {
+    xmin: null, xmax: null, ymin: null, ymax: null,
+  });
+  assert.deepEqual(axisFromConfig({}), { xmin: null, xmax: null, ymin: null, ymax: null });
+});

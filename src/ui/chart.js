@@ -28,9 +28,45 @@ function screenCentroid(pts) {
   return [cx / (3 * area), cy / (3 * area)];
 }
 
+// ラベル重なり回避(FR-2.6): 中心座標のボックス群を上下に押し出して分離する純粋関数。
+// アルゴリズム差し替え可能な境界として公開(テストもこの単位で行う)
+export function separateLabels(boxes, width, height, { pad = 2, maxIter = 50 } = {}) {
+  for (let iter = 0; iter < maxIter; iter++) {
+    let moved = false;
+    for (let i = 0; i < boxes.length; i++) {
+      for (let j = i + 1; j < boxes.length; j++) {
+        const a = boxes[i];
+        const b = boxes[j];
+        const ox = (a.w + b.w) / 2 + pad - Math.abs(a.x - b.x);
+        const oy = (a.h + b.h) / 2 + pad - Math.abs(a.y - b.y);
+        if (ox > 0 && oy > 0) {
+          const dir = a.y <= b.y ? 1 : -1;
+          a.y -= (dir * oy) / 2;
+          b.y += (dir * oy) / 2;
+          moved = true;
+        }
+      }
+    }
+    if (!moved) break;
+  }
+  for (const b of boxes) {
+    b.x = Math.min(Math.max(b.x, b.w / 2), width - b.w / 2);
+    b.y = Math.min(Math.max(b.y, b.h / 2), height - b.h / 2);
+  }
+  return boxes;
+}
+
+// ラベル幅の概算(11pxフォント。全角はほぼ正方、半角は約0.6文字分)
+function estimateLabelWidth(text) {
+  let w = 6;
+  for (const ch of String(text)) w += ch.codePointAt(0) > 0xff ? 11 : 6.6;
+  return w;
+}
+
 // items: [{ id, label, color, rings: [ [{flow, head}, ...], ... ], meta, selected, dimmed }]
 //   rings は多角形の輪郭の配列(通常1本。union外包では飛び地・穴で複数になりうる)
-// opts: { width, height, axis: {xmin,xmax,ymin,ymax}(null=自動), onHover(item|null, event), onClick(item|null) }
+// opts: { width, height, axis: {xmin,xmax,ymin,ymax}(null=自動),
+//         onHover(item|null, event), onClick(item|null), onMove(q|null, h|null) }
 export function renderChart(svgEl, items, opts) {
   const { width, height } = opts;
   const svg = d3.select(svgEl);
@@ -140,17 +176,21 @@ export function renderChart(svgEl, items, opts) {
       });
   }
 
-  // ラベル(初版はポリゴン重心。FR-2.6)
-  const labels = g.append('g').attr('clip-path', 'url(#plot-clip)');
-  for (const it of ordered) {
-    if (it.dimmed) continue;
+  // ラベル: ポリゴン重心に置き、重なりを押し出しで回避(FR-2.6)
+  const labelItems = ordered.filter((it) => !it.dimmed);
+  const boxes = labelItems.map((it) => {
     // ラベルは最大リング(頂点数基準)の重心に置く
     const main = it.rings.reduce((a, b) => (b.length > a.length ? b : a));
     const [cx, cy] = screenCentroid(main.map((p) => [x(p.flow), y(p.head)]));
+    return { x: cx, y: cy, w: estimateLabelWidth(it.label), h: 14 };
+  });
+  separateLabels(boxes, iw, ih);
+  const labels = g.append('g').attr('clip-path', 'url(#plot-clip)');
+  labelItems.forEach((it, i) => {
     labels
       .append('text')
-      .attr('x', cx)
-      .attr('y', cy)
+      .attr('x', boxes[i].x)
+      .attr('y', boxes[i].y)
       .attr('text-anchor', 'middle')
       .attr('dominant-baseline', 'middle')
       .attr('font-size', 11)
@@ -161,5 +201,13 @@ export function renderChart(svgEl, items, opts) {
       .attr('paint-order', 'stroke')
       .attr('pointer-events', 'none')
       .text(it.label);
-  }
+  });
+
+  // カーソル位置のQ-H読み取り
+  svg.on('mousemove', (ev) => {
+    const [mx, my] = d3.pointer(ev, g.node());
+    if (mx >= 0 && mx <= iw && my >= 0 && my <= ih) opts.onMove?.(x.invert(mx), y.invert(my));
+    else opts.onMove?.(null, null);
+  });
+  svg.on('mouseleave', () => opts.onMove?.(null, null));
 }

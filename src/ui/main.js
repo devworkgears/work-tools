@@ -1,12 +1,12 @@
 // 状態管理層 + UI組み立て。単方向データフロー: UIイベント → 状態更新 → update()
 /* global d3, XLSX */
-import { parseDataset } from '../domain/parser.js';
+import { parseDataset, axisFromConfig } from '../domain/parser.js';
 import { deriveLower, buildPolygon } from '../domain/geometry.js';
 import { buildEnvelope } from '../domain/envelope.js';
 import { getFilterableColumns, distinctValues, applyFilters, getModelValue, groupBy } from '../domain/query.js';
 import { renderChart } from './chart.js';
 import { downloadSVG, downloadPNG } from './exporter.js';
-import { sampleSheets } from '../sample-data.js';
+import { sampleSheets, templateReadmeRows } from '../sample-data.js';
 
 const COLUMN_LABELS = { series: 'シリーズ', output_kw: '出力 [kW]', diameter_mm: '口径 [mm]' };
 const columnLabel = (col) => COLUMN_LABELS[col] ?? col;
@@ -58,6 +58,9 @@ function loadSheets(sheets, sourceName) {
   state.loadErrors = errors;
   state.selection = new Set();
   state.fileName = sourceName;
+  // configの軸固定範囲を初期値として反映(UIからの上書きは引き続き可能)
+  state.axis = axisFromConfig(ds.config);
+  for (const [k, v] of Object.entries(state.axis)) el(`axis-${k}`).value = v ?? '';
   el('file-name').textContent = `${sourceName}(${polygons.size}モデル)`;
   el('empty-hint').hidden = polygons.size > 0;
   buildFilterPanel();
@@ -82,6 +85,7 @@ function downloadTemplate() {
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(models), 'models');
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(curves), 'curves');
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(config), 'config');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(templateReadmeRows()), '説明');
   XLSX.writeFile(wb, 'curve-chart-template.xlsx');
 }
 
@@ -132,6 +136,13 @@ function buildFilterPanel() {
         update();
       });
       label.appendChild(cb);
+      if (col === 'series') {
+        // 凡例を兼ねる色スウォッチ(FR-4.5)
+        const sw = document.createElement('span');
+        sw.className = 'swatch';
+        sw.style.background = colorScale(String(v));
+        label.appendChild(sw);
+      }
       label.appendChild(document.createTextNode(` ${v}`));
       fs.appendChild(label);
     }
@@ -245,6 +256,8 @@ function showTooltip(item, ev) {
 
 // ---------- 再描画 ----------
 
+const fmt = d3.format('.3~g');
+
 function update() {
   const wrap = el('chart-wrap');
   const { models, items } = state.dataset ? buildItems() : { models: [], items: [] };
@@ -258,11 +271,16 @@ function update() {
       else state.selection.has(item.id) ? state.selection.delete(item.id) : state.selection.add(item.id);
       update();
     },
+    onMove: (q, h) => {
+      el('status-coords').textContent = q === null ? '' : `Q=${fmt(q)} m³/min  H=${fmt(h)} m`;
+    },
   });
   const total = drawableModels().length;
   const modeLabel = state.mode === 'individual' ? '個別モデル' : `グループ外包(${columnLabel(state.envelopeBy)})`;
-  el('status-bar').textContent = state.dataset
-    ? `${modeLabel} | 表示 ${models.length}/${total} モデル | 選択 ${state.selection.size}`
+  const selNames = [...state.selection].map((id) => id.replace(/^group:/, ''));
+  const selLabel = state.selection.size === 0 ? '選択 0' : `選択 ${state.selection.size}(${selNames.slice(0, 4).join(', ')}${selNames.length > 4 ? ', …' : ''})`;
+  el('status-left').textContent = state.dataset
+    ? `${modeLabel} | 表示 ${models.length}/${total} モデル | ${selLabel}`
     : '';
 }
 

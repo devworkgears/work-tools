@@ -244,7 +244,24 @@ select {
 
 #status-bar {
   flex: none;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
   padding: 4px 14px 10px;
   color: #5a6572;
   font-size: 12px;
+}
+
+#status-coords {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  margin: 0 2px 0 4px;
+  vertical-align: -1px;
 }

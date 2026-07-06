@@ -20,6 +20,18 @@ export function toNumber(v) {
   return Number.isFinite(n) ? n : null;
 }
 
+// configシートの軸固定範囲(未決事項#4: 社内標準の図版仕様)。未指定・不正値は自動(null)
+const AXIS_CONFIG_KEYS = { axis_qmin: 'xmin', axis_qmax: 'xmax', axis_hmin: 'ymin', axis_hmax: 'ymax' };
+
+export function axisFromConfig(config) {
+  const axis = { xmin: null, xmax: null, ymin: null, ymax: null };
+  for (const [key, prop] of Object.entries(AXIS_CONFIG_KEYS)) {
+    const n = toNumber(config?.[key]);
+    if (n !== null && n > 0) axis[prop] = n;
+  }
+  return axis;
+}
+
 export function parseDataset(sheets) {
   const errors = [];
   const add = (sheet, row, message, model = null) => errors.push({ sheet, row, message, model });
