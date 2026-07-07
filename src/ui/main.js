@@ -7,6 +7,7 @@ import { getFilterableColumns, distinctValues, applyFilters, getModelValue, grou
 import { renderChart } from './chart.js';
 import { downloadSVG, downloadPNG } from './exporter.js';
 import { sampleSheets, templateReadmeRows } from '../sample-data.js';
+import { calibrate, dataToImage, fitMapping, buildExportRows } from './digitizer.js';
 
 const COLUMN_LABELS = { series: 'シリーズ', output_kw: '出力 [kW]', diameter_mm: '口径 [mm]' };
 const columnLabel = (col) => COLUMN_LABELS[col] ?? col;
@@ -22,6 +23,17 @@ const state = {
   envelopeMethod: 'union', // 'union'(合併境界) | 'hull'(凸包)。未決事項#3の比較用に両対応
   selection: new Set(),
   axis: { xmin: null, xmax: null, ymin: null, ymax: null },
+  // 実図デジタイザ(v0.3 実データ検証支援)
+  digitizer: {
+    href: null, // 画像のdata URL
+    mapping: null, // 画像ピクセル↔実座標の写像(digitizer.js)
+    opacity: 0.5,
+    p1: null, // 較正基準点 {px, py, q, h}
+    p2: null,
+    pending: null, // 'p1' | 'p2' | null … 次のクリックで指定する基準点
+    capture: false,
+    points: [], // 採取済み [{model, curve, flow, head}]
+  },
 };
 
 const colorScale = d3.scaleOrdinal(d3.schemeTableau10);
@@ -258,19 +270,45 @@ function showTooltip(item, ev) {
 
 const fmt = d3.format('.3~g');
 
+// 現在の軸範囲(デジタイザの仮写像・クリック座標変換に使う)
+function currentDomain() {
+  const models = state.dataset ? applyFilters(drawableModels(), state.filters) : [];
+  const pts = models.flatMap((m) => state.polygons.get(m.model).points);
+  let [xmin, xmax] = [0.05, 5];
+  let [ymin, ymax] = [1, 100];
+  if (pts.length) {
+    [xmin, xmax] = d3.extent(pts, (p) => p.flow);
+    [ymin, ymax] = d3.extent(pts, (p) => p.head);
+    xmin *= 0.85;
+    xmax *= 1.18;
+    ymin *= 0.85;
+    ymax *= 1.18;
+  }
+  return {
+    xmin: state.axis.xmin ?? xmin,
+    xmax: state.axis.xmax ?? xmax,
+    ymin: state.axis.ymin ?? ymin,
+    ymax: state.axis.ymax ?? ymax,
+  };
+}
+
 function update() {
   const wrap = el('chart-wrap');
   const { models, items } = state.dataset ? buildItems() : { models: [], items: [] };
+  const d = state.digitizer;
   renderChart(el('chart'), items, {
     width: wrap.clientWidth,
     height: wrap.clientHeight,
     axis: state.axis,
+    underlay: d.href ? { href: d.href, mapping: d.mapping, opacity: d.opacity } : null,
+    captureMode: d.pending !== null || d.capture,
     onHover: showTooltip,
     onClick: (item) => {
       if (!item) state.selection.clear();
       else state.selection.has(item.id) ? state.selection.delete(item.id) : state.selection.add(item.id);
       update();
     },
+    onPlotClick: handlePlotClick,
     onMove: (q, h) => {
       el('status-coords').textContent = q === null ? '' : `Q=${fmt(q)} m³/min  H=${fmt(h)} m`;
     },
@@ -282,6 +320,120 @@ function update() {
   el('status-left').textContent = state.dataset
     ? `${modeLabel} | 表示 ${models.length}/${total} モデル | ${selLabel}`
     : '';
+}
+
+// ---------- 実図デジタイザ ----------
+
+function digiStatus(text) {
+  el('digi-calib-status').textContent = text;
+}
+
+function updateDigiCount() {
+  el('digi-count').textContent = `採取点 ${state.digitizer.points.length}`;
+}
+
+// 採取・較正モード中のチャートクリック(q, h は現在の軸スケールでの実座標)
+function handlePlotClick(q, h) {
+  const d = state.digitizer;
+  if (d.pending) {
+    const n = d.pending === 'p1' ? 1 : 2;
+    const qv = Number(el(`digi-q${n}`).value);
+    const hv = Number(el(`digi-h${n}`).value);
+    if (!(qv > 0) || !(hv > 0)) {
+      digiStatus(`点${n}のQ・Hを先に入力してください(正の数値)`);
+      d.pending = null;
+      update();
+      return;
+    }
+    // クリック位置を現在の写像で画像ピクセルに変換して基準点として記録
+    const { px, py } = dataToImage(d.mapping, q, h);
+    d[d.pending] = { px, py, q: qv, h: hv };
+    d.pending = null;
+    if (d.p1 && d.p2) {
+      const m = calibrate(d.p1, d.p2);
+      if (m) {
+        d.mapping = m;
+        digiStatus('較正済み(基準点を取り直すと再較正されます)');
+      } else {
+        digiStatus('較正できません: 2点のQ同士・H同士が同一か、クリック位置が同じです');
+      }
+    } else {
+      digiStatus(`点${n}を記録しました。もう一方の基準点を指定してください`);
+    }
+    update();
+    return;
+  }
+  if (d.capture) {
+    const model = el('digi-model').value.trim();
+    if (!model) {
+      digiStatus('モデル名を入力してから採取してください');
+      return;
+    }
+    d.points.push({
+      model,
+      curve: el('digi-curve').value,
+      flow: Number(q.toPrecision(4)),
+      head: Number(h.toPrecision(4)),
+    });
+    updateDigiCount();
+  }
+}
+
+function initDigitizer() {
+  el('digi-image').addEventListener('change', (ev) => {
+    const file = ev.target.files[0];
+    ev.target.value = '';
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const d = state.digitizer;
+      d.href = reader.result;
+      d.mapping = fitMapping(currentDomain());
+      d.p1 = null;
+      d.p2 = null;
+      el('digi-body').hidden = false;
+      digiStatus('未較正(画像は軸範囲全体に仮表示)');
+      update();
+    };
+    reader.readAsDataURL(file);
+  });
+  el('digi-opacity').addEventListener('input', (ev) => {
+    state.digitizer.opacity = Number(ev.target.value) / 100;
+    update();
+  });
+  el('digi-set1').addEventListener('click', () => {
+    state.digitizer.pending = 'p1';
+    digiStatus('チャート上で「実図の点1」の位置をクリックしてください');
+    update();
+  });
+  el('digi-set2').addEventListener('click', () => {
+    state.digitizer.pending = 'p2';
+    digiStatus('チャート上で「実図の点2」の位置をクリックしてください');
+    update();
+  });
+  el('digi-capture').addEventListener('change', (ev) => {
+    state.digitizer.capture = ev.target.checked;
+    update();
+  });
+  el('digi-undo').addEventListener('click', () => {
+    state.digitizer.points.pop();
+    updateDigiCount();
+  });
+  el('digi-clear').addEventListener('click', () => {
+    state.digitizer.points = [];
+    updateDigiCount();
+  });
+  el('digi-export').addEventListener('click', () => {
+    const { models, curves } = buildExportRows(state.digitizer.points);
+    if (curves.length === 0) {
+      digiStatus('採取点がありません');
+      return;
+    }
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(models), 'models');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(curves), 'curves');
+    XLSX.writeFile(wb, 'digitized-curves.xlsx');
+  });
 }
 
 // ---------- イベント配線 ----------
@@ -338,6 +490,8 @@ function init() {
     const f = ev.dataTransfer.files[0];
     if (f) handleFile(f);
   });
+
+  initDigitizer();
 
   let resizeTimer = null;
   window.addEventListener('resize', () => {

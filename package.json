@@ -1,6 +1,6 @@
 {
   "name": "curve-chart",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "運転範囲 可視化ツール",
@@ -10,6 +10,9 @@
     "build": "node tools/build.mjs"
   },
   "devDependencies": {
-    "esbuild": "^0.28.1"
+    "d3": "^7.9.0",
+    "esbuild": "^0.28.1",
+    "jsdom": "^29.1.1",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   }
 }

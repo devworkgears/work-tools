@@ -56,6 +56,50 @@
       </section>
 
       <section>
+        <h2>実図デジタイザ</h2>
+        <label class="btn">
+          実図画像を開く
+          <input type="file" id="digi-image" accept="image/*" hidden>
+        </label>
+        <div id="digi-body" hidden>
+          <label class="row">不透明度
+            <input type="range" id="digi-opacity" min="0" max="100" value="50">
+          </label>
+          <div class="digi-block">
+            <div class="digi-title">① 較正(実図上の2点の実座標を入力→チャート上でその点をクリック)</div>
+            <div class="axis-grid">
+              <label>点1 Q <input type="number" id="digi-q1" step="any" min="0"></label>
+              <label>点1 H <input type="number" id="digi-h1" step="any" min="0"></label>
+              <label>点2 Q <input type="number" id="digi-q2" step="any" min="0"></label>
+              <label>点2 H <input type="number" id="digi-h2" step="any" min="0"></label>
+            </div>
+            <div class="btn-row">
+              <button type="button" class="btn" id="digi-set1">点1をクリック指定</button>
+              <button type="button" class="btn" id="digi-set2">点2をクリック指定</button>
+            </div>
+            <div id="digi-calib-status" class="muted">未較正(画像は軸範囲全体に仮表示)</div>
+          </div>
+          <div class="digi-block">
+            <div class="digi-title">② 点の採取(チャートをクリックして点列を拾う)</div>
+            <label class="row">モデル名 <input type="text" id="digi-model" placeholder="PA-5.5"></label>
+            <label class="row">カーブ
+              <select id="digi-curve">
+                <option value="upper">upper</option>
+                <option value="lower">lower</option>
+              </select>
+            </label>
+            <label class="radio"><input type="checkbox" id="digi-capture"> 採取モードON</label>
+            <div id="digi-count" class="muted">採取点 0</div>
+            <div class="btn-row">
+              <button type="button" class="btn" id="digi-undo">1点戻す</button>
+              <button type="button" class="btn" id="digi-clear">全消去</button>
+            </div>
+            <button type="button" class="btn" id="digi-export">採取点をExcel出力</button>
+          </div>
+        </div>
+      </section>
+
+      <section>
         <h2>出力</h2>
         <div class="btn-row">
           <button type="button" class="btn" id="btn-svg">SVG</button>

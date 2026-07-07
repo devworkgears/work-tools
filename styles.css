@@ -173,6 +173,30 @@ select {
   border-radius: 4px;
 }
 
+/* 実図デジタイザ */
+
+.digi-block {
+  border: 1px solid #e0e4e9;
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin-top: 8px;
+}
+
+.digi-title {
+  font-size: 11px;
+  color: #5a6572;
+  margin-bottom: 4px;
+}
+
+.digi-block .btn,
+.digi-block button {
+  margin-top: 4px;
+}
+
+input[type="range"] {
+  flex: 1;
+}
+
 /* ---------- メイン ---------- */
 
 #main {

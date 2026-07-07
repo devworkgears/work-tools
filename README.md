@@ -24,14 +24,24 @@ npm run serve   # = python3 -m http.server 8000
 | 探索 | 属性チェックボックスフィルタ(AND複合・任意列自動反映)、ホバー詳細、クリック選択ハイライト、カーソル位置のQ-H読み取り |
 | 軸 | 自動レンジ + 手動上書き + configシートで固定範囲指定(`axis_qmin`等) |
 | 出力 | SVG / PNG(3倍解像度)ダウンロード |
+| 実図デジタイザ | 既存選定図のスキャン画像を背景に重ね、2点較正→クリックで点列採取→curvesシート形式でExcel出力 |
+
+## 実図デジタイザの使い方(実データ整備の支援機能)
+
+1. 「実図画像を開く」で既存選定図のスキャン(png/jpg)を読み込む(軸範囲全体に仮表示される)
+2. 較正: 実図上で座標が読める2点(例: 軸交点や目盛の交わり)についてQ・H値を入力し、「点N をクリック指定」→チャート上のその位置をクリック。2点指定すると画像が軸に整合する
+3. 「採取モードON」にし、モデル名・カーブ種別(upper/lower)を選んで実図のカーブ上をクリックしていく
+4. 「採取点をExcel出力」→ curvesシート形式でダウンロード。テンプレのmodelsシートに属性を補記すればそのまま読み込める
 
 ## 開発
 
 ```bash
-npm test   # ドメイン層の単体テスト + 統合テスト(node --test、追加依存なし)
+npm ci       # devDependencies(テスト用jsdom等)の取得
+npm test     # ドメイン層の単体テスト + jsdomによるUI操作テスト + 配布物テスト
+npm run build && npm test   # 配布物テスト(dist)も含めて実行
 ```
 
-push時にGitHub Actionsで同テストが自動実行される(`.github/workflows/test.yml`)。
+UI層のテストはjsdom上でindex.html+main.jsを実際に起動して操作を再現するため、**ブラウザでの手動確認なしに回帰を検知できる**。push時にGitHub Actionsで build + 全テストが自動実行される(`.github/workflows/test.yml`)。
 
 ```
 src/

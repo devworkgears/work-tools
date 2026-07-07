@@ -1,5 +1,6 @@
 // 描画層: 対数-対数チャートのSVGレンダリング(D3利用)
 /* global d3 */
+import { imageToData, IMAGE_SPACE } from './digitizer.js';
 
 const MARGIN = { top: 20, right: 24, bottom: 52, left: 60 };
 
@@ -66,7 +67,9 @@ function estimateLabelWidth(text) {
 // items: [{ id, label, color, rings: [ [{flow, head}, ...], ... ], meta, selected, dimmed }]
 //   rings は多角形の輪郭の配列(通常1本。union外包では飛び地・穴で複数になりうる)
 // opts: { width, height, axis: {xmin,xmax,ymin,ymax}(null=自動),
-//         onHover(item|null, event), onClick(item|null), onMove(q|null, h|null) }
+//         underlay: {href, mapping, opacity}(実図デジタイザの背景画像),
+//         captureMode: bool(クリックで点採取。選択操作は無効化),
+//         onHover(item|null, event), onClick(item|null), onMove(q|null, h|null), onPlotClick(q, h) }
 export function renderChart(svgEl, items, opts) {
   const { width, height } = opts;
   const svg = d3.select(svgEl);
@@ -75,24 +78,50 @@ export function renderChart(svgEl, items, opts) {
     .attr('viewBox', `0 0 ${width} ${height}`)
     .attr('width', width)
     .attr('height', height)
-    .attr('font-family', 'system-ui, "Hiragino Sans", "Noto Sans JP", sans-serif');
+    .attr('font-family', 'system-ui, "Hiragino Sans", "Noto Sans JP", sans-serif')
+    .style('cursor', opts.captureMode ? 'crosshair' : null);
   svg.append('rect').attr('width', width).attr('height', height).attr('fill', '#ffffff');
-  svg.on('click', () => opts.onClick?.(null));
 
   const drawable = items.filter((it) => it.rings.some((r) => r.length >= 2));
-  if (drawable.length === 0) return;
+  // データなしでも背景画像(デジタイザ)があれば軸を出して作業できるようにする
+  if (drawable.length === 0 && !opts.underlay?.href) {
+    svg.on('click', () => opts.onClick?.(null));
+    return;
+  }
 
   const iw = width - MARGIN.left - MARGIN.right;
   const ih = height - MARGIN.top - MARGIN.bottom;
   const allPts = drawable.flatMap((it) => it.rings.flat());
 
   const axis = opts.axis ?? {};
-  const [dxmin, dxmax] = d3.extent(allPts, (p) => p.flow);
-  const [dymin, dymax] = d3.extent(allPts, (p) => p.head);
-  const xmin = axis.xmin ?? dxmin * 0.85;
-  const xmax = axis.xmax ?? dxmax * 1.18;
-  const ymin = axis.ymin ?? dymin * 0.85;
-  const ymax = axis.ymax ?? dymax * 1.18;
+  let [dxmin, dxmax] = [0.05, 5];
+  let [dymin, dymax] = [1, 100];
+  if (allPts.length > 0) {
+    [dxmin, dxmax] = d3.extent(allPts, (p) => p.flow);
+    [dymin, dymax] = d3.extent(allPts, (p) => p.head);
+    dxmin *= 0.85;
+    dxmax *= 1.18;
+    dymin *= 0.85;
+    dymax *= 1.18;
+  }
+  const xmin = axis.xmin ?? dxmin;
+  const xmax = axis.xmax ?? dxmax;
+  const ymin = axis.ymin ?? dymin;
+  const ymax = axis.ymax ?? dymax;
+
+  // svg左上原点からのプロット座標(getScreenCTM非依存: jsdom・実ブラウザ両対応)
+  const plotCoords = (ev) => {
+    const r = svgEl.getBoundingClientRect();
+    return [ev.clientX - r.left - MARGIN.left, ev.clientY - r.top - MARGIN.top];
+  };
+  svg.on('click', (ev) => {
+    if (opts.captureMode) {
+      const [mx, my] = plotCoords(ev);
+      if (mx >= 0 && mx <= iw && my >= 0 && my <= ih) opts.onPlotClick?.(x.invert(mx), y.invert(my));
+      return;
+    }
+    opts.onClick?.(null);
+  });
 
   const x = d3.scaleLog().domain([xmin, xmax]).range([0, iw]);
   const y = d3.scaleLog().domain([ymin, ymax]).range([ih, 0]);
@@ -118,6 +147,25 @@ export function renderChart(svgEl, items, opts) {
     .attr('y1', (t) => y(t))
     .attr('y2', (t) => y(t))
     .attr('stroke', (t) => (isPow10(t) ? '#c9ced6' : '#e8ebef'));
+
+  // 実図の背景画像(グリッドの上・軸とポリゴンの下)
+  if (opts.underlay?.href && opts.underlay.mapping) {
+    const m = opts.underlay.mapping;
+    const c0 = imageToData(m, 0, 0);
+    const c1 = imageToData(m, IMAGE_SPACE.width, IMAGE_SPACE.height);
+    const xs = [x(c0.flow), x(c1.flow)];
+    const ys = [y(c0.head), y(c1.head)];
+    g.append('image')
+      .attr('href', opts.underlay.href)
+      .attr('x', Math.min(...xs))
+      .attr('y', Math.min(...ys))
+      .attr('width', Math.abs(xs[1] - xs[0]))
+      .attr('height', Math.abs(ys[1] - ys[0]))
+      .attr('preserveAspectRatio', 'none')
+      .attr('opacity', opts.underlay.opacity ?? 0.5)
+      .attr('clip-path', 'url(#plot-clip)')
+      .attr('pointer-events', 'none');
+  }
 
   // 軸
   g.append('g')
@@ -167,6 +215,7 @@ export function renderChart(svgEl, items, opts) {
       .attr('stroke-width', it.selected ? 2.5 : 1.2)
       .attr('stroke-linejoin', 'round')
       .attr('opacity', it.dimmed ? 0.15 : 1)
+      .attr('pointer-events', opts.captureMode ? 'none' : null)
       .style('cursor', 'pointer')
       .on('mousemove', (ev) => opts.onHover?.(it, ev))
       .on('mouseleave', () => opts.onHover?.(null))
@@ -205,7 +254,7 @@ export function renderChart(svgEl, items, opts) {
 
   // カーソル位置のQ-H読み取り
   svg.on('mousemove', (ev) => {
-    const [mx, my] = d3.pointer(ev, g.node());
+    const [mx, my] = plotCoords(ev);
     if (mx >= 0 && mx <= iw && my >= 0 && my <= ih) opts.onMove?.(x.invert(mx), y.invert(my));
     else opts.onMove?.(null, null);
   });
