@@ -1,6 +1,6 @@
 # 運転範囲 可視化ツール
 
-選定図(流量×全揚程の対数-対数平面に各モデルの運転範囲を多角形で示す図)をインタラクティブに探索・可視化するツール。要件・設計は [curve-chart-requirements.md](./curve-chart-requirements.md) を参照。
+選定図(流量×全揚程の対数-対数平面に各モデルの運転範囲を多角形で示す図)をインタラクティブに探索・可視化するツール。要件・設計は [curve-chart-requirements.md](./curve-chart-requirements.md)、DB化・選定システムへの拡張計画は [docs/ROADMAP.md](./docs/ROADMAP.md) を参照。
 
 ## 使い方
 
