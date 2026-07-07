@@ -67,6 +67,16 @@
           </label>
           <div class="digi-block">
             <div class="digi-title">① 較正(実図上の2点の実座標を入力→チャート上でその点をクリック)</div>
+            <div class="row">
+              <select id="digi-qscale">
+                <option value="log">Q軸: 対数</option>
+                <option value="linear">Q軸: リニア</option>
+              </select>
+              <select id="digi-hscale">
+                <option value="log">H軸: 対数</option>
+                <option value="linear">H軸: リニア</option>
+              </select>
+            </div>
             <div class="axis-grid">
               <label>点1 Q <input type="number" id="digi-q1" step="any" min="0"></label>
               <label>点1 H <input type="number" id="digi-h1" step="any" min="0"></label>

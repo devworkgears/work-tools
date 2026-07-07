@@ -62,3 +62,45 @@ test('buildExportRows: model→curve→flow順に整列し、modelsスタブを�
   assert.deepEqual(models.map((m) => m.model), ['A', 'B']);
   assert.equal(models[0].series, null);
 });
+
+test('calibrate: リニア軸(原点0を基準点にできる)', () => {
+  const m = calibrate(
+    { px: 100, py: 700, q: 0, h: 0 },
+    { px: 900, py: 100, q: 8, h: 60 },
+    { q: 'linear', h: 'linear' }
+  );
+  assert.ok(m);
+  const mid = imageToData(m, 500, 400);
+  near(mid.flow, 4); // (500-100)/800 * 8
+  near(mid.head, 30); // (700-400)/600 * 60
+  const p = dataToImage(m, 2, 15);
+  const back = imageToData(m, p.px, p.py);
+  near(back.flow, 2);
+  near(back.head, 15);
+});
+
+test('calibrate: 片対数(Q対数・Hリニア)', () => {
+  const m = calibrate(
+    { px: 0, py: 750, q: 0.01, h: 0 },
+    { px: 1000, py: 0, q: 10, h: 75 },
+    { q: 'log', h: 'linear' }
+  );
+  const mid = imageToData(m, 500, 375);
+  near(mid.flow, Math.sqrt(0.01 * 10)); // Qは幾何平均
+  near(mid.head, 37.5); // Hは算術平均
+});
+
+test('calibrate: 対数軸は0を拒否、リニア軸は0を許容', () => {
+  const p1 = { px: 0, py: 0, q: 0, h: 1 };
+  const p2 = { px: 10, py: 10, q: 1, h: 2 };
+  assert.equal(calibrate(p1, p2), null); // 既定(両対数)はq=0を拒否
+  assert.ok(calibrate(p1, p2, { q: 'linear' })); // Qのみリニアなら許容
+});
+
+test('既存の写像オブジェクト(軸種別なし)は対数として扱われる(後方互換)', () => {
+  const m = calibrate({ px: 0, py: 750, q: 0.01, h: 1 }, { px: 1000, py: 0, q: 10, h: 100 });
+  const legacy = { ax: m.ax, bx: m.bx, ay: m.ay, by: m.by }; // q/hプロパティなし
+  const mid = imageToData(legacy, 500, 375);
+  near(mid.flow, Math.sqrt(0.01 * 10));
+  near(mid.head, 10);
+});

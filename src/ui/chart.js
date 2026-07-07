@@ -153,8 +153,12 @@ export function renderChart(svgEl, items, opts) {
     const m = opts.underlay.mapping;
     const c0 = imageToData(m, 0, 0);
     const c1 = imageToData(m, IMAGE_SPACE.width, IMAGE_SPACE.height);
-    const xs = [x(c0.flow), x(c1.flow)];
-    const ys = [y(c0.head), y(c1.head)];
+    // リニア軸較正の実図では画像の角が非正の座標になりうるため、対数スケールに
+    // 載る範囲へクランプする(リニア実図の表示はもとより近似。採取精度には無関係)
+    const cq = (v) => Math.min(Math.max(v, xmin / 100), xmax * 100);
+    const ch = (v) => Math.min(Math.max(v, ymin / 100), ymax * 100);
+    const xs = [x(cq(c0.flow)), x(cq(c1.flow))];
+    const ys = [y(ch(c0.head)), y(ch(c1.head))];
     g.append('image')
       .attr('href', opts.underlay.href)
       .attr('x', Math.min(...xs))

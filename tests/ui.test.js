@@ -173,3 +173,36 @@ test('採取モード中はポリゴン選択が無効化される', () => {
   fire(cap, 'change');
   assert.equal(document.querySelector('#chart path.polygon').getAttribute('pointer-events'), null);
 });
+
+test('デジタイザ: 軸種別をリニアに切替→再較正され、画像配置が有限値を保つ', () => {
+  // 既存の基準点(p1: Q=0.1/H=10, p2: Q=2/H=2)のままリニアへ切替
+  $('digi-qscale').value = 'linear';
+  fire($('digi-qscale'), 'change');
+  $('digi-hscale').value = 'linear';
+  fire($('digi-hscale'), 'change');
+  assert.match($('digi-calib-status').textContent, /較正済み.*リニア軸/);
+  const img = document.querySelector('#chart image');
+  for (const attr of ['x', 'y', 'width', 'height']) {
+    const v = Number(img.getAttribute(attr));
+    assert.ok(Number.isFinite(v), `image ${attr} が有限値でない: ${v}`);
+  }
+});
+
+test('デジタイザ: リニア軸ではQ=0を基準点にできる(対数軸では拒否)', () => {
+  // リニアのまま原点相当を基準点に
+  $('digi-q1').value = '0';
+  $('digi-h1').value = '0';
+  fire($('digi-set1'), 'click');
+  clickAt(sx(0.02), sy(1.5));
+  assert.match($('digi-calib-status').textContent, /較正済み|もう一方/);
+  // 対数軸に戻すと0の基準点では較正できない
+  $('digi-qscale').value = 'log';
+  fire($('digi-qscale'), 'change');
+  $('digi-hscale').value = 'log';
+  fire($('digi-hscale'), 'change');
+  assert.match($('digi-calib-status').textContent, /較正できません/);
+  // 対数軸でQ=0を入力して点指定しようとするとバリデーションで弾かれる
+  fire($('digi-set1'), 'click');
+  clickAt(sx(0.05), sy(3));
+  assert.match($('digi-calib-status').textContent, /正の値/);
+});

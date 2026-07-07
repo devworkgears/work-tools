@@ -27,6 +27,7 @@ const state = {
   digitizer: {
     href: null, // 画像のdata URL
     mapping: null, // 画像ピクセル↔実座標の写像(digitizer.js)
+    scales: { q: 'log', h: 'log' }, // 実図の軸種別
     opacity: 0.5,
     p1: null, // 較正基準点 {px, py, q, h}
     p2: null,
@@ -332,15 +333,44 @@ function updateDigiCount() {
   el('digi-count').textContent = `採取点 ${state.digitizer.points.length}`;
 }
 
+// リニア軸を含む較正時の注記
+function linearNote() {
+  const s = state.digitizer.scales;
+  return s.q === 'linear' || s.h === 'linear'
+    ? '。リニア軸のため画像表示は近似(歪みます)が、採取座標は正確です'
+    : '(基準点を取り直すと再較正されます)';
+}
+
+// 較正基準点のQ/H入力値を検証して返す。対数軸は正の値のみ、リニア軸は0や負も許容
+function readCalibValue(inputId, scale) {
+  const raw = el(inputId).value.trim();
+  if (raw === '') return null;
+  const v = Number(raw);
+  if (!Number.isFinite(v)) return null;
+  if (scale !== 'linear' && v <= 0) return null;
+  return v;
+}
+
+function recalibrate() {
+  const d = state.digitizer;
+  const m = calibrate(d.p1, d.p2, d.scales);
+  if (m) {
+    d.mapping = m;
+    digiStatus('較正済み' + linearNote());
+  } else {
+    digiStatus('較正できません: 2点のQ同士・H同士が同一、クリック位置が同一、または対数軸に0以下の値があります');
+  }
+}
+
 // 採取・較正モード中のチャートクリック(q, h は現在の軸スケールでの実座標)
 function handlePlotClick(q, h) {
   const d = state.digitizer;
   if (d.pending) {
     const n = d.pending === 'p1' ? 1 : 2;
-    const qv = Number(el(`digi-q${n}`).value);
-    const hv = Number(el(`digi-h${n}`).value);
-    if (!(qv > 0) || !(hv > 0)) {
-      digiStatus(`点${n}のQ・Hを先に入力してください(正の数値)`);
+    const qv = readCalibValue(`digi-q${n}`, d.scales.q);
+    const hv = readCalibValue(`digi-h${n}`, d.scales.h);
+    if (qv === null || hv === null) {
+      digiStatus(`点${n}のQ・Hを先に入力してください(対数軸は正の値のみ)`);
       d.pending = null;
       update();
       return;
@@ -350,13 +380,7 @@ function handlePlotClick(q, h) {
     d[d.pending] = { px, py, q: qv, h: hv };
     d.pending = null;
     if (d.p1 && d.p2) {
-      const m = calibrate(d.p1, d.p2);
-      if (m) {
-        d.mapping = m;
-        digiStatus('較正済み(基準点を取り直すと再較正されます)');
-      } else {
-        digiStatus('較正できません: 2点のQ同士・H同士が同一か、クリック位置が同じです');
-      }
+      recalibrate();
     } else {
       digiStatus(`点${n}を記録しました。もう一方の基準点を指定してください`);
     }
@@ -401,6 +425,17 @@ function initDigitizer() {
     state.digitizer.opacity = Number(ev.target.value) / 100;
     update();
   });
+  // 軸種別の変更: 既に2点あればその場で再較正
+  for (const id of ['digi-qscale', 'digi-hscale']) {
+    el(id).addEventListener('change', () => {
+      const d = state.digitizer;
+      d.scales = { q: el('digi-qscale').value, h: el('digi-hscale').value };
+      if (d.p1 && d.p2) {
+        recalibrate();
+        update();
+      }
+    });
+  }
   el('digi-set1').addEventListener('click', () => {
     state.digitizer.pending = 'p1';
     digiStatus('チャート上で「実図の点1」の位置をクリックしてください');
