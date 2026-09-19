@@ -111,3 +111,19 @@ test('axisFromConfig: 軸固定範囲の読み取りと不正値の無視', asyn
   });
   assert.deepEqual(axisFromConfig({}), { xmin: null, xmax: null, ymin: null, ymax: null });
 });
+
+test('Objectのプロパティ名と同じモデル名も読み込め、upper欠落も報告できる', () => {
+  for (const name of ['constructor', 'toString', '__proto__']) {
+    const models = [{ model: name, series: 'X', output_kw: 1, diameter_mm: 50 }];
+    const curves = [
+      { model: name, curve: 'upper', flow: 0.1, head: 12 },
+      { model: name, curve: 'upper', flow: 0.5, head: 7 },
+    ];
+    const ds = parseDataset({ models, curves });
+    assert.deepEqual(ds.errors, []);
+    assert.ok(Object.hasOwn(ds.curvesByModel, name));
+    assert.deepEqual(ds.curvesByModel[name].upper.map((p) => p.head), [12, 7]);
+    const missing = parseDataset({ models, curves: [] });
+    assert.ok(missing.errors.some((e) => e.model === name && /upperカーブがありません/.test(e.message)));
+  }
+});

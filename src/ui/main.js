@@ -239,6 +239,13 @@ function buildItems() {
 
 // ---------- ツールチップ ----------
 
+/** @param {unknown} value @returns {string} */
+function escapeHTML(value) {
+  return String(value).replace(/[&<>"']/g, (ch) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  })[ch]);
+}
+
 function showTooltip(item, ev) {
   const tip = el('tooltip');
   if (!item) {
@@ -248,15 +255,15 @@ function showTooltip(item, ev) {
   const rows = [];
   if (item.meta.type === 'model') {
     const m = item.meta.model;
-    rows.push(`<b>${m.model}</b>`);
-    rows.push(`シリーズ: ${m.series}`);
+    rows.push(`<b>${escapeHTML(m.model)}</b>`);
+    rows.push(`シリーズ: ${escapeHTML(m.series)}`);
     rows.push(`出力: ${m.output_kw} kW`);
     rows.push(`口径: ${m.diameter_mm} mm`);
-    for (const [k, v] of Object.entries(m.extras)) rows.push(`${k}: ${v}`);
-    rows.push(`<span class="muted">下限ルール: ${item.meta.rule}</span>`);
+    for (const [k, v] of Object.entries(m.extras)) rows.push(`${escapeHTML(k)}: ${escapeHTML(v)}`);
+    rows.push(`<span class="muted">下限ルール: ${escapeHTML(item.meta.rule)}</span>`);
   } else {
-    rows.push(`<b>${columnLabel(item.meta.col)} = ${item.meta.key}</b>`);
-    rows.push(`${item.meta.models.length}モデル: ${item.meta.models.map((m) => m.model).join(', ')}`);
+    rows.push(`<b>${escapeHTML(columnLabel(item.meta.col))} = ${escapeHTML(item.meta.key)}</b>`);
+    rows.push(`${item.meta.models.length}モデル: ${item.meta.models.map((m) => escapeHTML(m.model)).join(', ')}`);
   }
   tip.innerHTML = rows.join('<br>');
   tip.hidden = false;

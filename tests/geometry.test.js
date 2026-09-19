@@ -152,3 +152,15 @@ test('containsPoint: 内・外・境界上(検証項目10)', () => {
   assert.equal(containsPoint(poly, 0.1, 4), true); // 頂点上
   assert.equal(containsPoint(poly, 0.3, 4), true); // 下辺上
 });
+
+test('explicit: lower点列の欠落・点数不足は例外ではなく導出エラー', () => {
+  for (const lower of [undefined, null, [], [{ flow: 0.1, head: 4 }]]) {
+    const cbm = { A: { upper: upperA, lower } };
+    for (const model of [makeModel({ lower_rule: 'explicit' }), makeModel()]) {
+      const result = deriveLower(model, cbm, { default_lower_rule: 'explicit' });
+      assert.equal(result.rule, 'explicit');
+      assert.match(result.error, /lower.*2点以上/);
+      assert.equal(result.points, undefined);
+    }
+  }
+});

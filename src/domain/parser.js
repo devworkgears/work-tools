@@ -95,7 +95,7 @@ export function parseDataset(sheets) {
   });
 
   // --- curves ---
-  const curvesByModel = {};
+  const curvesByModel = Object.create(null);
   const modelNames = new Set(models.map((m) => m.model));
   curveRows.forEach((r, i) => {
     const row = i + 2;

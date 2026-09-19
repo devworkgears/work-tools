@@ -206,3 +206,50 @@ test('デジタイザ: リニア軸ではQ=0を基準点にできる(対数軸�
   clickAt(sx(0.05), sy(3));
   assert.match($('digi-calib-status').textContent, /正の値/);
 });
+
+test('ツールチップ: モデル・任意属性・グループの文字列をHTMLとして解釈しない', async () => {
+  const name = '<img src="x" onerror="void(0)"> & モデル';
+  const series = '<em>系列</em>';
+  const extraKey = '<i>追加列</i>';
+  const extraValue = '<strong>値</strong> & 追加';
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([
+    { model: name, series, output_kw: 1, diameter_mm: 50, lower_rule: 'clip', lower_param: 4, [extraKey]: extraValue },
+  ]), 'models');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([
+    { model: name, curve: 'upper', flow: 0.1, head: 12 },
+    { model: name, curve: 'upper', flow: 0.5, head: 7 },
+  ]), 'curves');
+  const data = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
+  const input = $('file-input');
+  Object.defineProperty(input, 'files', {
+    value: [{ name: '文字列確認.xlsx', arrayBuffer: async () => data }], configurable: true,
+  });
+  fire(input, 'change');
+  await settle();
+  assert.ok($('errors').hidden);
+  assert.equal(polygons().length, 1);
+  const hover = () => polygons()[0].dispatchEvent(new dom.window.MouseEvent('mousemove'));
+  try {
+    hover();
+    assert.equal($('tooltip').querySelector('img, em, i, strong'), null);
+    for (const value of [name, series, extraKey, extraValue]) {
+      assert.ok($('tooltip').textContent.includes(value), value);
+    }
+    const radio = document.querySelector('input[name=mode][value=envelope]');
+    radio.checked = true;
+    fire(radio, 'change');
+    $('envelope-by').value = extraKey;
+    fire($('envelope-by'), 'change');
+    hover();
+    assert.equal($('tooltip').querySelector('img, em, i, strong'), null);
+    for (const value of [name, extraKey, extraValue]) {
+      assert.ok($('tooltip').textContent.includes(value), value);
+    }
+  } finally {
+    const radio = document.querySelector('input[name=mode][value=individual]');
+    radio.checked = true;
+    fire(radio, 'change');
+    fire($('btn-sample'), 'click');
+  }
+});

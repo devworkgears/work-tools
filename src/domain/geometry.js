@@ -57,6 +57,7 @@ export function deriveLower(model, curvesByModel, config) {
 
   switch (rule) {
     case 'explicit':
+      if (!entry.lower || entry.lower.length < 2) return fail('explicit にはlowerカーブが2点以上必要です');
       return { rule, points: entry.lower.map(({ flow, head }) => ({ flow, head })) };
 
     case 'neighbor': {
