@@ -76,7 +76,7 @@ test('neighbor: 参照先なし/範囲非重複はエラー(検証項目5)', () 
   assert.match(r2.error, /重なりません/);
 });
 
-test('ratio: 揚程をk倍。kの範囲チェックあり', () => {
+test('ratio: H をk倍。kの範囲チェックあり', () => {
   const cbm = { A: { upper: upperA, lower: null } };
   const r = deriveLower(makeModel({ lower_rule: 'ratio', lower_param: 0.5 }), cbm, {});
   assert.deepEqual(r.points.map((p) => p.head), [6, 5, 3.5]);

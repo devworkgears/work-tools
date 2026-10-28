@@ -182,13 +182,13 @@ export function renderChart(svgEl, items, opts) {
     .attr('text-anchor', 'middle')
     .attr('font-size', 12)
     .attr('fill', '#333')
-    .text('吐出し量 Q [m³/min]');
+    .text('Q [m³/min]');
   g.append('text')
     .attr('transform', `translate(${-44},${ih / 2}) rotate(-90)`)
     .attr('text-anchor', 'middle')
     .attr('font-size', 12)
     .attr('fill', '#333')
-    .text('全揚程 H [m]');
+    .text('H [m]');
 
   // 描画領域クリップ
   svg

@@ -73,7 +73,7 @@ export function deriveLower(model, curvesByModel, config) {
 
     case 'clip': {
       const h = toNumber(param);
-      if (h === null || h <= 0) return fail(`clip には正の下限揚程[m]が必要です: ${param}`);
+      if (h === null || h <= 0) return fail(`clip には正の下限の H [m]が必要です: ${param}`);
       return { rule, points: [{ flow: fmin, head: h }, { flow: fmax, head: h }] };
     }
 
