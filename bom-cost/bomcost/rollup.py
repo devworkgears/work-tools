@@ -109,7 +109,8 @@ class CostCalculator:
         return value
 
     def _compute(self, code: str) -> Decimal | None:
-        own = self.version.cost_value(code, self.head)
+        # 構成を上書きした品目は試算の仮の製品なので、同じ品番の登録値は使わない（使うと変更が効かなくなる）
+        own = None if code in self._overrides else self.version.cost_value(code, self.head)
         lines = self.children(code)
         if not lines:
             if own is None:

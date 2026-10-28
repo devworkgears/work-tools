@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BOM 原価モック</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="bar">
+  <h1>BOM 原価モック</h1>
+  <div class="seg" id="mode-seg" role="group" aria-label="モード">
+    <button type="button" data-mode="diff" class="on">差分</button>
+    <button type="button" data-mode="bulk">一括</button>
+  </div>
+  <div class="seg" id="balloon-seg" role="group" aria-label="まとめ方">
+    <button type="button" data-balloon="0" class="on">品番でまとめる</button>
+    <button type="button" data-balloon="1">風船番号で分ける</button>
+  </div>
+  <label>版 <select id="version-select"></select></label>
+  <label>費目 <select id="head-select"></select></label>
+  <label>試算 <select id="scenario-select"></select></label>
+  <button type="button" id="new-scenario">新しい試算</button>
+  <span class="spacer"></span>
+  <div class="seg" id="view-seg" role="group" aria-label="表示">
+    <button type="button" data-view="tree" class="on">ツリー</button>
+    <button type="button" data-view="table">テーブル</button>
+  </div>
+  <button type="button" id="open-compare">版の比較</button>
+</header>
+
+<div id="message" class="message" hidden></div>
+
+<main class="layout" id="main-layout">
+  <section class="panel left" id="left-panel">
+    <div class="panel-head">
+      <h2 id="left-title">構成</h2>
+      <span class="muted" id="left-note"></span>
+    </div>
+    <div id="tree" class="tree"></div>
+    <div id="table-view" class="table-view" hidden>
+      <div class="table-tools">
+        <details class="columns-chooser">
+          <summary>表示する列</summary>
+          <div id="column-checks"></div>
+        </details>
+        <span class="muted" id="table-count"></span>
+        <span class="spacer"></span>
+        <button type="button" id="export-xlsx">表示中の行を Excel に書き出す</button>
+      </div>
+      <div class="table-scroll">
+        <table class="grid" id="grid">
+          <thead></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel detail" id="detail-panel">
+    <div class="panel-head"><h2>選んだ品目</h2></div>
+    <div id="detail" class="detail-body"><p class="muted">左の構成から品目を選んでください。</p></div>
+  </section>
+
+  <section class="panel history" id="history-panel">
+    <div class="panel-head">
+      <h2>変更の履歴</h2>
+      <span class="spacer"></span>
+      <button type="button" id="undo">最後の変更を取り消す</button>
+    </div>
+    <ol id="history" class="history-list"></ol>
+  </section>
+
+  <section class="panel result" id="result-panel">
+    <div id="result"></div>
+  </section>
+</main>
+
+<dialog id="new-dialog">
+  <form method="dialog" id="new-form">
+    <h2>新しい試算</h2>
+    <label>名前 <input name="name" required></label>
+    <label>土台の製品の品番 <input name="base" list="code-list" required></label>
+    <label>試算の製品の品番 <input name="product_code" required></label>
+    <p class="muted">計算に使う版と費目は、上の帯で選んでいるもの（<span id="new-premise"></span>）を使います。</p>
+    <div class="dialog-buttons">
+      <button type="button" id="new-cancel">やめる</button>
+      <button type="submit" class="primary">作る</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="compare-dialog">
+  <div class="dialog-body">
+    <h2>版の比較</h2>
+    <p>今の試算を <select id="compare-version"></select> の原価で計算し直した、品目ごとの差です。</p>
+    <div id="compare-body"></div>
+    <div class="dialog-buttons"><button type="button" id="compare-close">閉じる</button></div>
+  </div>
+</dialog>
+
+<datalist id="code-list"></datalist>
+<script src="app.js"></script>
+</body>
+</html>
