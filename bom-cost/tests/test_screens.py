@@ -196,16 +196,17 @@ class PartView(DemoDbCase):
         self.assertEqual((v110["volume_kind"], v110["annual"], v110["quantity_per_unit"]), ("新製品の計画", "10000", "1"))
         self.assertEqual((k200["volume_kind"], k200["annual"], k200["quantity_per_unit"]), ("量産の実績", "5000", "2"))
         self.assertEqual((v["annual_count"], v["per_part"]), ("20000", "60"))
-        self.assertEqual((v110["current"], v110["after"], v110["mold_per_unit"]), (None, "4660", "60"))
-        self.assertEqual((k200["current"], k200["part_difference"], k200["after"], k200["difference"]),
-                         ("3000", "-100", "3020", "20"))
+        # 型費は償却費なので費目の後には足さず、償却費込みの差だけに入る
+        self.assertEqual((v110["current"], v110["after"], v110["mold_per_unit"]), (None, "4600", "60"))
+        self.assertEqual((k200["current"], k200["part_difference"], k200["after"], k200["difference"],
+                          k200["difference_with_amortization"]), ("3000", "-100", "2900", "-100", "20"))
         self.assertEqual(v["mold"]["amount"], "2400000")
         p = v["premises"]
         self.assertEqual((p["version_id"], p["head_label"], p["allocation_label"]), ("2026-10", "材料費", "使う数で分ける"))
         self.assertEqual({x["product"]: x["kind"] for x in p["volumes"]}, {"V-110": "新製品の計画", "K-200": "量産の実績"})
         # 費目5つを並べる。材料費以外は未登録
         self.assertEqual(list(k200["heads"]), ["MATERIAL", "DIRECT", "INDIRECT", "ADJUSTMENT", "MANUFACTURING"])
-        self.assertEqual(k200["heads"]["MATERIAL"]["after"], "3020")
+        self.assertEqual(k200["heads"]["MATERIAL"]["after"], "2900")
         self.assertIsNone(k200["heads"]["DIRECT"]["current"])
         self.assertEqual(v["part_costs"]["MATERIAL"], "200")
 

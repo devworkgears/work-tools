@@ -516,22 +516,26 @@ class Screens:
             mold_unit = None if share is None else share.per_unit
             target = next((t for t in reuse if t.product == user.product), None) if user.via_reuse else None
             is_trial = scenario is not None and user.product == scenario.product_code
-            # 型費の登録が無い部品は型費の分を 0 として今と後を出す（割る数が 0 なら後は出せない）
+            # 型費は償却費なので、費目ごとの今と後には足さず償却費の欄に分けて出す
+            # （型費の登録が無い部品は償却費の分を 0 とする）
             mold_add = Decimal(0) if alloc is None else mold_unit
             per_head: dict[str, dict[str, str | None]] = {}
             for h in HEADS:
                 if target is not None:
                     impact = reuse_impact(version, target, alloc, h, policy)
-                    current, part_diff, after = impact.current_cost, impact.part_difference, impact.after
+                    current, part_diff = impact.current_cost, impact.part_difference
+                    after = None if current is None or part_diff is None else current + part_diff
                 else:
-                    # BOM で使う製品の原価はもう部品を含むので、部品の差は無く型費の分だけ足す
+                    # BOM で使う製品の原価はもう部品を含むので、部品の差は無い
                     now = cost(user.product, h)
                     current = None if is_trial else now
                     part_diff = None
-                    after = None if now is None or mold_add is None else now + mold_add
+                    after = now
                 difference = None if current is None or after is None else after - current
+                total = None if difference is None or mold_add is None else difference + mold_add
                 per_head[h.name] = {"current": _s(current), "part_difference": _s(part_diff),
-                                    "after": _s(after), "difference": _s(difference)}
+                                    "after": _s(after), "difference": _s(difference),
+                                    "difference_with_amortization": _s(total)}
             item = version.items.get(user.product)
             name = scenario.name if is_trial and item is None else ("" if item is None else item.name)
             rows.append(

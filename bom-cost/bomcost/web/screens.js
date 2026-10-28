@@ -141,12 +141,13 @@ async function drawPart() {
       el("td", { class: "num" }, r.part_difference === null ? "—" : `${fmt(r.part_difference, { sign: true })}（${r.replaced_part || "古い部品なし"} → ${v.part}）`),
       el("td", { class: "num" }, `${fmt(r.current, { missing: "—" })} → ${fmt(r.after, { missing: "—" })}`),
       el("td", { class: `num ${signClass(r.difference)}` }, fmt(r.difference, { sign: true, missing: "—" })),
+      el("td", { class: `num ${signClass(r.difference_with_amortization)}` }, fmt(r.difference_with_amortization, { sign: true, missing: "—" })),
     ),
   );
   const main = table(
-    ["使う製品", "種別", numTh("年間台数"), numTh("使用数（個/台）"), numTh("年間の数（個）"), numTh("型費（円/台）"),
-      numTh(`部品の差（${headLabel}・円/台）`), numTh(`今 → 後（${headLabel}・円/台）`), numTh("差")],
-    rows.length ? rows : [el("tr", {}, el("td", { colspan: 9, class: "muted" }, "この部品を使う製品がありません（年間台数のある製品の構成か、流用先に入れると出ます）。"))],
+    ["使う製品", "種別", numTh("年間台数"), numTh("使用数（個/台）"), numTh("年間の数（個）"), numTh("償却費＝型費（円/台）"),
+      numTh(`部品の差（${headLabel}・円/台）`), numTh(`今 → 後（${headLabel}・円/台）`), numTh(`差（${headLabel}）`), numTh("差（償却費込み）")],
+    rows.length ? rows : [el("tr", {}, el("td", { colspan: 10, class: "muted" },"この部品を使う製品がありません（年間台数のある製品の構成か、流用先に入れると出ます）。"))],
   );
   const summary = el(
     "div",
@@ -156,13 +157,13 @@ async function drawPart() {
     el("span", {}, el("span", { class: "label" }, "載せ方"), v.allocation_label),
   );
   const breakdown = v.rows
-    .filter((r) => r.part_difference !== null && r.mold_per_unit !== null && r.difference !== null)
-    .map((r) => el("p", { class: "muted" }, `${r.product} の差の内訳: 部品の置き換え ${fmt(r.part_difference, { sign: true })} ＋ 型費 ${fmt(r.mold_per_unit, { sign: true })} ＝ ${fmt(r.difference, { sign: true })}`));
+    .filter((r) => r.part_difference !== null && r.mold_per_unit !== null && r.difference_with_amortization !== null)
+    .map((r) => el("p", { class: "muted" }, `${r.product} の差の内訳: 部品の置き換え（${headLabel}） ${fmt(r.part_difference, { sign: true })} ＋ 償却費（型費） ${fmt(r.mold_per_unit, { sign: true })} ＝ ${fmt(r.difference_with_amortization, { sign: true })}`));
   const premise = el(
     "p",
     { class: "premise-line" },
     `前提: 版 ${p.version_id}・費目 ${p.head_label}・台数 ${p.volumes.map((x) => `${x.product} は${x.kind}`).join(" / ") || "—"}・載せ方 ${p.allocation_label}`
-      + `${p.scenario_name ? `・試算「${p.scenario_name}」の構成` : "・版の構成"}・${p.reference}・償却費除外`,
+      + `${p.scenario_name ? `・試算「${p.scenario_name}」の構成` : "・版の構成"}・${p.reference}・原価の表の償却費は除外（型費は償却費の欄）`,
   );
   const unknown = v.unknown_volume.length
     ? el("p", { class: "missing" }, `年間台数が無く数えられなかった流用先: ${v.unknown_volume.join("・")}（手入力の年間台数か、取り込みの台数に入れると数えます）`)
@@ -183,7 +184,7 @@ async function drawPart() {
   document.getElementById("part-body").replaceChildren(
     title, main, summary, ...breakdown, premise, ...(unknown ? [unknown] : []),
     el("h3", {}, "費目5つで並べる（今 → 後・円/台。未登録は「未登録」）"), allHeads,
-    el("p", { class: "muted" }, "型費の分はどの費目にも同じ円/台を足しています。BOM で使う製品の原価はすでに部品を含むので、部品の差は出しません。試算の製品は「今」が無い新製品として出します。"),
+    el("p", { class: "muted" }, "型費は償却費なので、どの費目にも足さず「償却費＝型費」の欄に分けて出しています。BOM で使う製品の原価はすでに部品を含むので、部品の差は出しません。試算の製品は「今」が無い新製品として出します。"),
   );
 }
 
