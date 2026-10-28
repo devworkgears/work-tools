@@ -42,7 +42,7 @@ npm test     # ドメイン層の単体テスト + jsdomによるUI操作テス�
 npm run build && npm test   # 配布物テスト(dist)も含めて実行
 ```
 
-UI層のテストはjsdom上でindex.html+main.jsを実際に起動して操作を再現するため、**ブラウザでの手動確認なしに回帰を検知できる**。push時にGitHub Actionsで build + 全テストが自動実行される(`.github/workflows/test.yml`)。
+UI層のテストはjsdom上でindex.html+main.jsを実際に起動して操作を再現するため、**ブラウザでの手動確認なしに回帰を検知できる**。
 
 ```
 src/
@@ -52,6 +52,22 @@ src/
 └── sample-data.js  # サンプル=テンプレートの中身
 tests/           # ドメイン層のテスト
 ```
+
+### コマンド
+
+- 起動: `npm run serve` → http://localhost:8000/index.html (ESMのため開発版は file:// 直開き不可)
+- テスト: `npm test`(node --test。UI層のテストは jsdom を使うため先に `npm ci`)
+- 配布ビルド: `npm run build` → `dist/curve-chart-vX.Y.Z.html`(自己完結単一HTML。これはfile://で動く)
+
+### 構成と規約
+
+- Vanilla JS(ES Modules)+ D3 + SheetJS。ビルドなし(配布用単一HTMLの生成のみ)
+- クライアント完結。データはブラウザ外に送信しない(NFR-3)
+- UI・コメント・エラーメッセージは日本語
+- `src/domain/` … パース・幾何計算・フィルタの純粋関数。**DOM / d3 / XLSX に依存させない**(将来の選定システムへ移植する層。NFR-5)
+- `src/ui/` … 状態管理・描画・エクスポート。単方向データフロー(イベント → state更新 → update())
+- `tests/` … 単体テストはドメイン層に集中させる
+- 描画用ポリゴンは保存しない。常に upper カーブ + lower導出ルールから生成する(要件書§3設計原則)
 
 ## 性能(NFR-1)
 
