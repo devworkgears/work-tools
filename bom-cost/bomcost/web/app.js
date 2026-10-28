@@ -114,11 +114,11 @@ async function init() {
   state.tableColumns = state.meta.table_columns.map((c) => c.key);
   await loadLists();
   if (!state.versions.length) {
-    showMessage("版がまだありません。「取り込み・版」の画面から CSV・Excel を取り込んでください（試すなら --demo で例の DB も作れます）。", "info");
+    showMessage("版なし", "info");
     return;
   }
   if (!state.scenarios.length) {
-    showMessage("試算がまだありません。「新しい試算」から作ってください。", "info");
+    showMessage("試算なし", "info");
     return;
   }
   await selectScenario(state.scenarios[0].scenario_id);
@@ -230,7 +230,7 @@ function nodeRow(node, path, depth) {
   if (node.cost === null) costCell = el("span", { class: "num missing" }, "未登録");
   else costCell = el("span", { class: "num" }, fmt(node.cost));
   const marks = [];
-  if (node.cost !== null && node.incomplete) marks.push(el("span", { class: "tag warn", title: "足し上げた範囲に未登録がある" }, "一部未登録"));
+  if (node.cost !== null && node.incomplete) marks.push(el("span", { class: "tag warn" }, "一部未登録"));
   if (node.verdict && node.verdict !== "判定できない") marks.push(el("span", { class: "tag warn", title: "二重計上の判定（推定）" }, node.verdict));
   const row = el(
     "div",
@@ -277,7 +277,7 @@ async function renderDetail() {
   const box = document.getElementById("detail");
   if (!state.scenarioId) return;
   if (!state.selected) {
-    box.replaceChildren(el("p", { class: "muted" }, "左の構成から品目を選んでください。"));
+    box.replaceChildren();
     return;
   }
   const d = await api(
@@ -317,17 +317,12 @@ async function renderDetail() {
     el("div", { class: "detail-title" }, `${d.code} ${d.name}`),
     kv,
     heads,
-    actionsBlock(d),
+    ...[actionsBlock(d)].filter(Boolean),
   );
 }
 
 function actionsBlock(d) {
-  if (state.mode !== "diff") {
-    return el("p", { class: "muted" }, "一括のモードは土台の製品をそのまま見ます（打ち替えは差分のモードで）。");
-  }
-  if (d.is_root) {
-    return el("p", { class: "muted" }, "試算の製品です。下の品目を選ぶと、替える・抜く・足すができます。");
-  }
+  if (state.mode !== "diff" || d.is_root) return null;
   const defaultQty = d.usage && !String(d.usage).startsWith("-") && !/^0*(\.0*)?$/.test(d.usage) ? d.usage : "1";
   const qty = el("input", { id: "act-qty", value: defaultQty, inputmode: "decimal" });
   const repl = el("input", { id: "act-replacement", list: "code-list", placeholder: "代わりの品番" });
@@ -347,12 +342,11 @@ function actionsBlock(d) {
     { class: "actions" },
     el("label", { for: "act-qty" }, "数量"), qty,
     el("button", { type: "button", onclick: () => send("REPLACE", { replacement: repl.value }) }, "替える"), repl,
-    el("button", { type: "button", onclick: () => send("REMOVE") }, "抜く"), el("span", { class: "muted" }, `${d.code} を数量の分だけ抜く`),
+    el("button", { type: "button", onclick: () => send("REMOVE") }, "抜く"),
     el("button", { type: "button", onclick: () => send("ADD", { part: addCode.value }) }, "足す"), addCode,
     d.in_root
-      ? [el("button", { type: "button", onclick: () => send("SET_QUANTITY") }, "数量にする"), el("span", { class: "muted" }, "試算の製品の直下の数量を置き換える")]
+      ? el("button", { type: "button", onclick: () => send("SET_QUANTITY") }, "数量にする")
       : null,
-    el("p", { class: "muted note" }, "変更は試算の製品の直下に重ねて記録します（深い所の部品は「抜く＋足す」になります）。"),
   );
 }
 
@@ -383,8 +377,8 @@ function renderHistory() {
     el(
       "li",
       { value: 0 },
-      el("div", { class: "row" }, el("span", { class: "text" }, `${s.start.base} を土台に開始`), money(s.start.cost)),
-      el("div", { class: "premise" }, `今の版 ${s.scenario.version_id}・${s.scenario.head_label}で計算`),
+      el("div", { class: "row" }, el("span", { class: "text" }, `土台 ${s.start.base}`), money(s.start.cost)),
+      el("div", { class: "premise" }, `前提: 版 ${s.scenario.version_id}・${s.scenario.head_label}`),
     ),
     ...s.history.map((r) =>
       el(
@@ -420,9 +414,9 @@ function renderResult() {
       el("span", {}, el("span", { class: "label" }, "変更前"), el("span", { class: "big num" }, fmt(last.cost_before))),
       el("span", {}, el("span", { class: "label" }, "変更後"), el("span", { class: "big num" }, fmt(last.cost_after))),
       el("span", {}, el("span", { class: "label" }, "差額"), el("span", { class: `big num ${signClass(last.difference)}` }, fmt(last.difference, { sign: true }))),
-      el("span", { class: "muted" }, `（変更時の前提: 版 ${last.version_id}・${last.head_label}）`),
+      el("span", { class: "muted" }, `前提: 版 ${last.version_id}・${last.head_label}`),
     )
-    : el("div", { class: "result-line muted" }, "まだ変更がありません。");
+    : el("div", { class: "result-line muted" }, "変更なし");
   const now = el(
     "div",
     { class: "result-line" },
@@ -507,7 +501,7 @@ function drawGrid() {
     { class: "heads" },
     cols.map((c) => {
       const mark = state.tableSort.key === c.key ? (state.tableSort.desc ? " ▼" : " ▲") : "";
-      return el("th", { onclick: () => sortBy(c.key), title: "クリックで並べ替え" }, c.label + mark);
+      return el("th", { onclick: () => sortBy(c.key) }, c.label + mark);
     }),
   );
   const filters = el(
@@ -619,7 +613,7 @@ async function drawCompare() {
   );
   document.getElementById("compare-body").replaceChildren(
     table,
-    el("p", { class: "muted" }, `${c.head_label}・参考値・償却費除外。版を切り替えて計算し直すには、上の帯の「版」を選び直します。`),
+    el("p", { class: "muted" }, `前提: ${c.head_label}・参考値・償却費除外`),
   );
 }
 
@@ -660,7 +654,7 @@ function wire() {
   document.getElementById("version-select").addEventListener("change", (e) => guarded(async () => {
     state.summary = await api("PUT", `/api/scenarios/${state.scenarioId}`, { version_id: e.target.value });
     await reloadAll();
-    showMessage(`版 ${e.target.value} の原価で計算し直しました（履歴の各行は変更した時の前提のまま残ります）。`, "info");
+    showMessage(`版 ${e.target.value} で再計算`, "info");
   }));
   document.getElementById("head-select").addEventListener("change", (e) => guarded(async () => {
     state.summary = await api("PUT", `/api/scenarios/${state.scenarioId}`, { head: e.target.value });

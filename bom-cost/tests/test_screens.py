@@ -147,7 +147,7 @@ class Import(EmptyDbCase):
 
 
 class SampleProcedure(EmptyDbCase):
-    """README の手順: 空の DB に samples/ の CSV を取り込み、手入力で X-610 を入れ、部品から見る画面で 60 円。"""
+    """見本の CSV で試す手順: 空の DB に samples/ の CSV を取り込み、手入力で X-610 を入れ、部品から見る画面で 60 円。"""
 
     def test_from_empty_db_to_60_yen(self) -> None:
         def sample(name: str, table: str, columns: dict) -> dict:

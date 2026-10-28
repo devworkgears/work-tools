@@ -147,7 +147,7 @@ async function drawPart() {
   const main = table(
     ["使う製品", "種別", numTh("年間台数"), numTh("使用数（個/台）"), numTh("年間の数（個）"), numTh("償却費＝型費（円/台）"),
       numTh(`部品の差（${headLabel}・円/台）`), numTh(`今 → 後（${headLabel}・円/台）`), numTh(`差（${headLabel}）`), numTh("差（償却費込み）")],
-    rows.length ? rows : [el("tr", {}, el("td", { colspan: 10, class: "muted" },"この部品を使う製品がありません（年間台数のある製品の構成か、流用先に入れると出ます）。"))],
+    rows.length ? rows : [el("tr", {}, el("td", { colspan: 10, class: "muted" },"なし"))],
   );
   const summary = el(
     "div",
@@ -162,11 +162,11 @@ async function drawPart() {
   const premise = el(
     "p",
     { class: "premise-line" },
-    `前提: 版 ${p.version_id}・費目 ${p.head_label}・台数 ${p.volumes.map((x) => `${x.product} は${x.kind}`).join(" / ") || "—"}・載せ方 ${p.allocation_label}`
-      + `${p.scenario_name ? `・試算「${p.scenario_name}」の構成` : "・版の構成"}・${p.reference}・原価の表の償却費は除外（型費は償却費の欄）`,
+    `前提: 版 ${p.version_id}・費目 ${p.head_label}・台数 ${p.volumes.map((x) => `${x.product} ${x.kind}`).join(" / ") || "—"}・載せ方 ${p.allocation_label}`
+      + `・構成 ${p.scenario_name ? `試算「${p.scenario_name}」` : "版"}・${p.reference}・償却費除外`,
   );
   const unknown = v.unknown_volume.length
-    ? el("p", { class: "missing" }, `年間台数が無く数えられなかった流用先: ${v.unknown_volume.join("・")}（手入力の年間台数か、取り込みの台数に入れると数えます）`)
+    ? el("p", { class: "missing" }, `年間台数なし: ${v.unknown_volume.join("・")}`)
     : null;
   const heads = v.heads;
   const allHeads = table(
@@ -183,8 +183,7 @@ async function drawPart() {
   );
   document.getElementById("part-body").replaceChildren(
     title, main, summary, ...breakdown, premise, ...(unknown ? [unknown] : []),
-    el("h3", {}, "費目5つで並べる（今 → 後・円/台。未登録は「未登録」）"), allHeads,
-    el("p", { class: "muted" }, "型費は償却費なので、どの費目にも足さず「償却費＝型費」の欄に分けて出しています。BOM で使う製品の原価はすでに部品を含むので、部品の差は出しません。試算の製品は「今」が無い新製品として出します。"),
+    el("h3", {}, "費目別（今 → 後・円/台）"), allHeads,
   );
 }
 
@@ -217,11 +216,10 @@ async function drawChange() {
   else Object.assign(params, { new: document.getElementById("change-new").value.trim(), new_version: document.getElementById("change-new-version").value });
   const c = await api("GET", `/api/modelchange?${qs(params)}`);
   if (!params.old) document.getElementById("change-old").value = c.old_product;
-  const section = (title, kinds, note) => {
+  const section = (title, kinds) => {
     const rows = c.rows.filter((r) => kinds.includes(r.kind));
     return [
       el("h3", {}, `${title}（${rows.length} 件）`),
-      note ? el("p", { class: "muted" }, note) : null,
       table(
         ["区分", "元の部品", "新しい部品", numTh("元の数量"), numTh("新しい数量"), numTh("差")],
         rows.length
@@ -265,13 +263,13 @@ async function drawChange() {
         await drawChange();
       }) }, "消す")),
     )))
-    : el("p", { class: "muted" }, "この組の対応表はまだありません。");
+    : el("p", { class: "muted" }, "なし");
   document.getElementById("change-body").replaceChildren(
     el("div", { class: "detail-title" }, `${c.old_product}（版 ${c.old_version}）→ ${newLabel}`),
-    el("p", { class: "muted" }, c.direct_only ? "直下の子どうしを比べています。" : "子を持たない部品を、階層ごとに数量を掛けた1台あたりの使用数で比べています。"),
-    ...section("1. 同じ品番", ["SAME"], "自動で対応させ、数量の差だけを見ます。"),
-    ...section("2. 対応表で対応", ["MAPPED"], "品番は違うが対応する部品。下の対応表で結びます。"),
-    ...section("3. 片方だけ（足した・抜いた）", ["ADDED", "REMOVED"], "対応が無い部品です。替わった部品なら対応表に足すと 2 に移ります。"),
+    el("p", { class: "muted" }, c.direct_only ? "比べ方: 直下の子" : "比べ方: 末端の部品・1台あたりの使用数"),
+    ...section("1. 同じ品番", ["SAME"]),
+    ...section("2. 対応表で対応", ["MAPPED"]),
+    ...section("3. 片方だけ（足した・抜いた）", ["ADDED", "REMOVED"]),
     el("h3", {}, `部品の対応表（${c.old_product} → ${c.new_product}）`),
     maps,
     el("div", { class: "form-row" }, oldPart, oldBalloon, el("span", {}, "→"), newPart, newBalloon, addMap),
@@ -284,8 +282,8 @@ function field(label, input) {
   return el("label", {}, label, input);
 }
 
-function card(title, note, body) {
-  return el("section", { class: "panel" }, el("div", { class: "panel-head" }, el("h2", {}, title), el("span", { class: "muted" }, note)), el("div", { class: "screen-body" }, body));
+function card(title, body) {
+  return el("section", { class: "panel" }, el("div", { class: "panel-head" }, el("h2", {}, title)), el("div", { class: "screen-body" }, body));
 }
 
 async function renderManual(data) {
@@ -329,8 +327,7 @@ async function renderManual(data) {
       el("button", { type: "button", class: "primary", onclick: () => send("PUT", "/api/manual/items", {
         code: itemInputs.code.value, name: itemInputs.name.value, kind: itemInputs.kind.value,
         costs: Object.fromEntries(m.heads.map((h) => [h.id, costInputs[h.id].value])),
-      }) }, "保存（同じ品番は入れ替え）")),
-    el("p", { class: "muted" }, "空欄は未登録（0 円とは別）。手入力の品目と原価は版 manual に入り、どの版で計算しても上に重なります（同じ品番は手入力を採ります）。"),
+      }) }, "保存")),
   );
 
   // 年間台数
@@ -379,7 +376,6 @@ async function renderManual(data) {
         part: reusePart.value, product: reuseProduct.value, quantity: reuseQty.value, replaced_part: reuseOld.value,
         original: screenState.editing.reuse?.original,
       }) }, "保存")),
-    el("p", { class: "muted" }, "BOM の無い流用先です。流用先の年間台数は取り込みの台数（実績）か、上の手入力の台数（計画）を使います。"),
   );
 
   // 部品の対応表
@@ -403,15 +399,14 @@ async function renderManual(data) {
       el("button", { type: "button", class: "primary", onclick: () => (original
         ? send("PUT", "/api/partmaps", { ...mapBody(), original })
         : send("POST", "/api/partmaps", mapBody())) }, original ? "直して保存" : "足す")),
-    el("p", { class: "muted" }, "同じ品番は自動で対応するので、品番が替わった部品だけを入れます。モデルチェンジの比較の画面からも足せます。"),
   );
 
   document.getElementById("manual-body").replaceChildren(
-    card("試作品の品目と原価", "CSV に出ない試作品を量産品と同じ形で入れます。", items),
-    card("年間台数（新製品の計画）", "手で入れた台数は「新製品の計画」、取り込んだ台数は「量産の実績」として扱います。", volumes),
-    card("型費", "1個あたりの型費 ＝ 型費 ÷ 償却年数 ÷ 部品の年間の数（部品から見る画面で出します）。", molds),
-    card("流用先", "新しい部品を BOM の無い既存品に流用する予定を入れます。", reuse),
-    card("部品の対応表", "元の製品と新製品で、品番が替わった部品を結びます。", maps),
+    card("試作品の品目と原価", items),
+    card("年間台数（新製品の計画）", volumes),
+    card("型費", molds),
+    card("流用先", reuse),
+    card("部品の対応表", maps),
   );
 }
 
@@ -479,7 +474,6 @@ function drawMapping() {
   const sample = table(d.headers.map((h) => h || "（空）"), d.sample.map((r) => el("tr", {}, r.map((c) => el("td", {}, c)))), "grid");
   box.replaceChildren(
     el("div", { class: "detail-title" }, `${d.filename}${d.sheet ? `（シート ${d.sheet}）` : ""}・${d.row_count} 行・列 ${d.headers.length}`),
-    el("p", { class: "muted" }, tableDef.saved ? "この見出しの並びで保存した対応づけを当てています。変えると取り込むときに保存し直します。" : "項目ごとに元の列を選んでください（見出しの名前から推測して仮に選んでいます）。"),
     table(["モックの項目", "元の列"], rows),
     el("h3", {}, `先頭 ${d.sample.length} 行`),
     el("div", { class: "table-scroll sample" }, sample),
@@ -505,7 +499,7 @@ function drawMapping() {
 
 function drawPending() {
   const box = document.getElementById("import-pending");
-  if (!screenState.pending.length) { box.replaceChildren(el("p", { class: "muted" }, "まだありません。")); return; }
+  if (!screenState.pending.length) { box.replaceChildren(el("p", { class: "muted" }, "なし")); return; }
   box.replaceChildren(table(["ファイル", "表", "対応づけ", ""], screenState.pending.map((f, i) => el("tr", {},
     el("td", {}, `${f.filename}${f.sheet ? `（${f.sheet}）` : ""}`),
     el("td", {}, f.tableLabel),
@@ -515,7 +509,7 @@ function drawPending() {
 }
 
 async function runImport() {
-  if (!screenState.pending.length) throw new Error("取り込む一覧が空（ファイルを選んで一覧に加えてください）");
+  if (!screenState.pending.length) throw new Error("取り込む一覧が空");
   const result = await api("POST", "/api/import", {
     version_id: document.getElementById("import-version").value,
     note: document.getElementById("import-note").value,
@@ -533,14 +527,14 @@ async function runImport() {
 }
 
 function warningList(warnings) {
-  if (!warnings.length) return el("p", { class: "muted" }, "検証の警告はありません。");
+  if (!warnings.length) return el("p", { class: "muted" }, "警告なし");
   return el("div", {}, el("p", { class: "missing" }, `検証の警告 ${warnings.length} 件`), table(["ファイル", numTh("行"), "内容"], warnings.map((w) => el("tr", {},
     el("td", {}, w.file || "—"), numTd(w.row, { missing: "—" }), el("td", {}, w.message)))));
 }
 
 async function drawVersions() {
   const box = document.getElementById("version-list");
-  if (!state.versions.length) { box.replaceChildren(el("p", { class: "muted" }, "版はまだありません。")); return; }
+  if (!state.versions.length) { box.replaceChildren(el("p", { class: "muted" }, "なし")); return; }
   const detail = el("div", {});
   box.replaceChildren(
     table(["版", "取り込んだ日時", "元のファイル", "メモ", numTh("警告"), ""], state.versions.map((v) => el("tr", {},

@@ -68,7 +68,7 @@
 
   <section class="panel detail" id="detail-panel">
     <div class="panel-head"><h2>選んだ品目</h2></div>
-    <div id="detail" class="detail-body"><p class="muted">左の構成から品目を選んでください。</p></div>
+    <div id="detail" class="detail-body"></div>
   </section>
 
   <section class="panel history" id="history-panel">
@@ -89,7 +89,6 @@
   <section class="panel">
     <div class="panel-head">
       <h2>部品から見る</h2>
-      <span class="muted">部品を使う製品・流用先と、型費の載り方・原価の今と後を並べます（参考値・償却費除外）。</span>
     </div>
     <div class="form-row">
       <label>部品の品番 <input id="part-code" list="code-list-2" placeholder="例 X-610"></label>
@@ -99,7 +98,7 @@
       <div class="seg" id="part-allocation" role="group" aria-label="載せ方"></div>
       <button type="button" class="primary" id="part-show">見る</button>
     </div>
-    <div id="part-body" class="screen-body"><p class="muted">部品の品番を入れて「見る」を押してください。試算を選ぶと、その試算の製品は「土台＋変更」の構成で使用数を数えます。</p></div>
+    <div id="part-body" class="screen-body"></div>
   </section>
 </main>
 
@@ -107,7 +106,6 @@
   <section class="panel">
     <div class="panel-head">
       <h2>モデルチェンジの比較</h2>
-      <span class="muted">元の製品と新製品の構成を、同じ品番・対応表・片方だけの3段で並べます（1台あたりの使用数）。</span>
     </div>
     <div class="form-row">
       <label>元の製品 <input id="change-old" list="code-list-2" placeholder="例 A-100"></label>
@@ -120,7 +118,7 @@
       <label><input type="checkbox" id="change-direct"> 直下の子だけ比べる</label>
       <button type="button" class="primary" id="change-show">比べる</button>
     </div>
-    <div id="change-body" class="screen-body"><p class="muted">元の製品と新しい側を選んで「比べる」を押してください。試算を選ぶと、元の製品の既定は試算の土台です。</p></div>
+    <div id="change-body" class="screen-body"></div>
   </section>
 </main>
 
@@ -130,9 +128,7 @@
 
 <main class="screen" id="screen-import" hidden>
   <section class="panel">
-    <div class="panel-head"><h2>取り込み（CSV・Excel）</h2>
-      <span class="muted">ファイルごとに表と列を対応づけて一覧に加え、まとめて1つの版として取り込みます。対応づけは見出しの並びごとに保存し、次から自動で当てます。</span>
-    </div>
+    <div class="panel-head"><h2>取り込み（CSV・Excel）</h2></div>
     <div class="form-row">
       <label>ファイル <input type="file" id="import-file" accept=".csv,.xlsx,.xlsm"></label>
       <label id="import-sheet-label" hidden>シート <select id="import-sheet"></select></label>
@@ -141,7 +137,7 @@
     <div id="import-preview" class="screen-body"></div>
     <div class="screen-body">
       <h3>取り込む一覧</h3>
-      <div id="import-pending"><p class="muted">まだありません。</p></div>
+      <div id="import-pending"><p class="muted">なし</p></div>
       <div class="form-row">
         <label>版の ID <input id="import-version" placeholder="例 2026-10"></label>
         <label>メモ <input id="import-note"></label>
@@ -151,7 +147,7 @@
     </div>
   </section>
   <section class="panel">
-    <div class="panel-head"><h2>版の一覧</h2><span class="muted">試算が使っていない版は消せます（手入力の版 manual は一覧に出ず、消えません）。</span></div>
+    <div class="panel-head"><h2>版の一覧</h2></div>
     <div id="version-list" class="screen-body"></div>
   </section>
 </main>
@@ -164,7 +160,7 @@
     <label>名前 <input name="name" required></label>
     <label>土台の製品の品番 <input name="base" list="code-list" required></label>
     <label>試算の製品の品番 <input name="product_code" required></label>
-    <p class="muted">計算に使う版と費目は、上の帯で選んでいるもの（<span id="new-premise"></span>）を使います。</p>
+    <p class="muted">前提: <span id="new-premise"></span></p>
     <div class="dialog-buttons">
       <button type="button" id="new-cancel">やめる</button>
       <button type="submit" class="primary">作る</button>
@@ -175,7 +171,7 @@
 <dialog id="compare-dialog">
   <div class="dialog-body">
     <h2>版の比較</h2>
-    <p>今の試算を <select id="compare-version"></select> の原価で計算し直した、品目ごとの差です。</p>
+    <label>比べる版 <select id="compare-version"></select></label>
     <div id="compare-body"></div>
     <div class="dialog-buttons"><button type="button" id="compare-close">閉じる</button></div>
   </div>
