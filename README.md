@@ -12,7 +12,7 @@ the parts you need.
 
 | Folder | What it does | Language |
 |---|---|---|
-| (none yet) | | |
+| [curve-chart](curve-chart/) | Interactive chart of operating ranges (flow × head, log-log) from an Excel sheet; runs entirely in the browser | JavaScript |
 
 ## License
 
