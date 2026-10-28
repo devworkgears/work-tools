@@ -183,7 +183,7 @@ function renderErrors() {
   if (box.hidden) return;
   const title = document.createElement('div');
   title.className = 'errors-title';
-  title.textContent = `読み込みエラー ${state.loadErrors.length}件(該当データは表示から除外されています)`;
+  title.textContent = `読み込みエラー ${state.loadErrors.length}件`;
   box.appendChild(title);
   const ul = document.createElement('ul');
   for (const e of state.loadErrors) {
@@ -340,12 +340,12 @@ function updateDigiCount() {
   el('digi-count').textContent = `採取点 ${state.digitizer.points.length}`;
 }
 
-// リニア軸を含む較正時の注記
+// リニア軸を含む較正時の表示
 function linearNote() {
   const s = state.digitizer.scales;
   return s.q === 'linear' || s.h === 'linear'
-    ? '。リニア軸のため画像表示は近似(歪みます)が、採取座標は正確です'
-    : '(基準点を取り直すと再較正されます)';
+    ? '(リニア軸)'
+    : '';
 }
 
 // 較正基準点のQ/H入力値を検証して返す。対数軸は正の値のみ、リニア軸は0や負も許容
@@ -423,7 +423,7 @@ function initDigitizer() {
       d.p1 = null;
       d.p2 = null;
       el('digi-body').hidden = false;
-      digiStatus('未較正(画像は軸範囲全体に仮表示)');
+      digiStatus('未較正');
       update();
     };
     reader.readAsDataURL(file);

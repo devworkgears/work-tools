@@ -66,7 +66,7 @@
             <input type="range" id="digi-opacity" min="0" max="100" value="50">
           </label>
           <div class="digi-block">
-            <div class="digi-title">① 較正(実図上の2点の実座標を入力→チャート上でその点をクリック)</div>
+            <div class="digi-title">① 較正</div>
             <div class="row">
               <select id="digi-qscale">
                 <option value="log">Q軸: 対数</option>
@@ -87,10 +87,10 @@
               <button type="button" class="btn" id="digi-set1">点1をクリック指定</button>
               <button type="button" class="btn" id="digi-set2">点2をクリック指定</button>
             </div>
-            <div id="digi-calib-status" class="muted">未較正(画像は軸範囲全体に仮表示)</div>
+            <div id="digi-calib-status" class="muted">未較正</div>
           </div>
           <div class="digi-block">
-            <div class="digi-title">② 点の採取(チャートをクリックして点列を拾う)</div>
+            <div class="digi-title">② 点の採取</div>
             <label class="row">モデル名 <input type="text" id="digi-model" placeholder="PA-5.5"></label>
             <label class="row">カーブ
               <select id="digi-curve">
@@ -119,7 +119,6 @@
 
       <footer class="muted">
         <div id="app-version">dev版</div>
-        <div>データはこのPC内で処理され、外部に送信されません</div>
       </footer>
     </aside>
 
@@ -128,7 +127,7 @@
       <div id="chart-wrap">
         <svg id="chart"></svg>
         <div id="tooltip" hidden></div>
-        <div id="empty-hint">「サンプル表示」を押すか、Excelファイル(.xlsx)をここにドロップしてください</div>
+        <div id="empty-hint"></div>
       </div>
       <div id="status-bar"><span id="status-left"></span><span id="status-coords"></span></div>
     </main>

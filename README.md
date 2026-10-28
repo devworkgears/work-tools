@@ -1,19 +1,15 @@
 # work-tools
 
-Small, general-purpose tools for engineering work. Each tool lives in its own
-subfolder with its own README, so you can clone this repository and use only
-the parts you need.
+Small, general-purpose tools for engineering work. Each tool lives in its own subfolder with its own README.
 
-- All data in this repository is public information or dummy data.
-- Specifications are written in a generalized form; nothing here is tied to a
-  specific company, product line, or customer.
+All data here is public or dummy data.
 
 ## Tools
 
 | Folder | What it does | Language |
 |---|---|---|
-| [curve-chart](curve-chart/) | Interactive chart of operating ranges (flow × head, log-log) from an Excel sheet; runs entirely in the browser | JavaScript |
-| [bom-cost](bom-cost/) | Cost roll-up over a bill of materials: what-if part swaps, tooling cost allocation, cost-version comparison (calculation core; work in progress) | Python |
+| [curve-chart](curve-chart/) | Operating-range chart from Excel, in the browser | JavaScript |
+| [bom-cost](bom-cost/) | Bill-of-materials cost roll-up | Python |
 
 ## License
 
