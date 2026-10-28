@@ -1,0 +1,18 @@
+{
+  "name": "curve-chart",
+  "version": "0.3.1",
+  "private": true,
+  "type": "module",
+  "description": "運転範囲 可視化ツール",
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "serve": "python3 -m http.server 8000",
+    "build": "node tools/build.mjs"
+  },
+  "devDependencies": {
+    "d3": "^7.9.0",
+    "esbuild": "^0.28.1",
+    "jsdom": "^29.1.1",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
+  }
+}
