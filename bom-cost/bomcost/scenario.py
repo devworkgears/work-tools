@@ -10,6 +10,7 @@ from enum import Enum
 from typing import Iterable
 
 from .model import BomLine, Code, CostHead, Version
+from .mold import Allocation
 from .normalize import NumberLike, to_code, to_decimal
 from .rollup import CostResult, ScopePolicy, calculate_cost
 
@@ -41,7 +42,10 @@ class Change:
 
 @dataclass(frozen=True)
 class ChangeRecord:
-    """履歴の1行。そのときの原価と前提（版・費目）を残し、版を入れ替えても判断した時点の数字が残る。"""
+    """履歴の1行。そのときの原価と前提（版・費目・台数・型費の載せ方）を残し、版を入れ替えても判断した時点の数字が残る。
+
+    台数は試算の製品の年間台数、載せ方は型費の載せ方。決めていなければ None。
+    """
 
     sequence: int
     change: Change
@@ -50,6 +54,8 @@ class ChangeRecord:
     cost_before: Decimal | None
     cost_after: Decimal | None
     recorded_at: datetime
+    volume: Decimal | None = None
+    allocation: Allocation | None = None
 
     @property
     def difference(self) -> Decimal | None:
@@ -152,7 +158,14 @@ class Scenario:
             self.overrides(changes),
         )
 
-    def apply(self, change: Change, recorded_at: datetime | None = None) -> ChangeRecord:
+    def apply(
+        self,
+        change: Change,
+        recorded_at: datetime | None = None,
+        volume: NumberLike | None = None,
+        allocation: Allocation | None = None,
+    ) -> ChangeRecord:
+        """volume（試算の製品の年間台数）と allocation（型費の載せ方）は、履歴に前提として残すだけ。"""
         before = self.calculate().total
         after = self.calculate(changes=self.changes + (change,)).total
         record = ChangeRecord(
@@ -163,6 +176,8 @@ class Scenario:
             cost_before=before,
             cost_after=after,
             recorded_at=recorded_at or datetime.now(),
+            volume=None if volume is None else to_decimal(volume, name="年間台数"),
+            allocation=allocation,
         )
         self._history.append(record)
         return record

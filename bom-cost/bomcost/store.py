@@ -18,14 +18,15 @@ from .model import (
     BomLine,
     CostHead,
     CostRow,
+    ImportWarning,
     Item,
     Source,
     Version,
     Volume,
     overlay_manual,
 )
-from .mold import MoldCost, ReuseTarget
-from .normalize import to_code
+from .mold import Allocation, MoldCost, ReuseTarget
+from .normalize import to_code, to_optional_code
 from .rollup import Scope, ScopePolicy
 from .scenario import Change, ChangeKind, ChangeRecord, Scenario
 
@@ -36,7 +37,8 @@ CREATE TABLE IF NOT EXISTS version (
     version_id TEXT PRIMARY KEY,
     imported_at TEXT,
     source_name TEXT NOT NULL DEFAULT '',
-    note TEXT NOT NULL DEFAULT ''
+    note TEXT NOT NULL DEFAULT '',
+    warnings TEXT
 );
 CREATE TABLE IF NOT EXISTS item (
     version_id TEXT NOT NULL REFERENCES version(version_id) ON DELETE CASCADE,
@@ -96,7 +98,9 @@ CREATE TABLE IF NOT EXISTS part_map (
     old_product TEXT NOT NULL,
     new_product TEXT NOT NULL,
     old_part TEXT NOT NULL,
-    new_part TEXT NOT NULL
+    new_part TEXT NOT NULL,
+    old_balloon TEXT,
+    new_balloon TEXT
 );
 CREATE TABLE IF NOT EXISTS scope (
     code TEXT NOT NULL,
@@ -137,6 +141,8 @@ CREATE TABLE IF NOT EXISTS change (
     cost_after TEXT,
     version_id TEXT NOT NULL REFERENCES version(version_id),
     head TEXT NOT NULL,
+    volume TEXT,
+    allocation TEXT,
     PRIMARY KEY (scenario_id, sequence)
 );
 """
@@ -166,6 +172,15 @@ class VersionInfo:
     imported_at: datetime | None
     source_name: str
     note: str
+    warning_count: int = 0  # 取り込みの検証の結果（警告）の件数
+
+
+@dataclass(frozen=True)
+class PartMapRow:
+    old_part: str
+    new_part: str
+    old_balloon: str | None
+    new_balloon: str | None
 
 
 @dataclass(frozen=True)
@@ -182,6 +197,14 @@ def _text(value: Decimal | None) -> str | None:
 
 def _decimal(text: str | None) -> Decimal | None:
     return None if text is None else Decimal(text)
+
+
+def _warnings_json(warnings: Iterable[ImportWarning]) -> str:
+    return json.dumps([[w.file, w.row, w.message] for w in warnings], ensure_ascii=False)
+
+
+def _warnings_from_json(text: str | None) -> tuple[ImportWarning, ...]:
+    return () if text is None else tuple(ImportWarning(f, r, m) for f, r, m in json.loads(text))
 
 
 def _time(text: str | None) -> datetime | None:
@@ -212,8 +235,17 @@ class Store:
 
     # 版 ------------------------------------------------------------------
 
-    def save_version(self, version: Version, replace: bool = False) -> None:
-        """取り込みの版を保存する。同じ版 ID があれば replace=True のときだけ入れ替える。"""
+    def save_version(
+        self,
+        version: Version,
+        replace: bool = False,
+        warnings: Iterable[ImportWarning] | None = None,
+    ) -> None:
+        """取り込みの版を保存する。同じ版 ID があれば replace=True のときだけ入れ替える。
+
+        warnings は取り込みの検証の結果（VersionImport.warnings）。省けば version.warnings を保存する。
+        """
+        warnings_text = _warnings_json(version.warnings if warnings is None else warnings)
         if version.version_id == MANUAL_VERSION_ID:
             raise ValueError("manual は save_manual で保存する")
         if _has_manual_rows(version):
@@ -227,13 +259,15 @@ class Store:
             if exists:
                 self._delete_rows(version.version_id)
                 self._conn.execute(
-                    "UPDATE version SET imported_at = ?, source_name = ?, note = ? WHERE version_id = ?",
-                    (_iso(version.imported_at), version.source_name, version.note, version.version_id),
+                    "UPDATE version SET imported_at = ?, source_name = ?, note = ?, warnings = ? WHERE version_id = ?",
+                    (_iso(version.imported_at), version.source_name, version.note, warnings_text,
+                     version.version_id),
                 )
             else:
                 self._conn.execute(
-                    "INSERT INTO version (version_id, imported_at, source_name, note) VALUES (?, ?, ?, ?)",
-                    (version.version_id, _iso(version.imported_at), version.source_name, version.note),
+                    "INSERT INTO version (version_id, imported_at, source_name, note, warnings) VALUES (?, ?, ?, ?, ?)",
+                    (version.version_id, _iso(version.imported_at), version.source_name, version.note,
+                     warnings_text),
                 )
             self._insert_rows(version.version_id, version)
 
@@ -256,11 +290,11 @@ class Store:
     def list_versions(self) -> list[VersionInfo]:
         """取り込みの版の一覧（manual は含めない）。取り込んだ日時の新しい順。"""
         rows = self._conn.execute(
-            "SELECT version_id, imported_at, source_name, note FROM version WHERE version_id <> ? "
+            "SELECT version_id, imported_at, source_name, note, warnings FROM version WHERE version_id <> ? "
             "ORDER BY imported_at DESC, version_id DESC",
             (MANUAL_VERSION_ID,),
         ).fetchall()
-        return [VersionInfo(r[0], _time(r[1]), r[2], r[3]) for r in rows]
+        return [VersionInfo(r[0], _time(r[1]), r[2], r[3], len(_warnings_from_json(r[4]))) for r in rows]
 
     def delete_version(self, version_id: str) -> None:
         """版を消す。manual と、試算が使っている版は消せない。"""
@@ -309,11 +343,11 @@ class Store:
 
     def _load_rows(self, version_id: str, source: Source) -> Version:
         head = self._conn.execute(
-            "SELECT imported_at, source_name, note FROM version WHERE version_id = ?", (version_id,)
+            "SELECT imported_at, source_name, note, warnings FROM version WHERE version_id = ?", (version_id,)
         ).fetchone()
         if head is None:
             raise KeyError(f"版 {version_id} は無い")
-        v = Version(version_id, _time(head[0]), head[2], head[1])
+        v = Version(version_id, _time(head[0]), head[2], head[1], warnings=_warnings_from_json(head[3]))
         q = self._conn.execute
         for code, name, kind, lifecycle, has_children in q(
             "SELECT code, name, kind, lifecycle, has_children FROM item WHERE version_id = ? ORDER BY rowid",
@@ -384,11 +418,20 @@ class Store:
                 "DELETE FROM reuse_target WHERE part = ? AND product = ?", (target.part, target.product)
             )
 
-    def add_part_map(self, old_product: str, new_product: str, old_part: str, new_part: str) -> None:
+    def add_part_map(
+        self,
+        old_product: str,
+        new_product: str,
+        old_part: str,
+        new_part: str,
+        old_balloon: str | int | None = None,
+        new_balloon: str | int | None = None,
+    ) -> None:
         with self._conn:
             self._conn.execute(
-                "INSERT INTO part_map VALUES (?, ?, ?, ?)",
-                tuple(to_code(c) for c in (old_product, new_product, old_part, new_part)),
+                "INSERT INTO part_map VALUES (?, ?, ?, ?, ?, ?)",
+                (*(to_code(c) for c in (old_product, new_product, old_part, new_part)),
+                 to_optional_code(old_balloon, name="風船番号"), to_optional_code(new_balloon, name="風船番号")),
             )
 
     def part_map(self, old_product: str, new_product: str) -> dict[str, str]:
@@ -398,6 +441,15 @@ class Store:
             (to_code(old_product), to_code(new_product)),
         ).fetchall()
         return dict(rows)
+
+    def part_map_rows(self, old_product: str, new_product: str) -> list[PartMapRow]:
+        """part_map と同じ対応を、風船番号（空欄可）つきの行で返す。"""
+        rows = self._conn.execute(
+            "SELECT old_part, new_part, old_balloon, new_balloon FROM part_map "
+            "WHERE old_product = ? AND new_product = ? ORDER BY rowid",
+            (to_code(old_product), to_code(new_product)),
+        ).fetchall()
+        return [PartMapRow(*r) for r in rows]
 
     def save_scope_policy(self, policy: ScopePolicy) -> None:
         """費目の既定は品番 '*' の行、品目ごとの上書きはその品番の行として入れ替える。"""
@@ -477,12 +529,13 @@ class Store:
                 )
                 self._conn.execute("DELETE FROM change WHERE scenario_id = ?", (scenario.scenario_id,))
             self._conn.executemany(
-                "INSERT INTO change VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO change VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     (
                         scenario.scenario_id, r.sequence, r.recorded_at.isoformat(), r.change.kind.name,
                         r.change.part, r.change.replacement, str(r.change.quantity),
                         _text(r.cost_before), _text(r.cost_after), r.version_id, r.head.name,
+                        _text(r.volume), None if r.allocation is None else r.allocation.name,
                     )
                     for r in scenario.history
                 ],
@@ -507,10 +560,12 @@ class Store:
                 cost_before=_decimal(before),
                 cost_after=_decimal(after),
                 recorded_at=datetime.fromisoformat(at),
+                volume=_decimal(volume),
+                allocation=None if allocation is None else Allocation[allocation],
             )
-            for seq, at, kind, part, replacement, qty, before, after, ver, head in self._conn.execute(
+            for seq, at, kind, part, replacement, qty, before, after, ver, head, volume, allocation in self._conn.execute(
                 "SELECT sequence, recorded_at, kind, part, replacement, quantity, cost_before, cost_after, "
-                "version_id, head FROM change WHERE scenario_id = ? ORDER BY sequence",
+                "version_id, head, volume, allocation FROM change WHERE scenario_id = ? ORDER BY sequence",
                 (scenario_id,),
             )
         ]

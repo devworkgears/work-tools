@@ -18,10 +18,12 @@ from bomcost import (
     ColumnMap,
     CostHead,
     CostRow,
+    ImportWarning,
     Item,
     ManualOverlap,
     MissingColumnsError,
     MoldCost,
+    PartMapRow,
     ReuseTarget,
     Scenario,
     Scope,
@@ -440,6 +442,47 @@ class VersionsAndScenarios(unittest.TestCase):
         for n in range(15):
             self.store.save_version(Version(f"v{n:02d}", datetime(2027, 1, 1 + n)))
         self.assertEqual(len(self.store.list_versions()), 17)
+
+
+class MissingColumns(unittest.TestCase):
+    """設計書の ER 図にあって落ちていた欄（台数・載せ方・風船番号・検証の結果）。"""
+
+    setUp = VersionsAndScenarios.setUp
+    tearDown = VersionsAndScenarios.tearDown
+    scenario = VersionsAndScenarios.scenario
+
+    def test_change_keeps_volume_and_allocation(self) -> None:
+        s = self.scenario()  # 台数・載せ方を渡さない呼び方
+        self.assertEqual([(r.volume, r.allocation) for r in s.history], [(None, None)] * 3)
+        s.apply(Change(ChangeKind.ADD, "F-600"), datetime(2026, 10, 29, 11, 0),
+                volume="1200", allocation=Allocation.BY_USAGE)
+        scenario_id = self.store.save_scenario(s)
+        back = self.store.load_scenario(scenario_id)
+        self.assertEqual(back.history, s.history)
+        self.assertEqual([(r.volume, r.allocation) for r in back.history],
+                         [(None, None)] * 3 + [(Decimal(1200), Allocation.BY_USAGE)])
+
+    def test_part_map_balloons(self) -> None:
+        self.store.add_part_map("A-100", "A-200", "C-300", "C-310", "12", "15")
+        self.store.add_part_map("A-100", "A-200", "D-400", "D-410")
+        self.assertEqual(self.store.part_map("A-100", "A-200"), {"C-300": "C-310", "D-400": "D-410"})
+        self.assertEqual(
+            self.store.part_map_rows("A-100", "A-200"),
+            [PartMapRow("C-300", "C-310", "12", "15"), PartMapRow("D-400", "D-410", None, None)],
+        )
+
+    def test_version_warnings_round_trip(self) -> None:
+        imp = VersionImport(Version("2027-01", datetime(2027, 1, 5)))
+        imp.warnings.append(ImportWarning("bom.csv", 3, "数量が空"))
+        imp.warnings.append(ImportWarning("cost.csv", None, "見出しが多い"))
+        self.store.save_version(imp.version, warnings=imp.warnings)
+        self.assertEqual(self.store.load_version("2027-01").warnings, tuple(imp.warnings))
+        counts = {i.version_id: i.warning_count for i in self.store.list_versions()}
+        self.assertEqual((counts["2027-01"], counts["2026-10"]), (2, 0))
+        self.assertEqual(self.store.load_version("2026-10").warnings, ())
+        # 入れ替えると検証の結果も入れ替わる
+        self.store.save_version(Version("2027-01", datetime(2027, 1, 6)), replace=True)
+        self.assertEqual(self.store.load_version("2027-01").warnings, ())
 
 
 if __name__ == "__main__":

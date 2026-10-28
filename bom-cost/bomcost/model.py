@@ -180,6 +180,13 @@ class ManualOverlap:
     code: str
 
 
+@dataclass(frozen=True)
+class ImportWarning:
+    file: str
+    row: int | None  # ファイルの行番号（見出しが1行目）
+    message: str
+
+
 @dataclass
 class Version:
     """取り込み1回分の品目・構成・原価・年間台数。"""
@@ -194,6 +201,7 @@ class Version:
     _costs: dict[str, CostRow] = field(default_factory=dict, repr=False)
     volumes: dict[str, Volume] = field(default_factory=dict)
     manual_overlaps: tuple[ManualOverlap, ...] = ()
+    warnings: tuple[ImportWarning, ...] = ()  # 取り込みの検証の結果（保存と読み戻しで残す）
 
     def add_item(self, item: Item) -> None:
         self.items[item.code] = item
@@ -307,4 +315,5 @@ def overlay_manual(base: Version, manual: Version) -> Version:
         result.volumes[product] = replace(volume, source=Source.MANUAL)
 
     result.manual_overlaps = tuple(overlaps)
+    result.warnings = base.warnings
     return result

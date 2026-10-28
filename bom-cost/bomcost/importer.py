@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-from .model import BomLine, CostHead, CostRow, Item, Version, Volume, mbom_to_ebom
+from .model import BomLine, CostHead, CostRow, ImportWarning, Item, Version, Volume, mbom_to_ebom
 from .normalize import to_code
 
 VENDOR_DIR = Path(__file__).resolve().parent.parent / "vendor"
@@ -195,13 +195,6 @@ def read_table(path: str | Path, sheet: str | None = None) -> Table:
     if suffix in (".xlsx", ".xlsm"):
         return read_xlsx(path, sheet)
     raise ValueError(f"読めないファイルの種類: {path.name}（.csv・.xlsx）")
-
-
-@dataclass(frozen=True)
-class ImportWarning:
-    file: str
-    row: int | None  # ファイルの行番号（見出しが1行目）
-    message: str
 
 
 @dataclass
