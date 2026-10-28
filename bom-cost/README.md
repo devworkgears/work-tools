@@ -2,7 +2,7 @@
 
 型: 部品（計算部品）
 
-BOM（部品構成）と品番ごとの原価から、製品の原価を計算する Python の層です。画面とデータベースから切り離した純粋な計算だけを持ち、Python 3.12 の標準ライブラリだけで動きます。
+BOM（部品構成）と品番ごとの原価から、製品の原価を計算する Python の層です。CSV／Excel（.xlsx）の取り込みと SQLite への保存も持ちます。画面は持ちません。Python 3.12 の標準ライブラリと openpyxl（.xlsx を読むときだけ）で動きます。
 
 ## 計算するもの
 
@@ -16,16 +16,47 @@ BOM（部品構成）と品番ごとの原価から、製品の原価を計算�
 
 入力の型の揺れ（int の品番、"1,600" や float の金額、1/0/"1"/"0"/True/False のフラグ）は、データのクラスを作る時に1回だけそろえます。金額と数量は Decimal で持ちます（float は文字列を経由して Decimal にする）。
 
+## 品番と版
+
+- 品番は8桁、バリエーションは後ろに2桁を足した10桁。原価の表の MBOM の品番は後ろを 0 で埋めた11桁で、取り込むときに先頭10桁を取り、後ろ2桁が 00 なら8桁に戻す（`mbom_to_ebom`）。11桁でない品番は変換せずに取り込み、警告に出す
+- 品目の区分（製品／部品）・状態（量産／廃止）は元の記号のまま文字列で持つ
+- 取り込み1回分が1つの版。手で入れる品目・原価・構成・年間台数は消えない版 `manual` に置き、どの版を読むときも上に重ねる（同じ品番は `manual` を採り、重なりは `manual_overlaps` に出る）
+- 年間台数の種別は出どころで決まる: 取り込んだ台数は量産の実績、`manual` の台数は新製品の計画（型費の「新製品だけに載せる」が載せる先）
+- 版は自動では消えない。試算が使っている版と `manual` は消せない
+
 ## 使い方の例
 
 ```python
 from bomcost import BomLine, CostHead, CostRow, Version, calculate_cost
 
 v = Version("2026-10")
-v.add_bom_lines([BomLine("A-100", "1", "B-200", 2)])
-v.add_cost(CostRow.from_mbom("B-200000", {CostHead.MATERIAL: "1,600"}))
-print(calculate_cost(v, "A-100").total)  # 3200
+v.add_bom_lines([BomLine("AB123456", "1", "CD234567", 2)])
+v.add_cost(CostRow.from_mbom("CD234567000", {CostHead.MATERIAL: "1,600"}))
+print(calculate_cost(v, "AB123456").total)  # 3200
 ```
+
+取り込みと保存（列の対応づけは見出しの並びごとに保存し、同じ並びのファイルには次から自動で当たる）:
+
+```python
+from bomcost import ColumnMap, Store, Version, VersionImport, read_table
+
+store = Store("bom-cost.sqlite")
+table = read_table("構成.csv")  # .csv（UTF-8・Shift_JIS）か .xlsx
+column_map = store.find_column_map(table.headers, "bom_line")
+if column_map is None:
+    column_map = ColumnMap("bom_line", table.headers,
+                           {"parent": "親品番", "child": "子品番", "quantity": "数量", "balloon": "風船番号"})
+    store.save_column_map(column_map)
+imp = VersionImport(Version("2026-10"))
+imp.add_table(table, column_map)  # 製品ごとの表を何本でも。重複は畳み、数量の食い違いは残す
+print(imp.warnings)
+store.save_version(imp.version)
+v = store.load_version("2026-10")  # manual を重ねて読む
+```
+
+## .xlsx を読む準備
+
+`.xlsx` の読み込みは openpyxl を使います。`requirements.txt` の版をこのフォルダの `vendor/` に入れておけば、それを優先して読みます（例: `python -m pip install -r requirements.txt --target vendor`）。`vendor/` が無ければ手元の Python の openpyxl を使います。CSV だけなら要りません。
 
 ## 検証
 

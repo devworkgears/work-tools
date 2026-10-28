@@ -70,6 +70,13 @@ def to_optional_code(value: str | int | None, *, name: str = "品番") -> str | 
     return to_code(value, name=name)
 
 
+def to_symbol(value: str | int | float | None, *, name: str = "記号") -> str:
+    """区分・状態などの記号を文字列にそろえる。知らない記号も弾かない。空欄は空文字。"""
+    if value is None or (isinstance(value, str) and value.strip() == ""):
+        return ""
+    return to_code(value, name=name)
+
+
 _TRUE_TEXTS = {"1", "true", "yes"}
 _FALSE_TEXTS = {"0", "false", "no", ""}
 

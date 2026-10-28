@@ -6,7 +6,7 @@ from decimal import Decimal
 from enum import Enum
 from typing import Iterable
 
-from .model import BASE_SUFFIX, BASIC_HEADS, Code, CostHead, Version
+from .model import BASIC_HEADS, Code, CostHead, Version
 from .normalize import NumberLike, to_code, to_decimal
 
 # 「親の値 ≒ 子の足し上げ」とみなす幅（子の足し上げに対する割合）
@@ -37,7 +37,6 @@ def judge_double_counting(
     items: Iterable[Code] | None = None,
     near_tolerance: NumberLike = DEFAULT_NEAR_TOLERANCE,
     small_ratio: NumberLike = DEFAULT_SMALL_RATIO,
-    suffix: str = BASE_SUFFIX,
 ) -> tuple[Judgement, ...]:
     """親の品目ごと・4費目ごとに親の登録値と子の足し上げを比べ、製造原価は4費目の合計と比べる。
 
@@ -49,8 +48,8 @@ def judge_double_counting(
         parents = list(version.parents())
         with_manufacturing = [
             code
-            for code in _cost_codes(version, suffix)
-            if version.cost_value(code, CostHead.MANUFACTURING, suffix) is not None
+            for code in _cost_codes(version)
+            if version.cost_value(code, CostHead.MANUFACTURING) is not None
         ]
         targets = list(dict.fromkeys(parents + with_manufacturing))
     else:
@@ -60,8 +59,8 @@ def judge_double_counting(
     for code in targets:
         if version.children(code):
             for head in BASIC_HEADS:
-                results.append(_judge_children(version, code, head, near, small, suffix))
-        manufacturing = _judge_manufacturing(version, code, near, suffix)
+                results.append(_judge_children(version, code, head, near, small))
+        manufacturing = _judge_manufacturing(version, code, near)
         if manufacturing is not None:
             results.append(manufacturing)
     return tuple(results)
@@ -75,19 +74,19 @@ def tally(judgements: Iterable[Judgement]) -> dict[CostHead, Counter[Verdict]]:
     return counts
 
 
-def _cost_codes(version: Version, suffix: str) -> list[str]:
+def _cost_codes(version: Version) -> list[str]:
     codes = list(version.items)
     codes += [line.parent for line in version.lines] + [line.child for line in version.lines]
-    return [c for c in dict.fromkeys(codes) if version.cost_row(c, suffix) is not None]
+    return [c for c in dict.fromkeys(codes) if version.cost_row(c) is not None]
 
 
 def _judge_children(
-    version: Version, code: str, head: CostHead, near: Decimal, small: Decimal, suffix: str
+    version: Version, code: str, head: CostHead, near: Decimal, small: Decimal
 ) -> Judgement:
-    parent_value = version.cost_value(code, head, suffix)
+    parent_value = version.cost_value(code, head)
     children_sum = Decimal(0)
     for line in version.children(code):
-        child_value = version.cost_value(line.child, head, suffix)
+        child_value = version.cost_value(line.child, head)
         if child_value is None:
             return Judgement(code, head, parent_value, None, Verdict.UNDETERMINABLE)
         children_sum += line.quantity * child_value
@@ -102,11 +101,11 @@ def _judge_children(
     return Judgement(code, head, parent_value, children_sum, verdict)
 
 
-def _judge_manufacturing(version: Version, code: str, near: Decimal, suffix: str) -> Judgement | None:
-    manufacturing = version.cost_value(code, CostHead.MANUFACTURING, suffix)
+def _judge_manufacturing(version: Version, code: str, near: Decimal) -> Judgement | None:
+    manufacturing = version.cost_value(code, CostHead.MANUFACTURING)
     if manufacturing is None:
         return None
-    values = [version.cost_value(code, head, suffix) for head in BASIC_HEADS]
+    values = [version.cost_value(code, head) for head in BASIC_HEADS]
     if any(v is None for v in values):
         return Judgement(code, CostHead.MANUFACTURING, manufacturing, None, Verdict.UNDETERMINABLE)
     basic_sum = sum(values, Decimal(0))

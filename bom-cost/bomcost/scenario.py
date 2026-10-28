@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from enum import Enum
+from typing import Iterable
 
 from .model import BomLine, Code, CostHead, Version
 from .normalize import NumberLike, to_code, to_decimal
@@ -99,7 +100,10 @@ class Scenario:
         head: CostHead = CostHead.MATERIAL,
         policy: ScopePolicy | None = None,
         note: str = "",
+        history: Iterable[ChangeRecord] = (),
+        scenario_id: int | None = None,
     ) -> None:
+        """history は保存から読み戻すときに渡す。scenario_id は保存したときに振られる。"""
         self.name = name
         self.base = to_code(base, name="土台の品番")
         self.product_code = to_code(product_code, name="試算の製品の品番")
@@ -107,7 +111,8 @@ class Scenario:
         self.head = head
         self.policy = policy or ScopePolicy()
         self.note = note
-        self._history: list[ChangeRecord] = []
+        self.scenario_id = scenario_id
+        self._history: list[ChangeRecord] = list(history)
 
     @property
     def history(self) -> tuple[ChangeRecord, ...]:

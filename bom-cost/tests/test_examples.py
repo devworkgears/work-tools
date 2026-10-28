@@ -39,7 +39,7 @@ class RollupExamples(unittest.TestCase):
     def test_replace_c300_with_450(self) -> None:
         v = ex.version_2026_10()
         before = calculate_cost(v, "A-100", M, ex.policy()).total
-        v.add_cost(ex.CostRow.from_mbom("C-300000", {M: 450}))
+        v.add_cost(ex.CostRow("C-300", {M: 450}))
         after = calculate_cost(v, "A-100", M, ex.policy()).total
         self.assertEqual(after, d("4750"))
         self.assertEqual(after - before, d("-150"))

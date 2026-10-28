@@ -5,7 +5,7 @@ from decimal import Decimal
 from enum import Enum
 from typing import Mapping, Sequence
 
-from .model import BASE_SUFFIX, BomConflict, BomLine, Code, CostHead, Version
+from .model import BomConflict, BomLine, Code, CostHead, Version
 from .normalize import to_code
 
 # 構成の上書き（親品番 → その子の行）。差分モードの試算は、仮の製品の子をこれで差し替える。
@@ -44,6 +44,14 @@ class ScopePolicy:
     def scope_for(self, code: Code, head: CostHead) -> Scope:
         return self._overrides.get((to_code(code), head), self._defaults[head])
 
+    @property
+    def defaults(self) -> dict[CostHead, Scope]:
+        return dict(self._defaults)
+
+    @property
+    def overrides(self) -> dict[tuple[str, CostHead], Scope]:
+        return dict(self._overrides)
+
 
 @dataclass(frozen=True)
 class CostResult:
@@ -69,7 +77,6 @@ class CostCalculator:
         head: CostHead = CostHead.MATERIAL,
         policy: ScopePolicy | None = None,
         overrides: StructureOverrides | None = None,
-        suffix: str = BASE_SUFFIX,
     ) -> None:
         if head is CostHead.AMORTIZATION:
             raise ValueError("償却費の登録値は計算から外す（型費は別枠で扱う）")
@@ -77,7 +84,6 @@ class CostCalculator:
         self.head = head
         self.policy = policy or ScopePolicy()
         self._overrides = {to_code(k): tuple(v) for k, v in (overrides or {}).items()}
-        self._suffix = suffix
         self._memo: dict[str, Decimal | None] = {}
         self._missing: dict[str, None] = {}
         self._visited_parents: dict[str, None] = {}
@@ -103,7 +109,7 @@ class CostCalculator:
         return value
 
     def _compute(self, code: str) -> Decimal | None:
-        own = self.version.cost_value(code, self.head, self._suffix)
+        own = self.version.cost_value(code, self.head)
         lines = self.children(code)
         if not lines:
             if own is None:

@@ -12,17 +12,16 @@ from bomcost import (
     CostHead,
     CostRow,
     Item,
-    ItemKind,
     MatchKind,
     MoldCost,
     ReuseTarget,
     Scenario,
     Scope,
     ScopePolicy,
+    Source,
     Verdict,
     Version,
     Volume,
-    VolumeKind,
     allocate_mold_cost,
     calculate_cost,
     compare_structures,
@@ -50,7 +49,7 @@ class DecimalOnly(unittest.TestCase):
         row = CostRow("Q", {M: 1600.0})
         self.assertIsInstance(row.value(M), Decimal)
         self.assertEqual(MoldCost("Q", 2400000.0).amount, Decimal("2400000"))
-        self.assertEqual(Volume("P", 1000.0, VolumeKind.PLAN).annual, Decimal("1000"))
+        self.assertEqual(Volume("P", 1000.0).annual, Decimal("1000"))
 
     def test_float_int_and_text_give_same_result(self) -> None:
         totals = []
@@ -81,25 +80,25 @@ class InputVariations(unittest.TestCase):
         v = Version("t")
         v.add_bom_lines(
             [
-                BomLine(12345, 1, 67890, 2),
-                BomLine("12345", " 2 ", " 55555 ", "3"),
+                BomLine(12345, 1, 67890123, 2),
+                BomLine("12345", " 2 ", " 55555555 ", "3"),
             ]
         )
         v.add_costs(
             [
-                CostRow.from_mbom("67890000", {M: "1,600"}),
-                CostRow.from_mbom(55555000, {M: 500}),
+                CostRow.from_mbom("67890123000", {M: "1,600"}),
+                CostRow.from_mbom(55555555000, {M: 500}),
             ]
         )
         result = calculate_cost(v, " 12345 ", M)
         self.assertEqual(result.total, Decimal("4700"))
         self.assertEqual(calculate_cost(v, 12345, M).total, Decimal("4700"))
-        self.assertEqual({line.child for line in v.children(12345)}, {"67890", "55555"})
+        self.assertEqual({line.child for line in v.children(12345)}, {"67890123", "55555555"})
 
     def test_integral_float_code_joins_int_code(self) -> None:
         v = Version("t")
-        v.add_bom_lines([BomLine(12345.0, 1, 67890.0, 2)])
-        v.add_costs([CostRow.from_mbom("67890000", {M: 100})])
+        v.add_bom_lines([BomLine(12345.0, 1, 67890123.0, 2)])
+        v.add_costs([CostRow.from_mbom("67890123000", {M: 100})])
         self.assertEqual(calculate_cost(v, 12345, M).total, Decimal("200"))
         with self.assertRaises(TypeError):
             BomLine(12345.5, 1, 67890, 2)
@@ -113,10 +112,10 @@ class InputVariations(unittest.TestCase):
     def test_flags(self) -> None:
         for value, expected in ((1, True), (0, False), ("1", True), ("0", False), (True, True), (False, False)):
             with self.subTest(value=value):
-                item = Item("A", "名称", ItemKind.PART, has_children=value)
+                item = Item("A", "名称", "B", has_children=value)
                 self.assertIs(item.has_children, expected)
         with self.assertRaises(ValueError):
-            Item("A", "名称", ItemKind.PART, has_children=2)
+            Item("A", "名称", "B", has_children=2)
 
     def test_blank_cost_is_unregistered(self) -> None:
         row = CostRow("Q", {M: "", CostHead.DIRECT: None, CostHead.INDIRECT: "  ", CostHead.ADJUSTMENT: 0})
@@ -235,9 +234,9 @@ class MoldSum(unittest.TestCase):
     def test_by_usage_sum_with_uneven_division(self) -> None:
         v = Version("t")
         v.add_bom_lines([BomLine("P1", None, "N", 3), BomLine("P2", None, "N", 1)])
-        v.add_volume(Volume("P1", 777, VolumeKind.ACTUAL))
-        v.add_volume(Volume("P2", 1234, VolumeKind.PLAN))
-        v.add_volume(Volume("P3", 50, VolumeKind.ACTUAL))
+        v.add_volume(Volume("P1", 777))
+        v.add_volume(Volume("P2", 1234, Source.MANUAL))
+        v.add_volume(Volume("P3", 50))
         mold = MoldCost("N", 1000000, 3)
         a = allocate_mold_cost(v, mold, Allocation.BY_USAGE, [ReuseTarget("N", "P3", 7)])
         total = sum(sh.annual_total for sh in a.shares)
