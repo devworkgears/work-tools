@@ -13,6 +13,7 @@ the parts you need.
 | Folder | What it does | Language |
 |---|---|---|
 | [curve-chart](curve-chart/) | Interactive chart of operating ranges (flow × head, log-log) from an Excel sheet; runs entirely in the browser | JavaScript |
+| [bom-cost](bom-cost/) | Cost roll-up over a bill of materials: what-if part swaps, tooling cost allocation, cost-version comparison (calculation core; work in progress) | Python |
 
 ## License
 
