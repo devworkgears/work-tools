@@ -114,7 +114,7 @@ async function init() {
   state.tableColumns = state.meta.table_columns.map((c) => c.key);
   await loadLists();
   if (!state.versions.length) {
-    showMessage("版がまだありません（取り込みの画面は次の段で作ります。試すなら --demo で例の DB を作ってください）", "info");
+    showMessage("版がまだありません。「取り込み・版」の画面から CSV・Excel を取り込んでください（試すなら --demo で例の DB も作れます）。", "info");
     return;
   }
   if (!state.scenarios.length) {

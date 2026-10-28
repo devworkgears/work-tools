@@ -155,11 +155,15 @@ def decode_csv_bytes(data: bytes) -> str:
 
 def read_csv(path: str | Path) -> Table:
     path = Path(path)
-    text = decode_csv_bytes(path.read_bytes())
+    return _csv_table(path.name, path.read_bytes())
+
+
+def _csv_table(name: str, data: bytes) -> Table:
+    text = decode_csv_bytes(data)
     rows = list(csv.reader(io.StringIO(text, newline="")))
     if not rows:
-        return Table(path.name, (), ())
-    return Table(path.name, normalize_headers(rows[0]), tuple(tuple(r) for r in rows[1:]))
+        return Table(name, (), ())
+    return Table(name, normalize_headers(rows[0]), tuple(tuple(r) for r in rows[1:]))
 
 
 def load_openpyxl() -> Any:
@@ -195,6 +199,35 @@ def read_table(path: str | Path, sheet: str | None = None) -> Table:
     if suffix in (".xlsx", ".xlsm"):
         return read_xlsx(path, sheet)
     raise ValueError(f"読めないファイルの種類: {path.name}（.csv・.xlsx）")
+
+
+def xlsx_sheet_names(data: bytes) -> tuple[str, ...]:
+    """.xlsx の中身（バイト列）のシート名の並び。"""
+    workbook = load_openpyxl().load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    try:
+        return tuple(workbook.sheetnames)
+    finally:
+        workbook.close()
+
+
+def read_table_bytes(name: str, data: bytes, sheet: str | None = None) -> Table:
+    """画面から送られたファイルの中身を、ファイル名の拡張子で CSV と .xlsx に読み分ける。"""
+    suffix = Path(name).suffix.lower()
+    if suffix == ".csv":
+        return _csv_table(name, data)
+    if suffix in (".xlsx", ".xlsm"):
+        workbook = load_openpyxl().load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+        try:
+            if sheet is not None and sheet not in workbook.sheetnames:
+                raise ValueError(f"シート {sheet} は {name} に無い")
+            ws = workbook[sheet] if sheet is not None else workbook.worksheets[0]
+            rows = list(ws.iter_rows(values_only=True))
+        finally:
+            workbook.close()
+        if not rows:
+            return Table(name, (), ())
+        return Table(name, normalize_headers(rows[0]), tuple(tuple(r) for r in rows[1:]))
+    raise ValueError(f"読めないファイルの種類: {name}（.csv・.xlsx）")
 
 
 @dataclass

@@ -296,6 +296,13 @@ class Store:
         ).fetchall()
         return [VersionInfo(r[0], _time(r[1]), r[2], r[3], len(_warnings_from_json(r[4]))) for r in rows]
 
+    def version_warnings(self, version_id: str) -> tuple[ImportWarning, ...]:
+        """取り込みの検証の結果（保存した警告）。版が無ければ KeyError。"""
+        row = self._conn.execute("SELECT warnings FROM version WHERE version_id = ?", (version_id,)).fetchone()
+        if row is None:
+            raise KeyError(f"版 {version_id} は無い")
+        return _warnings_from_json(row[0])
+
     def delete_version(self, version_id: str) -> None:
         """版を消す。manual と、試算が使っている版は消せない。"""
         if version_id == MANUAL_VERSION_ID:
@@ -450,6 +457,32 @@ class Store:
             (to_code(old_product), to_code(new_product)),
         ).fetchall()
         return [PartMapRow(*r) for r in rows]
+
+    def part_map_pairs(self) -> list[tuple[str, str]]:
+        """対応表がある（元の製品, 新しい製品）の組。足した順。"""
+        rows = self._conn.execute(
+            "SELECT old_product, new_product FROM part_map GROUP BY old_product, new_product ORDER BY MIN(rowid)"
+        ).fetchall()
+        return [(r[0], r[1]) for r in rows]
+
+    def delete_part_map(
+        self,
+        old_product: str,
+        new_product: str,
+        old_part: str,
+        new_part: str,
+        old_balloon: str | int | None = None,
+        new_balloon: str | int | None = None,
+    ) -> int:
+        """対応表の行を消し、消した行の数を返す（風船番号の空欄どうしも同じとみなす）。"""
+        with self._conn:
+            cursor = self._conn.execute(
+                "DELETE FROM part_map WHERE old_product = ? AND new_product = ? AND old_part = ? AND new_part = ? "
+                "AND old_balloon IS ? AND new_balloon IS ?",
+                (*(to_code(c) for c in (old_product, new_product, old_part, new_part)),
+                 to_optional_code(old_balloon, name="風船番号"), to_optional_code(new_balloon, name="風船番号")),
+            )
+        return cursor.rowcount
 
     def save_scope_policy(self, policy: ScopePolicy) -> None:
         """費目の既定は品番 '*' の行、品目ごとの上書きはその品番の行として入れ替える。"""

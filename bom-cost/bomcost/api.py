@@ -341,6 +341,10 @@ class Api:
             ("POST", re.compile(r"/api/scenarios/(\d+)/export"), self.export),
             ("GET", re.compile(r"/api/scenarios/(\d+)/compare"), self.compare),
         ]
+        # 2段目の画面（取り込み・手入力・部品から見る・モデルチェンジ）。screens が api を読むので、ここで読む
+        from .screens import screen_routes
+
+        self._routes += [(m, re.compile(p), h) for m, p, h in screen_routes(self)]
 
     # 入口 ------------------------------------------------------------------
 

@@ -17,11 +17,14 @@ from urllib.parse import urlsplit
 
 from .api import Api, Response, error_response
 from .demo import build_demo
+from .screens import MAX_UPLOAD_BYTES
 from .store import Store
 
 HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 WEB_DIR = Path(__file__).resolve().parent / "web"
+# ファイルは base64 で送るので、取り込みの上限の 4/3 倍＋JSON の分。4本まとめて送る取り込みも入る
+MAX_BODY_BYTES = (MAX_UPLOAD_BYTES * 4 // 3) * 4 + 1024 * 1024
 STATIC_TYPES = {
     ".html": "text/html; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
@@ -62,6 +65,9 @@ def make_handler(call: Call) -> type[BaseHTTPRequestHandler]:
         def do_PUT(self) -> None:
             self._serve("PUT")
 
+        def do_DELETE(self) -> None:
+            self._serve("DELETE")
+
         def _serve(self, method: str) -> None:
             parts = urlsplit(self.path)
             try:
@@ -70,6 +76,10 @@ def make_handler(call: Call) -> type[BaseHTTPRequestHandler]:
                 length = -1
             if length < 0:
                 response = error_response(400, "Content-Length が数でない")
+            elif length > MAX_BODY_BYTES:
+                # 読まずに返すので、残りを受けないよう接続を閉じる
+                self.close_connection = True
+                response = error_response(413, f"送る内容が大きすぎる（上限 {MAX_BODY_BYTES // (1024 * 1024)} MB）")
             else:
                 body = self.rfile.read(length) if length else b""
                 if parts.path.startswith("/api/"):

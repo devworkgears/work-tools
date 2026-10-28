@@ -332,7 +332,7 @@ class StaticAndServer(unittest.TestCase):
         self.assertEqual(index.status, 200)
         self.assertIn("text/html", index.content_type)
         self.assertIn("BOM 原価モック", index.body.decode("utf-8"))
-        for name in ("/app.js", "/style.css"):
+        for name in ("/app.js", "/screens.js", "/style.css"):
             self.assertEqual(static_response(name).status, 200)
         for bad in ("/../app.py", "/nothing.js", "/..%2Fapp.py", "/sub/x.js"):
             self.assertEqual(static_response(bad).status, 404, bad)
