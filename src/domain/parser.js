@@ -20,7 +20,7 @@ export function toNumber(v) {
   return Number.isFinite(n) ? n : null;
 }
 
-// configシートの軸固定範囲(未決事項#4: 社内標準の図版仕様)。未指定・不正値は自動(null)
+// configシートの軸固定範囲(図版の標準仕様に合わせる用)。未指定・不正値は自動(null)
 const AXIS_CONFIG_KEYS = { axis_qmin: 'xmin', axis_qmax: 'xmax', axis_hmin: 'ymin', axis_hmax: 'ymax' };
 
 export function axisFromConfig(config) {

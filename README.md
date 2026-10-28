@@ -1,6 +1,6 @@
 # 運転範囲 可視化ツール
 
-選定図(流量×全揚程の対数-対数平面に各モデルの運転範囲を多角形で示す図)をインタラクティブに探索・可視化するツール。要件・設計は [curve-chart-requirements.md](./curve-chart-requirements.md)、DB化・選定システムへの拡張計画は [docs/ROADMAP.md](./docs/ROADMAP.md) を参照。
+選定図(流量×全揚程の対数-対数平面に各モデルの運転範囲を多角形で示す図)をインタラクティブに探索・可視化するツール。ブラウザだけで動き、データは外部に送信しない。
 
 ## 使い方
 
@@ -10,7 +10,7 @@ npm run serve   # = python3 -m http.server 8000
 ```
 
 1. 「サンプル表示」でデモデータを表示、または「テンプレDL」でExcel雛形を取得
-2. 雛形の `models` / `curves` / `config` シートに自社データを記入
+2. 雛形の `models` / `curves` / `config` シートに自分のデータを記入
 3. 「Excelを読み込む」またはチャート領域へドラッグ&ドロップ
 
 ## 機能(初版)
@@ -49,7 +49,7 @@ src/
 ├── domain/      # 純粋関数(移植対象): parser / geometry / envelope / query
 ├── ui/          # main(状態管理) / chart(SVG描画) / exporter
 ├── vendor/      # polygon-clipping(union外包用、esbuildで単一ファイル化)
-└── sample-data.js  # サンプル=テンプレートの中身
+└── sample-data.js  # サンプル=テンプレートの中身(架空の最小データ)
 tests/           # ドメイン層のテスト
 ```
 
@@ -95,8 +95,8 @@ npm run build   # → dist/curve-chart-vX.Y.Z.html(自己完結・約1MB)
 
 1. `npm pkg set version=X.Y.Z` でバージョンを上げる
 2. `npm run build`
-3. `git commit` → `gh release create vX.Y.Z dist/curve-chart-vX.Y.Z.html` で版管理(リポジトリはprivateのままでよい)
-4. 生成したHTMLファイルを社内ファイルサーバー・Teams等で配布
+3. `git commit` → `gh release create vX.Y.Z dist/curve-chart-vX.Y.Z.html` で版管理
+4. 生成したHTMLファイルを配布先に置く(ファイルサーバー・チャット等)
 
 ### 配布時の注意
 
