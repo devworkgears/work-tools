@@ -77,8 +77,11 @@ class CostCalculator:
         head: CostHead = CostHead.MATERIAL,
         policy: ScopePolicy | None = None,
         overrides: StructureOverrides | None = None,
+        *,
+        allow_amortization: bool = False,
     ) -> None:
-        if head is CostHead.AMORTIZATION:
+        """allow_amortization は償却費を他の費目と同じ足し上げで出したい呼び手（比べる表）だけが付ける。"""
+        if head is CostHead.AMORTIZATION and not allow_amortization:
             raise ValueError("償却費の登録値は計算から外す（型費は別枠で扱う）")
         self.version = version
         self.head = head

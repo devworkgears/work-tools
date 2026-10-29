@@ -1,8 +1,10 @@
 """製品群の API（製品の一覧・部品の検索・検討名ごとの替える・足す）。samples/ の CSV を取り込んだ DB で確かめる。ソケットは開かない。"""
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
+from urllib.parse import quote
 
 from bomcost import BomLine, Item, Version
 from bomcost.api import Api
@@ -263,6 +265,72 @@ class ChangeList(SampleDbCase):
         self.assertEqual((r["rows"], r["difference"]), ([], "0"))
 
 
+class Compare(SampleDbCase):
+    HEADS = ["MATERIAL", "AMORTIZATION", "ADJUSTMENT", "DIRECT", "INDIRECT", "MANUFACTURING"]
+
+    def compare(self, query: str) -> dict:
+        return self.ok("GET", "/api/group/compare", "version=2026-10" + query)
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.change("A-100", kind="REPLACE", part="B-200", replacement="X-610", quantity="2")
+        self.ok("POST", "/api/group/changes", body={"version_id": "2026-10", "name": "別の検討", "product": "A-100",
+                                                     "kind": "ADD", "part": "F-600", "quantity": "1"})
+
+    def test_base_row_then_one_row_per_name_with_scenario(self) -> None:
+        names = quote(json.dumps([NAME, "別の検討", "無い検討"]))
+        r = self.compare(f"&names={names}&ignore_amortization=1")
+        self.assertEqual([h["id"] for h in r["heads"]], self.HEADS)
+        self.assertEqual([h["label"] for h in r["heads"]], ["材料費", "償却費", "調整費", "直接費", "間接費", "製造原価"])
+        self.assertEqual([(x["kind"], x["product"], x["name"]) for x in r["rows"]],
+                         [("base", "A-100", None), ("trial", "A-100", NAME), ("trial", "A-100", "別の検討"),
+                          ("base", "K-200", None), ("base", "V-110", None)])
+        self.assertEqual([list(x["costs"]) for x in r["rows"]], [self.HEADS] * 5)
+        # 元＝版の構成、新＝土台＋変更（B-200 → X-610 ×2 は 200 − 2×1,600 ＋ 2×200・F-600 を足すと ＋250）
+        self.assertEqual([x["costs"]["MATERIAL"] for x in r["rows"]], ["200", "-2600", "450", "3000", "-50"])
+        self.assertEqual({x["costs"]["AMORTIZATION"] for x in r["rows"]}, {None})
+        self.assertIsNone(r["rows"][0]["costs"]["DIRECT"])  # 未登録は空
+        self.assertEqual(r["rows"][0]["product_name"], "土台の製品")
+        self.assertEqual(self.store.list_scenarios()[0].scenario_id, r["rows"][1]["scenario_id"])
+        # 名前が1つなら新の行も1つ。製品の絞り込みも効く
+        one = self.compare(f"&names={quote(NAME)}&q=土台&ignore_amortization=true")
+        self.assertEqual([(x["kind"], x["name"]) for x in one["rows"]], [("base", None), ("trial", NAME)])
+
+    def test_registered_values_of_replacement_move_new_row(self) -> None:
+        names = quote(json.dumps([NAME]))
+        before = self.compare(f"&names={names}&q=A-100&ignore_amortization=1")["rows"][1]["costs"]["MATERIAL"]
+        self.ok("PUT", "/api/manual/items", body={"code": "X-610", "name": "試作品", "costs": {"MATERIAL": "300"}})
+        rows = self.compare(f"&names={names}&q=A-100&ignore_amortization=1")["rows"]
+        self.assertEqual((before, rows[0]["costs"]["MATERIAL"], rows[1]["costs"]["MATERIAL"]), ("-2600", "200", "-2400"))
+
+    def test_amortization_summed_like_other_heads(self) -> None:
+        for code, name, amort in (("B-200", "部品B", "10"), ("C-300", "部品C", "5"), ("X-610", "試作品", "30")):
+            self.ok("PUT", "/api/manual/items", body={"code": code, "name": name, "kind": "B",
+                                                     "costs": {"AMORTIZATION": amort}})
+        rows = self.compare(f"&names={quote(NAME)}&q=A-100")["rows"]
+        # 元: 2×10 ＋ 3×5、新: 35 − 2×10 ＋ 2×30
+        self.assertEqual([x["costs"]["AMORTIZATION"] for x in rows], ["35", "75"])
+        # 親の A-100 自身は償却費が未登録なので、出せても未登録ありの印は付く
+        self.assertIn("AMORTIZATION", rows[0]["incomplete"])
+        self.assertNotIn("MATERIAL", rows[0]["incomplete"])
+
+    def test_amortization_missing_is_error_unless_ignored(self) -> None:
+        bad = self.call("GET", "/api/group/compare", f"version=2026-10&names={quote(NAME)}")
+        self.assert_error(bad, 400, "償却費")
+        self.assertIn(f"A-100（{NAME}）", bad.json()["error"])
+        ok = self.compare(f"&names={quote(NAME)}&ignore_amortization=1")
+        self.assertEqual(len(ok["rows"]), 4)
+
+    def test_input_errors(self) -> None:
+        self.assert_error(self.call("GET", "/api/group/compare", "version=2026-10"), 400, "names")
+        self.assert_error(self.call("GET", "/api/group/compare", "version=2026-10&names=%5Bx"), 400, "names")
+        self.assert_error(self.call("GET", "/api/group/compare", f"names={quote(NAME)}"), 400, "版")
+
+    def test_default_calculator_still_refuses_amortization(self) -> None:
+        self.assert_error(self.call("GET", "/api/group/products", f"version=2026-10&name={NAME}&head=AMORTIZATION"),
+                          400, "償却費")
+
+
 class ProductRule(unittest.TestCase):
     def test_kind_text_and_empty_kind(self) -> None:
         v = Version("t")
@@ -280,6 +348,9 @@ class ProductRule(unittest.TestCase):
         self.assertIn('data-screen="group"', index)
         self.assertIn("group.js", index)
         self.assertEqual(static_response("/group.js").status, 200)
+        self.assertIn('data-screen="compare"', index)
+        self.assertIn("compare.js", index)
+        self.assertEqual(static_response("/compare.js").status, 200)
 
 
 if __name__ == "__main__":

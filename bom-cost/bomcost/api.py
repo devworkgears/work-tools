@@ -148,8 +148,11 @@ def _change_text(change: Change) -> str:
 class _View:
     """1つの試算を、モード・費目・風船番号の分け方を決めて見る。原価は費目ごとに1回だけ計算して使い回す。"""
 
-    def __init__(self, scenario: Scenario, mode: str, head: CostHead, by_balloon: bool) -> None:
+    def __init__(
+        self, scenario: Scenario, mode: str, head: CostHead, by_balloon: bool, amortization: bool = False
+    ) -> None:
         self.scenario = scenario
+        self.amortization = amortization
         self.version = scenario.version
         self.mode = mode
         self.head = head
@@ -169,7 +172,8 @@ class _View:
 
     def calc(self, head: CostHead) -> CostCalculator:
         if head not in self._calcs:
-            self._calcs[head] = CostCalculator(self.version, head, self.scenario.policy, self.overrides)
+            self._calcs[head] = CostCalculator(self.version, head, self.scenario.policy, self.overrides,
+                                               allow_amortization=self.amortization)
         return self._calcs[head]
 
     def lines(self, code: str) -> tuple[BomLine, ...]:

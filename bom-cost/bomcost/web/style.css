@@ -139,8 +139,11 @@ table.grid tbody tr:hover { background: #f2f5f9; }
 .screen-body { padding: 10px 12px; }
 .screen-body h3 { font-size: 13px; margin: 14px 0 4px; }
 .form-row { display: flex; align-items: flex-end; gap: 8px 12px; flex-wrap: wrap; padding: 8px 12px; }
-.form-row label { display: grid; gap: 2px; font-size: 12px; color: var(--muted); }
+.form-row label, .form-row .field { display: grid; gap: 2px; font-size: 12px; color: var(--muted); }
 .form-row label input[type="checkbox"] { justify-self: start; }
+.check-list { display: flex; flex-wrap: wrap; gap: 2px 10px; max-width: 480px; }
+.form-row .check-list label { display: flex; align-items: center; gap: 4px; }
+tr.compare-trial td { background: #f7f9fb; }
 .cards { display: grid; gap: 10px; }
 .premise-line { font-size: 12px; color: var(--accent); background: var(--accent-soft); padding: 4px 8px; border-radius: 4px; }
 .table-scroll.sample { max-height: 180px; }

@@ -11,6 +11,7 @@
   <h1>BOM 原価モック</h1>
   <div class="seg" id="screen-seg" role="group" aria-label="画面">
     <button type="button" data-screen="group" class="on">製品群</button>
+    <button type="button" data-screen="compare">比べる</button>
     <button type="button" data-screen="product">製品から</button>
     <button type="button" data-screen="part">部品から</button>
     <button type="button" data-screen="change">モデルチェンジ</button>
@@ -104,6 +105,22 @@
   </section>
 </main>
 <datalist id="group-names"></datalist>
+
+<main class="screen" id="screen-compare" hidden>
+  <section class="panel">
+    <div class="panel-head">
+      <h2>比べる</h2>
+    </div>
+    <div class="form-row">
+      <label>版 <select id="cmp-version"></select></label>
+      <div class="field">試作品 <div class="check-list" id="cmp-names"></div></div>
+      <label>製品（品番・名称の一部） <input id="cmp-q"></label>
+      <label>償却費を無視 <input type="checkbox" id="cmp-ignore"></label>
+      <button type="button" class="primary" id="cmp-show">見る</button>
+    </div>
+    <div id="cmp-body" class="screen-body"></div>
+  </section>
+</main>
 
 <main class="screen" id="screen-part" hidden>
   <section class="panel">
@@ -201,5 +218,6 @@
 <script src="app.js"></script>
 <script src="screens.js"></script>
 <script src="group.js"></script>
+<script src="compare.js"></script>
 </body>
 </html>

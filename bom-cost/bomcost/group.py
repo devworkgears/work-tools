@@ -4,11 +4,12 @@
 変更は今の試算の変更（Api.add_change）に渡し、取り消しは今の undo を使う。
 """
 
+import json
 from collections import Counter
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Callable
 
-from .api import ApiError, Response, _head, _json_response, _known_codes, _require_known, _record_json, _s, _text_field, _View
+from .api import ApiError, Response, _flag, _head, _json_response, _known_codes, _require_known, _record_json, _s, _text_field, _View
 from .model import BomLine, CostHead, Version
 from .normalize import to_code
 from .scenario import ChangeKind, Scenario
@@ -20,6 +21,30 @@ DEFAULT_PRODUCT_LIMIT = 500
 DEFAULT_ROW_LIMIT = 2000
 MAX_LIMIT = 20000
 PRODUCT_KIND_TEXT = "製品"
+COMPARE_HEADS: tuple[CostHead, ...] = (
+    CostHead.MATERIAL,
+    CostHead.AMORTIZATION,
+    CostHead.ADJUSTMENT,
+    CostHead.DIRECT,
+    CostHead.INDIRECT,
+    CostHead.MANUFACTURING,
+)
+
+
+def _names(value: Any) -> list[str]:
+    """検討名の並び。JSON の配列の文字列か、1つの名前。空と重なりは除く。"""
+    text = str(value or "").strip()
+    if text.startswith("["):
+        try:
+            raw = json.loads(text)
+        except json.JSONDecodeError:
+            raise ApiError(400, f"検討名（names）を読めない: {text}") from None
+        if not isinstance(raw, list):
+            raise ApiError(400, f"検討名（names）を読めない: {text}")
+        items = [str(x).strip() for x in raw]
+    else:
+        items = [text]
+    return list(dict.fromkeys(x for x in items if x))
 
 
 def _limit(value: Any, default: int) -> int:
@@ -82,7 +107,81 @@ class Group:
             ("POST", r"/api/group/changes", self.add_change),
             ("GET", r"/api/group/tree", self.tree),
             ("POST", r"/api/group/scenarios", self.add_scenarios),
+            ("GET", r"/api/group/compare", self.compare),
         ]
+
+    # 比べる ------------------------------------------------------------------
+
+    def compare(self, params: dict[str, str]) -> Response:
+        """製品ごとに元（版の構成）の行と、試算がある検討名ごとの新（土台＋変更）の行を、6費目で並べる。
+
+        償却費が出せない（足し上げる範囲に登録値が1つも無い）行があれば 400。
+        ignore_amortization を付けると償却費は null で通す。incomplete は範囲のどこかに未登録がある費目。
+        """
+        version = self._version(params)
+        names = _names(params.get("names"))
+        if not names:
+            raise ApiError(400, "検討名（names）が空")
+        ignore = _flag(params.get("ignore_amortization"))
+        _, _, codes = self._products(version, params)
+        limit = _limit(params.get("limit"), DEFAULT_PRODUCT_LIMIT)
+        shown = codes[:limit]
+        rows: list[dict[str, Any]] = []
+        failed: list[str] = []
+        if shown:
+            policy = self.store.load_scope_policy()
+            bulk = _View(Scenario("", shown[0], f"{shown[0]}#", version, CostHead.MATERIAL, policy),
+                         "bulk", CostHead.MATERIAL, False, amortization=True)
+            scenario_ids = {n: self._scenarios(version, n) for n in names}
+            for code in shown:
+                product_name = self._name(version, code)
+                rows.append(self._compare_row(bulk, code, code, product_name, None, None, ignore, failed))
+                for n in names:
+                    sid = scenario_ids[n].get(code)
+                    if sid is None:
+                        continue
+                    view = _View(self.store.load_scenario(sid, version), "diff", CostHead.MATERIAL, False,
+                                 amortization=True)
+                    rows.append(self._compare_row(view, view.root, code, product_name, n, sid, ignore, failed))
+        if failed:
+            raise ApiError(400, "償却費を出せない（未登録あり）: " + "、".join(failed))
+        return _json_response(
+            {
+                "version_id": version.version_id,
+                "names": names,
+                "heads": [{"id": h.name, "label": h.value} for h in COMPARE_HEADS],
+                "ignore_amortization": ignore,
+                "count": len(codes),
+                "limit": limit,
+                "truncated": len(codes) > limit,
+                "rows": rows,
+            }
+        )
+
+    @staticmethod
+    def _compare_row(view: _View, root: str, code: str, product_name: str, name: str | None, sid: int | None,
+                     ignore: bool, failed: list[str]) -> dict[str, Any]:
+        costs: dict[str, str | None] = {}
+        incomplete: list[str] = []
+        for head in COMPARE_HEADS:
+            if head is CostHead.AMORTIZATION and ignore:
+                costs[head.name] = None
+                continue
+            value = view.cost(root, head)
+            if view.incomplete(root, head):
+                incomplete.append(head.name)
+            if value is None and head is CostHead.AMORTIZATION:
+                failed.append(code if name is None else f"{code}（{name}）")
+            costs[head.name] = _s(value)
+        return {
+            "kind": "base" if name is None else "trial",
+            "product": code,
+            "product_name": product_name,
+            "name": name,
+            "scenario_id": sid,
+            "costs": costs,
+            "incomplete": incomplete,
+        }
 
     # 変更の一覧 --------------------------------------------------------------
 
