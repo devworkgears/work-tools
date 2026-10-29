@@ -152,7 +152,7 @@ async function drawGroup() {
         addPart, addQty,
         el("button", { type: "button", onclick: () => guarded(() => groupChange(x.code, { kind: "ADD", part: addPart.value.trim(), quantity: addQty.value })) }, "足す"),
         withCost && x.change_count ? el("button", { type: "button", onclick: () => guarded(() => groupUndo(x.scenario_id)) }, "取り消す") : null,
-        withCost ? el("button", { type: "button", onclick: () => guarded(() => openGroupProduct(x.code)) }, "構成") : null),
+        el("button", { type: "button", onclick: () => guarded(() => openGroupProduct(x.code)) }, "構成")),
     );
   });
   const productHeads = ["品番", "名称", ...(withCost ? [numTh(`今（${p.head_label}）`), numTh("後"), numTh("差"), numTh("変更")] : []), ""];
