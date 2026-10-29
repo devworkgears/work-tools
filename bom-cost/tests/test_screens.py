@@ -9,6 +9,7 @@ from pathlib import Path
 from bomcost import Store
 from bomcost.api import Api, Response
 from bomcost.importer import load_openpyxl
+from bomcost.model import CostHead
 from test_app import DemoDbCase
 
 SAMPLES = Path(__file__).resolve().parent.parent / "samples"
@@ -162,6 +163,71 @@ class Import(EmptyDbCase):
         info = self.ok("GET", "/api/versions/info", f"version={second['version_id']}")
         self.assertEqual((info["dev_number"], info["revision"]), ("D-123", 2))
         self.assert_error(self.call("POST", "/api/import", body={"dev_number": " ", "files": []}), 400, "開発番号が空")
+
+    def test_cost_only_update(self) -> None:
+        cost_columns = {"mbom_code": "MBOM品番", "material": "材料費"}
+        self.ok("POST", "/api/import", body={"dev_number": "D-100", "dev_name": "架空ユニット", "files": [
+            csv_file("品目.csv", "品番,品名,区分\nP-1,製品P,P\nC-1,部品1,B\nC-2,部品2,B\n",
+                     table="item", columns={"code": "品番", "name": "品名", "kind": "区分"}),
+            csv_file("構成.csv", "親品番,子品番,員数\nP-1,C-1,2\nP-1,C-2,1\n",
+                     table="bom_line", columns={"parent": "親品番", "child": "子品番", "quantity": "員数"}),
+            csv_file("原価.csv", "MBOM品番,材料費\nC-1,10\nC-2,20\n", table="cost", columns=cost_columns),
+            csv_file("台数.csv", "製品品番,年間生産台数\nP-1,100\n",
+                     table="volume", columns={"product": "製品品番", "annual": "年間生産台数"}),
+        ]})
+        old_id = self.store.latest_revision("D-100").version_id
+        for change in ({"kind": "REPLACE", "part": "C-1", "replacement": "C-2"}, {"kind": "ADD", "part": "C-1"}):
+            self.ok("POST", "/api/group/changes",
+                    body={"name": "検討A", "product": "P-1", "version_id": old_id, **change})
+
+        result = self.ok("POST", "/api/import", body={"dev_number": "D-100", "cost_only": True, "files": [
+            csv_file("原価2.csv", "MBOM品番,材料費\nC-1,15\nX-9,5\n", table="cost", columns=cost_columns)]})
+        new_id = result["version_id"]
+        self.assertEqual((result["revision"], result["dev_name"], result["based_on"]), (2, "架空ユニット", old_id))
+        self.assertEqual((result["copied_scenarios"], result["copied_products"]), (1, 1))
+        self.assertTrue(any("X-9" in w["message"] for w in result["warnings"]))
+
+        old = self.store.load_version(old_id, with_manual=False)
+        new = self.store.load_version(new_id, with_manual=False)
+        # 構成・品目・年間台数は前の版のまま、原価はファイルにある品番だけ変わる
+        self.assertEqual((new.items, new.lines, new.volumes), (old.items, old.lines, old.volumes))
+        self.assertEqual(str(new.cost_row("C-1").value(CostHead.MATERIAL)), "15")
+        self.assertEqual(str(new.cost_row("C-2").value(CostHead.MATERIAL)), "20")
+        self.assertIsNone(new.cost_row("X-9"))
+
+        def changes(version_id: str) -> list[tuple]:
+            rows = self.ok("GET", "/api/group/changes", f"version={version_id}&name=検討A")["rows"]
+            return [(r["kind"], r["part"], r["replacement"], r["quantity"], r["cost_before"], r["cost_after"],
+                     r["version_id"]) for r in rows]
+
+        # 前の版の検討案は中身が変わらず、新しい版には同じ変更が新しい原価で並ぶ
+        self.assertEqual(changes(old_id), [("REPLACE", "C-1", "C-2", "1", "40", "50", old_id),
+                                           ("ADD", "C-1", None, "1", "50", "60", old_id)])
+        self.assertEqual(changes(new_id), [("REPLACE", "C-1", "C-2", "1", "50", "55", new_id),
+                                           ("ADD", "C-1", None, "1", "55", "70", new_id)])
+        scenarios = [(s.name, s.base, s.version_id) for s in self.store.list_scenarios()]
+        self.assertEqual(scenarios, [("検討A", "P-1", old_id), ("検討A", "P-1", new_id)])
+
+    def test_cost_only_keeps_heads_missing_from_the_file(self) -> None:
+        self.ok("POST", "/api/import", body={"dev_number": "D-200", "files": [
+            csv_file("原価.csv", "MBOM品番,材料費,直接費\nC-1,10,3\n", table="cost",
+                     columns={"mbom_code": "MBOM品番", "material": "材料費", "direct": "直接費"})]})
+        result = self.ok("POST", "/api/import", body={"dev_number": "D-200", "cost_only": True, "files": [
+            csv_file("原価2.csv", "MBOM品番,材料費\nC-1,15\n", table="cost",
+                     columns={"mbom_code": "MBOM品番", "material": "材料費"})]})
+        row = self.store.load_version(result["version_id"], with_manual=False).cost_row("C-1")
+        self.assertEqual((str(row.value(CostHead.MATERIAL)), str(row.value(CostHead.DIRECT))), ("15", "3"))
+
+    def test_cost_only_errors(self) -> None:
+        cost = csv_file("原価.csv", "MBOM品番,材料費\nC-1,10\n", table="cost",
+                        columns={"mbom_code": "MBOM品番", "material": "材料費"})
+        self.assert_error(self.call("POST", "/api/import", body={"dev_number": "D-900", "cost_only": True,
+                                                                 "files": [cost]}), 400, "既にある開発番号")
+        self.ok("POST", "/api/import", body={"dev_number": "D-900", "files": [cost]})
+        item = csv_file("品目.csv", ITEM_CSV, table="item", columns={"code": "品番", "name": "品名"})
+        self.assert_error(self.call("POST", "/api/import", body={"dev_number": "D-900", "cost_only": True,
+                                                                 "files": [cost, item]}), 400, "原価だけの更新")
+        self.assertEqual(len(self.ok("GET", "/api/versions")), 1)
 
     def test_conflict_is_a_warning(self) -> None:
         text = "親品番,風船番号,子品番,員数\nQ-1,1,Q-2,2\nQ-1,1,Q-2,3\n"

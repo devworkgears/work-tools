@@ -633,6 +633,14 @@ function fillDevName() {
   const latest = latestOfDevNumber(document.getElementById("import-dev-number").value.trim());
   const name = document.getElementById("import-dev-name");
   if (latest) name.value = latest.dev_name || "";
+  syncCostOnly();
+}
+
+// 原価だけの更新は既にある開発番号のときだけ選べる
+function syncCostOnly() {
+  const box = document.getElementById("import-cost-only");
+  box.disabled = !latestOfDevNumber(document.getElementById("import-dev-number").value.trim());
+  if (box.disabled) box.checked = false;
 }
 
 async function runImport() {
@@ -640,11 +648,13 @@ async function runImport() {
   const devNumber = document.getElementById("import-dev-number").value.trim();
   if (!devNumber) throw new Error("開発番号が空");
   const latest = latestOfDevNumber(devNumber);
+  const costOnly = Boolean(latest) && document.getElementById("import-cost-only").checked;
   if (latest && !confirm(`更新しますか？（第${latest.revision + 1}版になります）`)) return;
   const result = await api("POST", "/api/import", {
     dev_number: devNumber,
     dev_name: document.getElementById("import-dev-name").value,
     note: document.getElementById("import-note").value,
+    cost_only: costOnly,
     files: screenState.pending.map((f) => ({ filename: f.filename, content: f.content, sheet: f.sheet, table: f.table, columns: f.columns })),
   });
   screenState.pending = [];
@@ -653,10 +663,12 @@ async function runImport() {
   const box = document.getElementById("import-result");
   box.replaceChildren(
     closableTitle(`${versionLabel(result)} を取り込みました: 品目 ${c.items}・構成行 ${c.lines}・原価 ${c.costs}・年間台数 ${c.volumes}`, () => box.replaceChildren()),
+    result.cost_only ? el("p", {}, `写した検討案 ${result.copied_scenarios} 件`) : null,
     warningList(result.warnings),
   );
   showImportTab("list");
   await refreshLists();
+  syncCostOnly();
   await drawVersions();
 }
 
@@ -755,6 +767,7 @@ function wireScreens() {
   document.getElementById("import-table").addEventListener("change", drawMapping);
   document.getElementById("import-run").addEventListener("click", () => guarded(runImport));
   document.getElementById("import-dev-number").addEventListener("change", fillDevName);
+  document.getElementById("import-dev-number").addEventListener("input", syncCostOnly);
   document.querySelectorAll("#import-tabs button").forEach((b) => b.addEventListener("click", () => showImportTab(b.dataset.tab)));
 }
 

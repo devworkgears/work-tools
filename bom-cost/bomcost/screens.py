@@ -11,7 +11,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
-from .api import HEADS, ApiError, Response, _head, _json_response, _known_codes, _s, _text_field
+from .api import HEADS, ApiError, Response, _flag, _head, _json_response, _known_codes, _s, _text_field
 from .importer import (
     TABLE_FIELDS,
     ColumnMap,
@@ -21,8 +21,8 @@ from .importer import (
     read_table_bytes,
     xlsx_sheet_names,
 )
-from .model import MANUAL_VERSION_ID, CostHead, CostRow, ImportWarning, Item, Version, Volume
-from .group import PRODUCT_KIND_TEXT, Group, _Structure
+from .model import MANUAL_VERSION_ID, CostHead, CostRow, ImportWarning, Item, Version, Volume, overlay_manual
+from .group import PRODUCT_KIND_TEXT, Group, _Structure, _batches
 from .masterbook import MasterPlan, apply_plan, book_bytes, plan_book, plan_json, save_book
 from .modelchange import compare_structures
 from .mold import Allocation, MoldCost, ReuseTarget, allocate_mold_cost, part_users, reuse_impact
@@ -256,11 +256,15 @@ class Screens:
         files = body.get("files")
         if not isinstance(files, list) or not files:
             raise ApiError(400, "取り込むファイル（files）が空")
+        cost_only = _flag(body.get("cost_only"))
         previous = self.store.latest_revision(dev_number)
+        if cost_only and previous is None:
+            raise ApiError(400, f"原価だけの更新は既にある開発番号で行う（{dev_number} の版が無い）")
         revision = 1 if previous is None else previous.revision + 1
         dev_name = _optional_text(body, "dev_name") or ("" if previous is None else previous.dev_name)
         version_id = explicit_id or self.store.new_version_id(dev_number, revision)
-        imp = VersionImport(Version(version_id, imported_at=datetime.now().replace(microsecond=0),
+        imported_at = datetime.now().replace(microsecond=0)
+        imp = VersionImport(Version(version_id, imported_at=imported_at,
                                     note=_optional_text(body, "note"), dev_number=dev_number, dev_name=dev_name,
                                     revision=revision))
         maps: list[ColumnMap] = []
@@ -268,12 +272,18 @@ class Screens:
         for f in files:
             table, name, _ = self._read_upload(f)
             column_map = self._column_map(f, table)
+            if cost_only and column_map.table != "cost":
+                raise ApiError(400, f"原価だけの更新に{TABLE_LABELS[column_map.table]}の表は入れられない: {name}")
             imp.add_table(table, column_map)
             maps.append(column_map)
             used.append({"filename": name, "table": column_map.table, "rows": len(table.rows),
                          "columns": dict(column_map.columns)})
             if not table.rows:
                 imp.warnings.append(ImportWarning(name, None, "読める行が無い"))
+        copies: list[Scenario] = []
+        if previous is not None and cost_only:
+            imp.version = self._with_new_costs(previous.version_id, imp.version, imp.warnings)
+            copies = self._copied_scenarios(previous.version_id, imp.version, imported_at)
         warnings = list(imp.warnings)
         for conflict in imp.version.conflicts:
             parent, balloon, child = conflict.key
@@ -285,6 +295,8 @@ class Screens:
         self.store.save_version(imp.version, warnings=warnings)
         for column_map in maps:
             self.store.save_column_map(column_map)
+        for scenario in copies:
+            self.store.save_scenario(scenario)
         v = imp.version
         return _json_response(
             {
@@ -298,9 +310,63 @@ class Screens:
                            "volumes": len(v.volumes)},
                 "warnings": [_warning_json(w) for w in warnings],
                 "warning_count": len(warnings),
+                "cost_only": cost_only,
+                "based_on": previous.version_id if cost_only and previous is not None else None,
+                "copied_scenarios": len({s.name for s in copies}),
+                "copied_products": len(copies),
             },
             201,
         )
+
+    def _with_new_costs(self, previous_id: str, costs: Version, warnings: list[ImportWarning]) -> Version:
+        """前の版（manual を重ねない）の中身を写し、costs の原価で品番ごとに上書きした版。
+
+        前の版に無い品番の原価は取り込まず、warnings に足す。
+        """
+        previous = self.store.load_version(previous_id, with_manual=False)
+        v = Version(costs.version_id, costs.imported_at, costs.note, costs.source_name,
+                    dev_number=costs.dev_number, dev_name=costs.dev_name, revision=costs.revision)
+        v.add_items(previous.items.values())
+        v.add_bom_lines(previous.lines)
+        for conflict in previous.conflicts:
+            v.add_conflict(conflict.key, conflict.quantities)
+        v.add_costs(previous.cost_rows)
+        for volume in previous.volumes.values():
+            v.add_volume(volume)
+        known = _known_codes(previous)
+        before = {row.code: row for row in previous.cost_rows}
+        for row in costs.cost_rows:
+            if row.code in known:
+                # 空欄（列が無い費目も）は前の版の値を残す。材料費だけのファイルで他の費目を消さないため
+                old = before.get(row.code)
+                if old is not None:
+                    merged = {h: row.values[h] if row.values[h] is not None else old.values[h] for h in row.values}
+                    row = CostRow(row.code, merged, row.mbom_code or old.mbom_code, row.source)
+                v.add_cost(row)
+            else:
+                warnings.append(ImportWarning(costs.source_name, None,
+                                              f"品番 {row.code} は前の版 {previous_id} に無いので原価を取り込まなかった"))
+        return v
+
+    def _copied_scenarios(self, previous_id: str, imported: Version, recorded_at: datetime) -> list[Scenario]:
+        """前の版を使う試算を、新しい版の上に同じ名前・土台・変更の並びで作り直す（まだ保存しない）。
+
+        変更は記録のときと同じ apply_batch を通し、原価を新しい版で計算し直す。
+        """
+        version = overlay_manual(imported, self.store.load_manual())
+        policy = self.store.load_scope_policy()
+        copies = []
+        for info in self.store.list_scenarios():
+            if info.version_id != previous_id:
+                continue
+            old = self.store.load_scenario(info.scenario_id)
+            new = Scenario(old.name, old.base, old.product_code, version, old.head, policy, old.note)
+            new.calculate()
+            for records in _batches(old.history):
+                first = records[0]
+                new.apply_batch([r.change for r in records], recorded_at, first.volume, first.allocation)
+            copies.append(new)
+        return copies
 
     def version_info(self, params: dict[str, str]) -> Response:
         version_id = _param(params, "version", "版")
