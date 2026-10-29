@@ -14,6 +14,9 @@ const screenState = {
   masterCheck: null, // { body, result }: 取り込みの確認
   preview: null, // { file, content, data }
   pending: [], // 取り込む一覧
+  importTab: "run", // BOM 取込・版管理で選んでいるタブ
+  noteEditing: null, // メモを直している版の ID
+  warningOpen: null, // { version_id, info }: 開いている版の警告
 };
 
 // 共通 -------------------------------------------------------------------
@@ -461,7 +464,11 @@ async function masterBookBody() {
 function masterBookBar() {
   if (!screenState.masterFile) screenState.masterFile = el("input", { type: "file", accept: ".xlsx,.xlsm" });
   const open = () => guarded(async () => {
-    const r = await api("POST", "/api/master/book");
+    // 置き場のブックに取り込んでいない差があるなら、作り直して消す前に確かめる（ブックが無い・読めない時は作り直す）
+    const diff = await api("POST", "/api/master/check", {}).catch(() => null);
+    const keep = diff && diff.added + diff.changed > 0
+      && !confirm(`取り込んでいない差があります（追加 ${diff.added}件・変更 ${diff.changed}件）。ブックを作り直しますか？`);
+    const r = await api("POST", keep ? "/api/master/open" : "/api/master/book");
     showMessage(`${r.opened ? "開きました" : "書き出しました"}: ${r.path}`, "info");
   });
   const check = () => guarded(async () => {
@@ -514,8 +521,23 @@ function readAsBase64(file) {
   });
 }
 
+function showImportTab(key) {
+  screenState.importTab = key;
+  for (const b of document.querySelectorAll("#import-tabs button")) {
+    b.classList.toggle("on", b.dataset.tab === key);
+    b.setAttribute("aria-selected", String(b.dataset.tab === key));
+  }
+  document.getElementById("import-pane-run").hidden = key !== "run";
+  document.getElementById("import-pane-list").hidden = key !== "list";
+}
+
 async function enterImport() {
+  showImportTab(screenState.importTab);
   await drawVersions();
+}
+
+function closableTitle(text, onClose) {
+  return el("div", { class: "detail-title" }, text, " ", el("button", { type: "button", onclick: onClose }, "閉じる"));
 }
 
 async function previewFile(sheet) {
@@ -611,10 +633,12 @@ async function runImport() {
   screenState.pending = [];
   drawPending();
   const c = result.counts;
-  document.getElementById("import-result").replaceChildren(
-    el("div", { class: "detail-title" }, `版 ${result.version_id} を取り込みました: 品目 ${c.items}・構成行 ${c.lines}・原価 ${c.costs}・年間台数 ${c.volumes}`),
+  const box = document.getElementById("import-result");
+  box.replaceChildren(
+    closableTitle(`版 ${result.version_id} を取り込みました: 品目 ${c.items}・構成行 ${c.lines}・原価 ${c.costs}・年間台数 ${c.volumes}`, () => box.replaceChildren()),
     warningList(result.warnings),
   );
+  showImportTab("list");
   await refreshLists();
   await drawVersions();
 }
@@ -625,26 +649,57 @@ function warningList(warnings) {
     el("td", {}, w.file || "—"), numTd(w.row, { missing: "—" }), el("td", {}, w.message)))));
 }
 
+function noteCell(v) {
+  const edit = (id) => () => { screenState.noteEditing = id; drawVersions(); };
+  if (screenState.noteEditing !== v.version_id) {
+    return el("td", {}, v.note || "", " ", el("button", { type: "button", onclick: edit(v.version_id) }, "直す"));
+  }
+  const input = el("input", { value: v.note || "" });
+  const save = () => guarded(async () => {
+    await api("PUT", `/api/versions/note?${qs({ version: v.version_id })}`, { note: input.value });
+    screenState.noteEditing = null;
+    await refreshLists();
+    await drawVersions();
+    showMessage("保存しました。", "info");
+  });
+  input.addEventListener("keydown", (e) => e.key === "Enter" && save());
+  setTimeout(() => input.focus());
+  return el("td", {}, input,
+    el("button", { type: "button", class: "primary", onclick: save }, "保存"),
+    el("button", { type: "button", onclick: edit(null) }, "やめる"));
+}
+
+function warningDetail() {
+  const w = screenState.warningOpen;
+  if (!w || !state.versions.some((v) => v.version_id === w.version_id)) return null;
+  const info = w.info;
+  return el("div", {},
+    closableTitle(`版 ${info.version_id} の検証の結果`, () => { screenState.warningOpen = null; drawVersions(); }),
+    info.used_by.length ? el("p", { class: "muted" }, `使っている試算: ${info.used_by.join("・")}`) : null,
+    warningList(info.warnings));
+}
+
 async function drawVersions() {
   const box = document.getElementById("version-list");
   if (!state.versions.length) { box.replaceChildren(el("p", { class: "muted" }, "なし")); return; }
-  const detail = el("div", {});
+  const toggleWarnings = (id) => () => guarded(async () => {
+    screenState.warningOpen = screenState.warningOpen?.version_id === id
+      ? null
+      : { version_id: id, info: await api("GET", `/api/versions/info?${qs({ version: id })}`) };
+    await drawVersions();
+  });
   box.replaceChildren(
     table(["版", "取り込んだ日時", "元のファイル", "メモ", numTh("警告"), ""], state.versions.map((v) => el("tr", {},
       el("td", {}, v.version_id),
       el("td", {}, v.imported_at ? v.imported_at.replace("T", " ") : "—"),
       el("td", {}, v.source_name || "—"),
-      el("td", {}, v.note || ""),
+      noteCell(v),
       el("td", { class: `num ${v.warning_count ? "missing" : ""}` }, String(v.warning_count)),
       el("td", {},
-        el("button", { type: "button", onclick: () => guarded(async () => {
-          const info = await api("GET", `/api/versions/info?${qs({ version: v.version_id })}`);
-          detail.replaceChildren(
-            el("div", { class: "detail-title" }, `版 ${info.version_id} の検証の結果`),
-            info.used_by.length ? el("p", { class: "muted" }, `使っている試算: ${info.used_by.join("・")}`) : null,
-            warningList(info.warnings),
-          );
-        }) }, "警告を見る"),
+        el("button", {
+          type: "button", class: screenState.warningOpen?.version_id === v.version_id ? "on" : null,
+          onclick: toggleWarnings(v.version_id),
+        }, "警告を見る"),
         el("button", { type: "button", onclick: () => guarded(async () => {
           if (!confirm(`版 ${v.version_id} を消しますか？（元に戻せません）`)) return;
           await api("DELETE", `/api/versions?${qs({ version: v.version_id })}`);
@@ -653,7 +708,7 @@ async function drawVersions() {
           showMessage(`版 ${v.version_id} を消しました。`, "info");
         }) }, "消す")),
     ))),
-    detail,
+    warningDetail() ?? "",
   );
 }
 
@@ -680,6 +735,7 @@ function wireScreens() {
   document.getElementById("import-sheet").addEventListener("change", (e) => guarded(() => previewFile(e.target.value)));
   document.getElementById("import-table").addEventListener("change", drawMapping);
   document.getElementById("import-run").addEventListener("click", () => guarded(runImport));
+  document.querySelectorAll("#import-tabs button").forEach((b) => b.addEventListener("click", () => showImportTab(b.dataset.tab)));
 }
 
 wireScreens();

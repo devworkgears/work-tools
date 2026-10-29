@@ -347,6 +347,30 @@ class DeleteVersion(DemoDbCase):
         self.assertIn("manual は消せない", self.call("DELETE", "/api/versions", "version=manual").json()["error"])
 
 
+class VersionNote(EmptyDbCase):
+    def test_note_changes_and_nothing_else(self) -> None:
+        body = {"version_id": "2026-11", "note": "前",
+                "files": [csv_file("構成.csv", BOM_CSV, table="bom_line",
+                                   columns={"parent": "親品番", "child": "子品番", "quantity": "員数"})]}
+        self.assertEqual(self.call("POST", "/api/import", body=body).status, 201)
+        before = self.ok("GET", "/api/versions/info", "version=2026-11")
+        items_before = self.store.load_version("2026-11", with_manual=False)
+
+        listed = self.ok("PUT", "/api/versions/note", "version=2026-11", body={"note": "後"})
+        self.assertEqual([(v["version_id"], v["note"]) for v in listed], [("2026-11", "後")])
+        after = self.ok("GET", "/api/versions/info", "version=2026-11")
+        self.assertEqual(after, {**before, "note": "後"})
+        items_after = self.store.load_version("2026-11", with_manual=False)
+        self.assertEqual(items_after.lines, items_before.lines)
+        self.assertEqual(items_after.items, items_before.items)
+        self.assertEqual(self.ok("PUT", "/api/versions/note", "version=2026-11", body={})[0]["note"], "")
+
+    def test_missing_version_is_404(self) -> None:
+        self.assertEqual(self.call("PUT", "/api/versions/note", "version=nope", body={"note": "x"}).status, 404)
+        self.assertEqual(self.call("PUT", "/api/versions/note", "version=manual", body={"note": "x"}).status, 404)
+        self.assertEqual(self.call("PUT", "/api/versions/note", body={"note": "x"}).status, 400)
+
+
 class ServerLimits(unittest.TestCase):
     def test_delete_passes_and_oversized_body_is_413(self) -> None:
         import http.client

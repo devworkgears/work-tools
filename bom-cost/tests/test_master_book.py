@@ -196,6 +196,19 @@ class MasterBook(DemoDbCase):
         self.assertIn("開いたまま", response.json()["error"])
         self.assertEqual([p.name for p in self.path.parent.iterdir() if p.suffix == ".tmp"], [])
 
+    def test_open_only_does_not_rewrite(self) -> None:
+        self.assert_status(self.call("POST", "/api/master/open"), 404)
+        path = self.write_book()
+        self.edit(path, lambda wb: wb["製品"].append(["MP-9", "新製品9", 1]))
+        edited = path.read_bytes()
+        opened: list[Path] = []
+        self.api.open_file = opened.append
+        result = self.ok("POST", "/api/master/open")
+        self.assertTrue(result["opened"])
+        self.assertEqual(opened, [path])
+        self.assertEqual(path.read_bytes(), edited)
+        self.assertEqual(self.ok("POST", "/api/master/check")["added"], 1)
+
     def assert_status(self, response, status: int) -> None:
         self.assertEqual(response.status, status, response.body.decode("utf-8"))
 

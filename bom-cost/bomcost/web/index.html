@@ -194,7 +194,11 @@
 </main>
 
 <main class="screen" id="screen-import" hidden>
-  <section class="panel">
+  <div class="seg manual-tabs" id="import-tabs" role="tablist">
+    <button type="button" role="tab" data-tab="run" class="on" aria-selected="true">取込</button>
+    <button type="button" role="tab" data-tab="list" aria-selected="false">版の一覧</button>
+  </div>
+  <section class="panel" id="import-pane-run">
     <div class="panel-head"><h2>BOM 取込（CSV・Excel）</h2></div>
     <div class="form-row">
       <label>ファイル <input type="file" id="import-file" accept=".csv,.xlsx,.xlsm"></label>
@@ -210,11 +214,11 @@
         <label>メモ <input id="import-note"></label>
         <button type="button" class="primary" id="import-run">取り込む</button>
       </div>
-      <div id="import-result"></div>
     </div>
   </section>
-  <section class="panel">
+  <section class="panel" id="import-pane-list" hidden>
     <div class="panel-head"><h2>版の一覧</h2></div>
+    <div id="import-result" class="screen-body"></div>
     <div id="version-list" class="screen-body"></div>
   </section>
 </main>

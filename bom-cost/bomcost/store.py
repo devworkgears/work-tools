@@ -320,6 +320,15 @@ class Store:
             raise KeyError(f"版 {version_id} は無い")
         return _warnings_from_json(row[0])
 
+    def set_version_note(self, version_id: str, note: str) -> None:
+        """版のメモだけを書き換える。manual と無い版は KeyError。"""
+        if version_id == MANUAL_VERSION_ID:
+            raise KeyError(f"版 {version_id} は無い")
+        with self._conn:
+            cursor = self._conn.execute("UPDATE version SET note = ? WHERE version_id = ?", (note, version_id))
+        if cursor.rowcount == 0:
+            raise KeyError(f"版 {version_id} は無い")
+
     def delete_version(self, version_id: str) -> None:
         """版を消す。manual と、試算が使っている版は消せない。"""
         if version_id == MANUAL_VERSION_ID:

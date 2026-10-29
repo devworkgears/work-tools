@@ -129,6 +129,7 @@ class Screens:
             ("POST", r"/api/import", self.import_files),
             ("GET", r"/api/versions/info", self.version_info),
             ("DELETE", r"/api/versions", self.delete_version),
+            ("PUT", r"/api/versions/note", self.put_version_note),
             ("GET", r"/api/manual", self.manual),
             ("PUT", r"/api/manual/items", self.put_manual_item),
             ("DELETE", r"/api/manual/items", self.delete_manual_item),
@@ -143,6 +144,7 @@ class Screens:
             ("PUT", r"/api/partmaps", self.update_part_map),
             ("DELETE", r"/api/partmaps", self.delete_part_map),
             ("POST", r"/api/master/book", self.write_master_book),
+            ("POST", r"/api/master/open", self.open_master_book),
             ("POST", r"/api/master/check", self.check_master_book),
             ("POST", r"/api/master/apply", self.apply_master_book),
             ("GET", r"/api/parts/view", self.part_view),
@@ -304,6 +306,15 @@ class Screens:
     def delete_version(self, params: dict[str, str]) -> Response:
         """試算が使っている版は VersionInUseError（400）で消せない。"""
         self.store.delete_version(_param(params, "version", "版"))
+        return self.api.versions({})
+
+    def put_version_note(self, params: dict[str, str], body: dict[str, Any]) -> Response:
+        """版のメモだけを書き換え、版の一覧を返す。"""
+        version_id = _param(params, "version", "版")
+        try:
+            self.store.set_version_note(version_id, _optional_text(body, "note"))
+        except KeyError:
+            raise ApiError(404, f"版 {version_id} は無い") from None
         return self.api.versions({})
 
     # 手入力 ------------------------------------------------------------------
@@ -564,6 +575,16 @@ class Screens:
             raise ApiError(409, "ブックが Excel で開いたままで書き出せない（閉じてからもう一度）") from None
         except OSError as exc:
             raise ApiError(500, f"ブックを書き出せない: {exc.strerror or exc}") from None
+        return self._open_book(path)
+
+    def open_master_book(self, params: dict[str, str], body: dict[str, Any]) -> Response:
+        """置き場のブックを書き直さずに開く。無ければ 404。"""
+        path = self._book_path()
+        if not path.is_file():
+            raise ApiError(404, "ブックがまだ無い（先に［Excel で開く］）")
+        return self._open_book(path)
+
+    def _open_book(self, path: Path) -> Response:
         opened = False
         if self.api.open_file is not None:
             try:
