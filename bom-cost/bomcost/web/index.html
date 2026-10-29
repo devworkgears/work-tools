@@ -13,6 +13,7 @@
     <div class="seg">
       <button type="button" data-screen="import">BOM 取込・版管理</button>
       <button type="button" data-screen="manual">マスタ登録</button>
+      <button type="button" data-screen="lookup">品目照会</button>
     </div>
     <span class="nav-sep" aria-hidden="true"></span>
     <span class="nav-flow">設計変更シミュレーション：</span>
@@ -193,6 +194,20 @@
   <div class="cards" id="manual-body"></div>
 </main>
 
+<main class="screen" id="screen-lookup" hidden>
+  <section class="panel">
+    <div class="panel-head">
+      <h2>品目照会</h2>
+    </div>
+    <div class="form-row">
+      <label>版 <select id="look-version"></select></label>
+      <label>品番・名称 <input id="look-q" list="code-list-2" placeholder="例 B-200"></label>
+      <button type="button" class="primary" id="look-show">見る</button>
+    </div>
+    <div id="look-body" class="screen-body"></div>
+  </section>
+</main>
+
 <main class="screen" id="screen-import" hidden>
   <div class="seg manual-tabs" id="import-tabs" role="tablist">
     <button type="button" role="tab" data-tab="run" class="on" aria-selected="true">取込</button>
@@ -256,5 +271,6 @@
 <script src="group.js"></script>
 <script src="trial.js"></script>
 <script src="compare.js"></script>
+<script src="lookup.js"></script>
 </body>
 </html>

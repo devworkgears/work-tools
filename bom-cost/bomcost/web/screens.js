@@ -78,7 +78,7 @@ function numTd(text, opts) {
 
 // 画面の切り替え -----------------------------------------------------------
 
-const SCREENS = { product: "main-layout", group: "screen-group", trial: "screen-trial", compare: "screen-compare", part: "screen-part", change: "screen-change", manual: "screen-manual", import: "screen-import" };
+const SCREENS = { product: "main-layout", group: "screen-group", trial: "screen-trial", compare: "screen-compare", part: "screen-part", change: "screen-change", manual: "screen-manual", lookup: "screen-lookup", import: "screen-import" };
 
 async function showScreen(name) {
   screenState.screen = name;
@@ -97,6 +97,7 @@ async function showScreen(name) {
   else if (name === "part") await enterPart();
   else if (name === "change") await enterChange();
   else if (name === "manual") await renderManual();
+  else if (name === "lookup") await enterLookup();
   else if (name === "import") await enterImport();
 }
 
