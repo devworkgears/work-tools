@@ -96,11 +96,11 @@ let trialForm = null;
 const codeInput = (value = "") => el("input", { list: "code-list-2", placeholder: "品番", value, size: 10 });
 const qtyInput = (value) => el("input", { value, inputmode: "decimal", size: 4 });
 
-// 操作: { label, text: 文の部品, inputs: 文の中の欄, change: () => API へ送る変更 }
+// 操作: { label, text: 文の部品, inputs: 文の中の欄, change: () => API へ送る変更, code?: 品番の欄（無ければ登録して使う） }
 const replaceOp = (part, qty) => {
   const code = codeInput();
   const q = qtyInput(qty);
-  return { label: "替える", text: [`${part} を `, code, " に替える　数量 ", q], inputs: [code, q],
+  return { label: "替える", text: [`${part} を `, code, " に替える　数量 ", q], inputs: [code, q], code,
     change: () => ({ kind: "REPLACE", part, replacement: code.value.trim(), quantity: q.value }) };
 };
 const removeOp = (part, qty) => ({ label: "抜く", text: [`${part} を構成から抜く`], inputs: [],
@@ -114,9 +114,27 @@ const quantityOp = (part, qty) => {
 const addOp = (product, code = "") => {
   const c = codeInput(code);
   const q = qtyInput("1");
-  return { label: "足す", text: [`${product} の直下に `, c, " を ", q, " 個足す"], inputs: [c, q],
+  return { label: "足す", text: [`${product} の直下に `, c, " を ", q, " 個足す"], inputs: [c, q], code: c,
     change: () => ({ kind: "ADD", part: c.value.trim(), quantity: q.value }) };
 };
+
+// 品番の候補（loadCodes が版の品番を入れた datalist）に無い品番か。空は登録の対象にしない
+function unknownCode(input) {
+  const code = input.value.trim();
+  return Boolean(code) && ![...document.getElementById("code-list-2").options].some((o) => o.value === code);
+}
+
+// 品番が無い時に出す、部品として登録する欄（名称と費目）
+function registerPanel(op) {
+  const name = el("input", { placeholder: "名称", size: 12 });
+  const costs = state.meta.heads.map((h) => [h.id, el("input", { inputmode: "decimal", size: 8 })]);
+  const panel = el("div", { class: "change-register" },
+    el("label", {}, "名称 ", name),
+    state.meta.heads.map((h, i) => el("label", {}, `${h.label} `, costs[i][1])));
+  const body = () => ({ role: "part", code: op.code.value.trim(), name: name.value,
+    costs: Object.fromEntries(costs.map(([id, input]) => [id, input.value])) });
+  return { panel, inputs: [name, ...costs.map(([, input]) => input)], body };
+}
 
 function closeChangeForm() {
   trialForm?.remove();
@@ -133,17 +151,41 @@ function openChangeForm(row, product, ops) {
   const same = trialForm?.previousElementSibling === row;
   closeChangeForm();
   if (same) return;
-  const lines = ops.map((op, i) => ({ op, radio: el("input", { type: "radio", name: "trial-change-kind", checked: i === 0 }) }));
-  const sync = () => lines.forEach(({ op, radio }) => op.inputs.forEach((x) => { x.disabled = !radio.checked; }));
-  lines.forEach(({ radio }) => radio.addEventListener("change", sync));
+  const lines = ops.map((op, i) => ({ op, radio: el("input", { type: "radio", name: "trial-change-kind", checked: i === 0 }),
+    reg: op.code ? registerPanel(op) : null }));
+  const runButton = el("button", { type: "button", class: "primary" }, "実行");
+  const needsRegister = (line) => Boolean(line.reg) && unknownCode(line.op.code);
+  const sync = () => {
+    for (const line of lines) {
+      line.op.inputs.forEach((x) => { x.disabled = !line.radio.checked; });
+      if (line.reg) line.reg.panel.hidden = !(line.radio.checked && needsRegister(line));
+    }
+    const active = lines.find((l) => l.radio.checked);
+    runButton.textContent = needsRegister(active) ? `登録して${active.op.label}` : "実行";
+  };
+  lines.forEach(({ op, radio }) => {
+    radio.addEventListener("change", sync);
+    op.code?.addEventListener("input", sync);
+  });
   sync();
-  const run = () => guarded(() => trialChange(product, lines.find((l) => l.radio.checked).op.change()));
+  // 品番が無ければ部品として登録 → 品番の候補を読み直す → 変更。変更が通らなくても登録した部品は残す
+  runButton.addEventListener("click", () => guarded(async () => {
+    const line = lines.find((l) => l.radio.checked);
+    if (needsRegister(line)) {
+      await api("PUT", "/api/manual/items", line.reg.body());
+      await loadCodes(trialOpened.version);
+      sync();
+    }
+    await trialChange(product, line.op.change());
+  }));
   const colspan = [...row.children].reduce((n, td) => n + td.colSpan, 0);
   trialForm = el("tr", { class: "change-form" },
     el("td", { colspan },
-      lines.map(({ op, radio }) => el("div", { class: "change-line" }, el("label", {}, radio, " ", op.label), el("span", {}, op.text))),
+      lines.flatMap(({ op, radio, reg }) => [
+        el("div", { class: "change-line" }, el("label", {}, radio, " ", op.label), el("span", {}, op.text)),
+        reg?.panel]),
       el("div", { class: "change-buttons" },
-        el("button", { type: "button", class: "primary", onclick: run }, "実行"),
+        runButton,
         el("button", { type: "button", onclick: closeChangeForm }, "やめる"))));
   row.after(trialForm);
 }
