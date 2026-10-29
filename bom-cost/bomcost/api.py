@@ -9,6 +9,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs
 
@@ -358,8 +359,12 @@ class Api:
         ]
         # 2段目の画面（取り込み・手入力・部品から見る・モデルチェンジ）。screens が api を読むので、ここで読む
         from .group import group_routes
+        from .masterbook import default_opener
         from .screens import screen_routes
 
+        # マスタのブックの置き場（None なら DB と同じフォルダ）と、書いたブックを開く関数（None なら開かない）
+        self.master_dir: Path | None = None
+        self.open_file: Callable[[Path], None] | None = default_opener()
         self._routes += [(m, re.compile(p), h) for m, p, h in screen_routes(self) + group_routes(self)]
 
     # 入口 ------------------------------------------------------------------

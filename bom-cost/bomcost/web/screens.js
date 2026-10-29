@@ -10,6 +10,8 @@ const screenState = {
   manual: null,
   editing: {}, // マスタ登録の表ごとに「直す元」の行
   manualTab: "product", // マスタ登録で選んでいるタブ
+  masterFile: null, // マスタのブックを選ぶ欄（描き直しても選んだファイルを残すため1つを使い回す）
+  masterCheck: null, // { body, result }: 取り込みの確認
   preview: null, // { file, content, data }
   pending: [], // 取り込む一覧
 };
@@ -440,10 +442,65 @@ async function renderManual(data) {
     renderManual(screenState.manual);
   };
   document.getElementById("manual-body").replaceChildren(
+    masterBookBar(),
+    masterCheckPanel(),
     el("div", { class: "seg manual-tabs", role: "tablist" }, tabs.map(([key, label]) =>
       el("button", { type: "button", role: "tab", class: key === current[0] ? "on" : null, "aria-selected": String(key === current[0]), onclick: pick(key) }, label))),
     card(current[1], current[2]),
   );
+}
+
+// マスタのブック: 書き出して Excel で開く → 打ち込んで保存 → 取り込む（確認してから決定）
+async function masterBookBody() {
+  const file = screenState.masterFile?.files[0];
+  if (!file) return {};
+  if (file.size > MAX_FILE_BYTES) throw new Error(`${file.name} が大きすぎる（上限 16 MB）`);
+  return { filename: file.name, content: await readAsBase64(file) };
+}
+
+function masterBookBar() {
+  if (!screenState.masterFile) screenState.masterFile = el("input", { type: "file", accept: ".xlsx,.xlsm" });
+  const open = () => guarded(async () => {
+    const r = await api("POST", "/api/master/book");
+    showMessage(`${r.opened ? "開きました" : "書き出しました"}: ${r.path}`, "info");
+  });
+  const check = () => guarded(async () => {
+    const body = await masterBookBody();
+    screenState.masterCheck = { body, result: await api("POST", "/api/master/check", body) };
+    await renderManual(screenState.manual);
+  });
+  return el("div", { class: "form-row" },
+    el("button", { type: "button", onclick: open }, "Excel で開く"),
+    el("button", { type: "button", class: "primary", onclick: check }, "取り込む"),
+    field("ファイル", screenState.masterFile));
+}
+
+function masterCheckPanel() {
+  const c = screenState.masterCheck;
+  if (!c) return null;
+  const r = c.result;
+  const close = () => {
+    screenState.masterCheck = null;
+    renderManual(screenState.manual);
+  };
+  const apply = () => guarded(async () => {
+    const done = await api("POST", "/api/master/apply", c.body);
+    screenState.masterCheck = null;
+    screenState.masterFile.value = "";
+    await renderManual(done.manual);
+    showMessage(`取り込みました（追加 ${done.added}件・変更 ${done.changed}件）`, "info");
+  });
+  return card("取り込みの確認", [
+    el("p", {}, `追加 ${r.added}件・変更 ${r.changed}件`),
+    r.errors.length ? [
+      el("p", { class: "missing" }, `行の誤り ${r.errors.length}件`),
+      table(["シート", numTh("行"), "内容"], r.errors.map((e) => el("tr", {},
+        el("td", {}, e.sheet), el("td", { class: "num" }, e.row ?? ""), el("td", {}, e.message)))),
+    ] : null,
+    el("div", { class: "form-row" },
+      el("button", { type: "button", class: "primary", disabled: r.errors.length > 0 || r.added + r.changed === 0, onclick: apply }, "決定"),
+      el("button", { type: "button", onclick: close }, "やめる")),
+  ]);
 }
 
 // BOM 取込・版管理 --------------------------------------------------------------

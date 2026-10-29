@@ -226,6 +226,8 @@ class Store:
     """SQLite のファイル1つ（テストでは ":memory:"）。"""
 
     def __init__(self, path: str | Path) -> None:
+        # ファイルの DB の場所（":memory:" は None）。マスタのブックを同じフォルダに置くのに使う
+        self.path: Path | None = None if str(path) == ":memory:" else Path(path)
         self._conn = sqlite3.connect(str(path))
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.executescript(SCHEMA)
@@ -402,6 +404,33 @@ class Store:
         ):
             v.add_volume(Volume(product, Decimal(annual), source))
         return v
+
+    def apply_master(
+        self,
+        manual: Version | None,
+        molds: Iterable[MoldCost],
+        reuse: Iterable[ReuseTarget],
+        part_maps: Iterable[tuple[str, str, str, str, str | None, str | None]],
+    ) -> None:
+        """マスタのブックの取り込みを1回の書き込みで入れる（途中で落ちたら何も入らない）。
+
+        manual は入れ替える手入力の版（None なら触らない）。型費と流用先は同じキーを入れ替え、対応表は足す。
+        """
+        with self._conn:
+            if manual is not None:
+                self._delete_rows(MANUAL_VERSION_ID)
+                self._insert_rows(MANUAL_VERSION_ID, manual)
+            self._conn.executemany(
+                "INSERT OR REPLACE INTO mold_cost VALUES (?, ?, ?)",
+                [(m.part, str(m.amount), str(m.years)) for m in molds],
+            )
+            for t in reuse:
+                self._conn.execute("DELETE FROM reuse_target WHERE part = ? AND product = ?", (t.part, t.product))
+                self._conn.execute(
+                    "INSERT INTO reuse_target VALUES (?, ?, ?, ?)",
+                    (t.part, t.product, str(t.quantity_per_unit), t.replaced_part),
+                )
+            self._conn.executemany("INSERT INTO part_map VALUES (?, ?, ?, ?, ?, ?)", list(part_maps))
 
     # 手入力のデータと設定 -------------------------------------------------
 

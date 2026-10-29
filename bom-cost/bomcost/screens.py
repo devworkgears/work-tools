@@ -8,6 +8,7 @@ import base64
 import binascii
 from datetime import datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 from .api import HEADS, ApiError, Response, _head, _json_response, _known_codes, _s, _text_field
@@ -22,6 +23,7 @@ from .importer import (
 )
 from .model import MANUAL_VERSION_ID, CostHead, CostRow, ImportWarning, Item, Version, Volume
 from .group import PRODUCT_KIND_TEXT, Group, _Structure
+from .masterbook import MasterPlan, apply_plan, book_bytes, plan_book, plan_json, save_book
 from .modelchange import compare_structures
 from .mold import Allocation, MoldCost, ReuseTarget, allocate_mold_cost, part_users, reuse_impact
 from .normalize import to_code, to_decimal, to_optional_code
@@ -140,13 +142,17 @@ class Screens:
             ("POST", r"/api/partmaps", self.add_part_map),
             ("PUT", r"/api/partmaps", self.update_part_map),
             ("DELETE", r"/api/partmaps", self.delete_part_map),
+            ("POST", r"/api/master/book", self.write_master_book),
+            ("POST", r"/api/master/check", self.check_master_book),
+            ("POST", r"/api/master/apply", self.apply_master_book),
             ("GET", r"/api/parts/view", self.part_view),
             ("GET", r"/api/modelchange", self.model_change),
         ]
 
     # 取り込み ----------------------------------------------------------------
 
-    def _read_upload(self, f: Any) -> tuple[Table, str, bytes]:
+    @staticmethod
+    def _upload_bytes(f: Any) -> tuple[str, bytes]:
         if not isinstance(f, dict):
             raise ApiError(400, "ファイルの指定はオブジェクトで送る")
         name = _text_field(f, "filename", "ファイル名")
@@ -156,9 +162,12 @@ class Screens:
         if len(content) > MAX_UPLOAD_BYTES * 4 // 3 + 4:
             raise ApiError(413, f"{name} が大きすぎる（上限 {MAX_UPLOAD_BYTES // (1024 * 1024)} MB）")
         try:
-            data = base64.b64decode(content, validate=True)
+            return name, base64.b64decode(content, validate=True)
         except (binascii.Error, ValueError):
             raise ApiError(400, f"{name} の中身を base64 として読めない") from None
+
+    def _read_upload(self, f: Any) -> tuple[Table, str, bytes]:
+        name, data = self._upload_bytes(f)
         sheet = _optional_text(f, "sheet") or None
         try:
             table = read_table_bytes(name, data, sheet)
@@ -533,6 +542,71 @@ class Screens:
         if self.store.delete_part_map(*self._part_map_key(dict(params))) == 0:
             raise ApiError(404, "対応表の行が無い")
         return _json_response(self._part_map_rows())
+
+    # マスタのブック（Excel で開いて打ち込み、まとめて取り込む） ----------------
+
+    def _book_path(self) -> Path:
+        folder = self.api.master_dir
+        if folder is None:
+            if self.store.path is None:
+                raise ApiError(400, "DB がファイルでないのでブックの置き場が無い")
+            folder = self.store.path.parent
+        stem = "bom-cost" if self.store.path is None else self.store.path.stem
+        return Path(folder) / f"{stem}-master.xlsx"
+
+    def write_master_book(self, params: dict[str, str], body: dict[str, Any]) -> Response:
+        """今の登録をブックに書き、Windows では既定のアプリで開く。開けない環境ではパスを返すだけ。"""
+        path = self._book_path()
+        data = book_bytes(self.store, self._product_kind({}))
+        try:
+            save_book(path, data)
+        except PermissionError:
+            raise ApiError(409, "ブックが Excel で開いたままで書き出せない（閉じてからもう一度）") from None
+        except OSError as exc:
+            raise ApiError(500, f"ブックを書き出せない: {exc.strerror or exc}") from None
+        opened = False
+        if self.api.open_file is not None:
+            try:
+                self.api.open_file(path)
+                opened = True
+            except OSError:
+                pass
+        return _json_response({"path": str(path), "opened": opened})
+
+    def _master_plan(self, body: dict[str, Any]) -> tuple[str, MasterPlan]:
+        """body に content があれば送られたブック、無ければ置き場のブックを読む。"""
+        if body.get("content"):
+            name, data = self._upload_bytes(body)
+            if not name.lower().endswith((".xlsx", ".xlsm")):
+                raise ApiError(400, f"{name} は Excel のブック（.xlsx）でない")
+        else:
+            path = self._book_path()
+            name = str(path)
+            try:
+                data = path.read_bytes()
+            except FileNotFoundError:
+                raise ApiError(404, "ブックがまだ無い（先に［Excel で開く］）") from None
+            except PermissionError:
+                raise ApiError(409, "ブックを読めない（Excel が開いたまま？）") from None
+        try:
+            plan = plan_book(self.store, self._product_kind({}), data)
+        except Exception:  # 壊れた .xlsx は zipfile などの例外で落ちるので、まとめて読めないとする
+            raise ApiError(400, f"{name} を Excel のブックとして読めない") from None
+        return name, plan
+
+    def check_master_book(self, params: dict[str, str], body: dict[str, Any]) -> Response:
+        """ブックと今の登録の差（追加・変更・同じの件数）と行の誤りを返す。何も保存しない。"""
+        name, plan = self._master_plan(body)
+        return _json_response({"source": name, **plan_json(plan)})
+
+    def apply_master_book(self, params: dict[str, str], body: dict[str, Any]) -> Response:
+        """ブックを読み直して入れる。行の誤りが1つでもあれば何も入れず 400（errors つき）。"""
+        name, plan = self._master_plan(body)
+        if plan.errors:
+            return _json_response({"error": f"行の誤りが {len(plan.errors)} 件あるので取り込まない",
+                                   "source": name, **plan_json(plan)}, 400)
+        apply_plan(self.store, plan)
+        return _json_response({"source": name, **plan_json(plan), "manual": self.manual({}).json()})
 
     # 部品から見る ------------------------------------------------------------
 
