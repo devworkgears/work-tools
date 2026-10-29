@@ -1,4 +1,4 @@
-// 画面の2段目: 部品から見る・モデルチェンジ・手入力・取り込みと版。app.js の el・fmt・money・api・guarded を使う。
+// 画面の2段目: 型費配賦・積上げ見積・マスタ登録・BOM 取込と版管理。app.js の el・fmt・money・api・guarded を使う。
 // 原価は API が出した Decimal の文字列をそのまま出し、ここでは計算しない。
 "use strict";
 
@@ -8,8 +8,8 @@ const screenState = {
   allocation: "BY_USAGE",
   allocations: [],
   manual: null,
-  editing: {}, // 情報登録の表ごとに「直す元」の行
-  manualTab: "product", // 情報登録で選んでいるタブ
+  editing: {}, // マスタ登録の表ごとに「直す元」の行
+  manualTab: "product", // マスタ登録で選んでいるタブ
   preview: null, // { file, content, data }
   pending: [], // 取り込む一覧
 };
@@ -77,6 +77,9 @@ const SCREENS = { product: "main-layout", group: "screen-group", trial: "screen-
 async function showScreen(name) {
   screenState.screen = name;
   setSeg("screen-seg", "screen", name);
+  const more = document.getElementById("screen-more");
+  more.open = false;
+  more.querySelector("summary").classList.toggle("on", Boolean(more.querySelector(`[data-screen="${name}"]`)));
   for (const [key, id] of Object.entries(SCREENS)) document.getElementById(id).hidden = key !== name;
   document.getElementById("product-controls").hidden = name !== "product";
   showMessage("");
@@ -91,7 +94,7 @@ async function showScreen(name) {
   else if (name === "import") await enterImport();
 }
 
-// 部品から見る --------------------------------------------------------------
+// 型費配賦 --------------------------------------------------------------
 
 async function enterPart() {
   const version = document.getElementById("part-version");
@@ -130,7 +133,7 @@ async function drawPart() {
   })}`);
   const p = v.premises;
   const mold = v.mold ? `型費 ${fmt(v.mold.amount)} 円・${fmt(v.mold.years)}年` : "型費 未登録";
-  const title = el("div", { class: "detail-title" }, `部品から見る: ${v.part}（${[v.name, mold].filter(Boolean).join("・")}）`);
+  const title = el("div", { class: "detail-title" }, `型費配賦: ${v.part}（${[v.name, mold].filter(Boolean).join("・")}）`);
   const headLabel = p.head_label;
   const rows = v.rows.map((r) =>
     el(
@@ -191,7 +194,7 @@ async function drawPart() {
   );
 }
 
-// モデルチェンジ ------------------------------------------------------------
+// 積上げ見積 ------------------------------------------------------------
 
 async function enterChange() {
   const oldV = document.getElementById("change-old-version");
@@ -280,7 +283,7 @@ async function drawChange() {
   );
 }
 
-// 情報登録（手入力の版） -----------------------------------------------------
+// マスタ登録（手入力の版） -----------------------------------------------------
 
 function field(label, input) {
   return el("label", {}, label, input);
@@ -337,7 +340,7 @@ async function renderManual(data) {
       el("td", {}, t.code), el("td", {}, t.name), el("td", {}, t.base), el("td", {}, t.trial_name), el("td", {}, t.version_id),
       m.heads.map(() => el("td", {}, "")), el("td", {}))),
   ];
-  const productHeads = ["品番", "名称", "土台", "試作品", "版", ...m.heads.map((h) => numTh(h.label)), ""];
+  const productHeads = ["品番", "名称", "土台", "検討案", "版", ...m.heads.map((h) => numTh(h.label)), ""];
   const partHeads = ["品番", "名称", "区分", ...m.heads.map((h) => numTh(h.label)), ""];
   const partRows = m.items.filter((i) => i.role !== "product").map((i) => el("tr", {},
     el("td", {}, i.code), el("td", {}, i.name), el("td", {}, i.kind), ...itemCells(i)));
@@ -443,7 +446,7 @@ async function renderManual(data) {
   );
 }
 
-// 取り込みと版 --------------------------------------------------------------
+// BOM 取込・版管理 --------------------------------------------------------------
 
 function readAsBase64(file) {
   return new Promise((resolve, reject) => {
@@ -601,6 +604,11 @@ async function drawVersions() {
 
 function wireScreens() {
   document.querySelectorAll("#screen-seg button").forEach((b) => b.addEventListener("click", () => guarded(() => showScreen(b.dataset.screen))));
+  // その他のメニューは外を押すと閉じる
+  document.addEventListener("click", (e) => {
+    const more = document.getElementById("screen-more");
+    if (more.open && !more.contains(e.target)) more.open = false;
+  });
   document.getElementById("part-show").addEventListener("click", () => guarded(drawPart));
   document.getElementById("part-code").addEventListener("keydown", (e) => e.key === "Enter" && guarded(drawPart));
   document.getElementById("part-version").addEventListener("change", (e) => guarded(() => loadCodes(e.target.value)));

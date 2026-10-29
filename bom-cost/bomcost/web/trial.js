@@ -1,11 +1,11 @@
-// 試作品: 試作キーを開き、その試作キーの試算がある製品を並べて、行の中に開いた構成で替える・抜く・足す、
-// 部品の名前で絞った製品×部品の行を替える。原価は製造原価（TRIAL_HEAD・group.js）。app.js・screens.js の関数を使う。
+// ②構成変更: 検討案を開き、その検討案の試算がある製品を並べて、行の中に開いた構成で置換・削除・追加、
+// 部品の名前で絞った製品×部品の行を置換する。原価は製造原価（TRIAL_HEAD・group.js）。app.js・screens.js の関数を使う。
 "use strict";
 
-let trialOpened = null; // 開いた { version, name }。選び直しても［開く］までは前の試作キーへ変更を送る
-let trialPending = null; // 製品群の画面から開く試作キー
+let trialOpened = null; // 開いた { version, name }。選び直しても［開く］までは前の検討案へ変更を送る
+let trialPending = null; // ①対象製品の画面から開く検討案
 
-// 製品群の画面の「試作キー」の行から、その試作キーを開いた状態で移る
+// ①対象製品の画面の検討案の行から、その検討案を開いた状態で移る
 async function openTrial(version, name) {
   trialPending = { version, name };
   await showScreen("trial");
@@ -34,7 +34,7 @@ async function openSelectedTrial() {
   const version = document.getElementById("trial-version").value;
   const name = document.getElementById("trial-name").value;
   if (!version) throw new Error("版が空");
-  if (!name) throw new Error("試作キーを選ぶ");
+  if (!name) throw new Error("検討案を選ぶ");
   trialOpened = { version, name };
   trialOpen.clear();
   trialScenario.clear();
@@ -53,7 +53,7 @@ async function trialUndo(scenarioId) {
   await drawTrial();
 }
 
-// 製品の行の下に開く構成。行の形は「製品から」のツリーと同じ（API が試作キーの試算の構成を返す）。
+// 製品の行の下に開く構成。行の形は「製品から」のツリーと同じ（API が検討案の試算の構成を返す）。
 // 開いた所は道筋（製品/風船:品番#並び順/…）で持ち、表を取り直しても開いたままにする
 const trialOpen = new Set();
 const trialScenario = new Map(); // 製品 → 前に開いた時の試算の ID（無ければ null）
@@ -62,7 +62,7 @@ function toggleTrial(path) {
   if (trialOpen.has(path)) trialOpen.delete(path);
   else {
     trialOpen.add(path);
-    // 製品の行を開いたら、試作品の「土台」の行も開いて部品まで見せる（版の構成なら当たる行が無く効かない）
+    // 製品の行を開いたら、試算の「土台」の行も開いて部品まで見せる（版の構成なら当たる行が無く効かない）
     if (!path.includes("/")) trialOpen.add(`${path}/:${path}#0`);
   }
   guarded(drawTrial);
@@ -100,21 +100,21 @@ const qtyInput = (value) => el("input", { value, inputmode: "decimal", size: 4 }
 const replaceOp = (part, qty) => {
   const code = codeInput();
   const q = qtyInput(qty);
-  return { label: "替える", text: [`${part} を `, code, " に替える　数量 ", q], inputs: [code, q], code,
+  return { label: "置換", text: [`${part} を `, code, " に置換　員数 ", q], inputs: [code, q], code,
     change: () => ({ kind: "REPLACE", part, replacement: code.value.trim(), quantity: q.value }) };
 };
-const removeOp = (part, qty) => ({ label: "抜く", text: [`${part} を構成から抜く`], inputs: [],
+const removeOp = (part, qty) => ({ label: "削除", text: [`${part} を構成から削除`], inputs: [],
   change: () => ({ kind: "REMOVE", part, quantity: qty }) });
 const quantityOp = (part, qty) => {
   const q = qtyInput(qty);
-  return { label: "数量", text: [`${part} の数量を `, q, " にする"], inputs: [q],
+  return { label: "員数変更", text: [`${part} の員数を `, q, " にする"], inputs: [q],
     change: () => ({ kind: "SET_QUANTITY", part, quantity: q.value }) };
 };
-// 足すは、どの行から足しても製品（試算の根）の直下へ入る（scenario.py の _apply）
+// 追加は、どの行から足しても製品（試算の根）の直下へ入る（scenario.py の _apply）
 const addOp = (product, code = "") => {
   const c = codeInput(code);
   const q = qtyInput("1");
-  return { label: "足す", text: [`${product} の直下に `, c, " を ", q, " 個足す"], inputs: [c, q], code: c,
+  return { label: "追加", text: [`${product} の直下に `, c, " を ", q, " 個追加"], inputs: [c, q], code: c,
     change: () => ({ kind: "ADD", part: c.value.trim(), quantity: q.value }) };
 };
 
@@ -231,13 +231,16 @@ async function trialTreeRows(t, product) {
   return rows;
 }
 
+// 変更の一覧の種類の札（API の kind_label は変えず、画面の語に置き換える）
+const CHANGE_KIND_LABEL = { REPLACE: "置換", REMOVE: "削除", ADD: "追加", SET_QUANTITY: "員数変更" };
+
 // 変えた所だけの表: 製品・変更・その変更での原価の前 → 後と差、最後に合計の差
 function changeListBlock(c) {
   const rows = c.rows.map((r) => el(
     "tr",
     {},
     el("td", {}, `${r.product} ${r.product_name}`),
-    el("td", {}, el("span", { class: r.kind === "REMOVE" ? "tag remove" : "tag add" }, r.kind_label)),
+    el("td", {}, el("span", { class: r.kind === "REMOVE" ? "tag remove" : "tag add" }, CHANGE_KIND_LABEL[r.kind] ?? r.kind_label)),
     el("td", {}, r.text),
     el("td", { class: "num" }, `${fmt(r.cost_before)} → ${fmt(r.cost_after)}`),
     el("td", { class: `num ${signClass(r.difference)}` }, fmt(r.difference, { sign: true, missing: "—" })),
@@ -249,7 +252,7 @@ function changeListBlock(c) {
     el("th", {}, ""));
   return [
     el("h3", {}, `変更の一覧（${c.count} 件）`),
-    table(["製品", "種類", "変更", numTh("原価 前 → 後"), numTh("差"), "版・費目"],
+    table(["製品", "種類", "変更", numTh("原価 現行 → 変更後"), numTh("差"), "版・費目"],
       rows.length ? [...rows, total] : [el("tr", {}, el("td", { colspan: 6, class: "muted" }, "なし"))]),
   ];
 }
@@ -267,14 +270,14 @@ function partBlock(parts) {
   ));
   return [
     el("h3", {}, `部品「${parts.part}」（${parts.rows.length} 件${parts.truncated ? "（上限）" : ""}）`),
-    table(["製品", "部品", "名称", numTh("使用数（個/台）"), "替えた先", ""],
+    table(["製品", "部品", "名称", numTh("使用数（個/台）"), "置換先", ""],
       partRows.length ? partRows : [el("tr", {}, el("td", { colspan: 6, class: "muted" }, "なし"))]),
   ];
 }
 
 async function drawTrial() {
   const t = trialOpened;
-  if (!t) throw new Error("試作キーを開く");
+  if (!t) throw new Error("検討案を開く");
   const part = document.getElementById("trial-part").value.trim();
   const base = { version: t.version, name: t.name, trial: "1" };
   const [p, parts, changes] = await Promise.all([
@@ -301,9 +304,9 @@ async function drawTrial() {
     productRows.push(productRow(x));
     if (trialOpen.has(x.code)) productRows.push(...await trialTreeRows(t, x.code));
   }
-  const heads = ["品番", "名称", numTh(`今（${p.head_label}）`), numTh("後"), numTh("差"), numTh("変更"), ""];
+  const heads = ["品番", "名称", numTh(`現行（${p.head_label}）`), numTh("変更後"), numTh("差"), numTh("変更"), ""];
   document.getElementById("trial-body").replaceChildren(
-    el("p", { class: "premise-line" }, `前提: 版 ${p.version_id}・試作キー ${p.name}・${p.head_label}・参考値`),
+    el("p", { class: "premise-line" }, `前提: 版 ${p.version_id}・検討案 ${p.name}・${p.head_label}・参考値`),
     el("h3", {}, `製品（${countText(p.count, p.products.length, p.truncated)}）`),
     table(heads, productRows.length ? productRows : [el("tr", {}, el("td", { colspan: heads.length, class: "muted" }, "なし"))]),
     ...(parts ? partBlock(parts) : []),

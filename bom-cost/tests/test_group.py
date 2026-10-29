@@ -419,9 +419,13 @@ class ProductRule(unittest.TestCase):
         self.assertIn('data-screen="trial"', index)
         self.assertIn("trial.js", index)
         self.assertEqual(static_response("/trial.js").status, 200)
-        # 帯の並びは 製品群・試作品・比べる・製品から
-        order = [index.index(f'data-screen="{s}"') for s in ("group", "trial", "compare", "product")]
+        # 帯の並びは 共通（取込・マスタ）→ 手順①②③ → その他（製品から・型費配賦・積上げ見積）
+        order = [index.index(f'data-screen="{s}"')
+                 for s in ("import", "manual", "group", "trial", "compare", "product", "part", "change")]
         self.assertEqual(order, sorted(order))
+        more = index[index.index('id="screen-more"'):index.index("</details>")]
+        for s in ("product", "part", "change"):
+            self.assertIn(f'data-screen="{s}"', more)
         # 製品群は作る専用（費目・部品の検索は試作品の画面へ）
         group = index[index.index('id="screen-group"'):index.index('id="screen-trial"')]
         self.assertNotIn("group-head", group)

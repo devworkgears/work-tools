@@ -9,16 +9,28 @@
 <body>
 <header class="bar">
   <h1>BOM 原価モック</h1>
-  <div class="seg" id="screen-seg" role="group" aria-label="画面">
-    <button type="button" data-screen="group" class="on">製品群</button>
-    <button type="button" data-screen="trial">試作品</button>
-    <button type="button" data-screen="compare">比べる</button>
-    <button type="button" data-screen="product">製品から</button>
-    <button type="button" data-screen="part">部品から</button>
-    <button type="button" data-screen="change">モデルチェンジ</button>
-    <button type="button" data-screen="manual">情報登録</button>
-    <button type="button" data-screen="import">取り込み・版</button>
-  </div>
+  <nav class="screen-nav" id="screen-seg" aria-label="画面">
+    <div class="seg">
+      <button type="button" data-screen="import">BOM 取込・版管理</button>
+      <button type="button" data-screen="manual">マスタ登録</button>
+    </div>
+    <span class="nav-sep" aria-hidden="true"></span>
+    <span class="nav-flow">設計変更シミュレーション：</span>
+    <button type="button" class="step on" data-screen="group">①対象製品</button>
+    <span class="muted" aria-hidden="true">→</span>
+    <button type="button" class="step" data-screen="trial">②構成変更</button>
+    <span class="muted" aria-hidden="true">→</span>
+    <button type="button" class="step" data-screen="compare">③原価比較</button>
+    <span class="nav-sep" aria-hidden="true"></span>
+    <details class="nav-more" id="screen-more">
+      <summary>その他 ▼</summary>
+      <div class="nav-menu">
+        <button type="button" data-screen="product">製品から</button>
+        <button type="button" data-screen="part">型費配賦</button>
+        <button type="button" data-screen="change">積上げ見積</button>
+      </div>
+    </details>
+  </nav>
   <div class="bar-group" id="product-controls" hidden>
   <div class="seg" id="mode-seg" role="group" aria-label="モード">
     <button type="button" data-mode="diff" class="on">差分</button>
@@ -91,18 +103,19 @@
 <main class="screen" id="screen-group">
   <section class="panel">
     <div class="panel-head">
-      <h2>製品群</h2>
+      <h2>①対象製品</h2>
     </div>
     <div class="form-row">
       <label>版 <select id="group-version"></select></label>
       <label>製品（品番・名称の一部） <input id="group-q"></label>
       <button type="button" class="primary" id="group-show">絞り込む</button>
     </div>
-    <div class="form-row">
-      <label>試作キー <input id="group-name" list="group-names" placeholder="例 部品の共通化"></label>
-      <button type="button" id="group-create">作る</button>
-    </div>
     <div id="group-body" class="screen-body"></div>
+    <div class="form-row">
+      <label>検討案 <input id="group-name" list="group-names" placeholder="例 部品の共通化"></label>
+      <button type="button" id="group-create">検討案を作る</button>
+    </div>
+    <div id="group-trials" class="screen-body"></div>
   </section>
 </main>
 <datalist id="group-names"></datalist>
@@ -110,11 +123,11 @@
 <main class="screen" id="screen-trial" hidden>
   <section class="panel">
     <div class="panel-head">
-      <h2>試作品</h2>
+      <h2>②構成変更</h2>
     </div>
     <div class="form-row">
       <label>版 <select id="trial-version"></select></label>
-      <label>試作キー <select id="trial-name"></select></label>
+      <label>検討案 <select id="trial-name"></select></label>
       <button type="button" class="primary" id="trial-open">開く</button>
       <label>部品（名称・品番の一部） <input id="trial-part"></label>
       <button type="button" id="trial-part-show">絞り込む</button>
@@ -126,11 +139,11 @@
 <main class="screen" id="screen-compare" hidden>
   <section class="panel">
     <div class="panel-head">
-      <h2>比べる</h2>
+      <h2>③原価比較</h2>
     </div>
     <div class="form-row">
       <label>版 <select id="cmp-version"></select></label>
-      <div class="field">試作品 <div class="check-list" id="cmp-names"></div></div>
+      <div class="field">検討案 <div class="check-list" id="cmp-names"></div></div>
       <label>製品（品番・名称の一部） <input id="cmp-q"></label>
       <label>償却費を無視 <input type="checkbox" id="cmp-ignore"></label>
       <button type="button" class="primary" id="cmp-show">見る</button>
@@ -142,7 +155,7 @@
 <main class="screen" id="screen-part" hidden>
   <section class="panel">
     <div class="panel-head">
-      <h2>部品から見る</h2>
+      <h2>型費配賦</h2>
     </div>
     <div class="form-row">
       <label>部品の品番 <input id="part-code" list="code-list-2" placeholder="例 X-610"></label>
@@ -159,7 +172,7 @@
 <main class="screen" id="screen-change" hidden>
   <section class="panel">
     <div class="panel-head">
-      <h2>モデルチェンジの比較</h2>
+      <h2>積上げ見積</h2>
     </div>
     <div class="form-row">
       <label>元の製品 <input id="change-old" list="code-list-2" placeholder="例 A-100"></label>
@@ -182,7 +195,7 @@
 
 <main class="screen" id="screen-import" hidden>
   <section class="panel">
-    <div class="panel-head"><h2>取り込み（CSV・Excel）</h2></div>
+    <div class="panel-head"><h2>BOM 取込（CSV・Excel）</h2></div>
     <div class="form-row">
       <label>ファイル <input type="file" id="import-file" accept=".csv,.xlsx,.xlsm"></label>
       <label id="import-sheet-label" hidden>シート <select id="import-sheet"></select></label>

@@ -46,6 +46,23 @@ select, input { border: 1px solid var(--line); border-radius: 4px; padding: 3px 
 .seg button:last-child { border-radius: 0 4px 4px 0; }
 .seg button.on { background: var(--accent); color: #fff; border-color: var(--accent); position: relative; }
 
+/* 画面の帯: 共通｜設計変更シミュレーションの手順｜その他 */
+.screen-nav { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.screen-nav .step.on, .nav-more summary.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+.nav-sep { width: 1px; align-self: stretch; background: var(--line); margin: 0 4px; }
+.nav-flow { font-size: 12px; color: var(--muted); }
+.nav-more { position: relative; }
+.nav-more summary {
+  list-style: none; border: 1px solid var(--line); background: #fff; border-radius: 4px; padding: 4px 10px; cursor: pointer;
+}
+.nav-more summary::-webkit-details-marker { display: none; }
+.nav-menu {
+  position: absolute; top: calc(100% + 2px); left: 0; z-index: 10; display: grid; gap: 2px; min-width: 8em;
+  padding: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 4px;
+}
+.nav-menu button { border-color: transparent; text-align: left; white-space: nowrap; }
+.nav-menu button.on { background: var(--accent-soft); color: var(--accent); }
+
 .message { margin: 8px 16px 0; padding: 6px 10px; border-radius: 4px; background: #fdecea; color: var(--bad); }
 .message.info { background: var(--accent-soft); color: var(--accent); }
 
@@ -132,7 +149,7 @@ table.grid thead tr.filters th { top: 24px; padding: 2px; }
 table.grid thead tr.filters input { width: 100%; min-width: 50px; padding: 1px 4px; font-size: 12px; }
 table.grid tbody tr:hover { background: #f2f5f9; }
 
-/* 2段目の画面（部品から・モデルチェンジ・手入力・取り込み） */
+/* 2段目の画面（型費配賦・積上げ見積・マスタ登録・BOM 取込） */
 .bar-group { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; flex: 1; }
 .screen { display: grid; gap: 10px; padding: 10px 16px 16px; }
 .screen .panel { overflow: visible; }
@@ -154,14 +171,14 @@ dialog form, dialog .dialog-body { display: grid; gap: 10px; }
 dialog label { display: grid; gap: 2px; }
 .dialog-buttons { display: flex; justify-content: flex-end; gap: 8px; }
 
-/* 試作品の「変更」で開く欄 */
+/* 構成変更の「変更」で開く欄 */
 .change-form td { background: #f7f9fc; }
 .change-line { display: grid; grid-template-columns: 6em 1fr; align-items: center; gap: 8px; padding: 2px 0; }
 .change-line label { white-space: nowrap; cursor: pointer; }
 .change-form input:disabled { background: #eee; color: #aaa; }
 .change-buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 
-/* 情報登録のタブ */
+/* マスタ登録のタブ */
 .manual-tabs { justify-self: start; flex-wrap: wrap; }
 
 /* 変更の欄: 品番が無い時の登録 */

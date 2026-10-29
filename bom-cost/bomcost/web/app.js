@@ -114,11 +114,12 @@ async function init() {
   state.tableColumns = state.meta.table_columns.map((c) => c.key);
   await loadLists();
   if (!state.versions.length) {
+    await showScreen("import");  // 版が無ければ BOM 取込・版管理から
     showMessage("版なし", "info");
     return;
   }
   if (state.scenarios.length) await selectScenario(state.scenarios[0].scenario_id);
-  await showScreen("group");  // 開いたときの画面は製品群
+  await showScreen("group");  // 版があれば①対象製品
 }
 
 async function loadLists() {
@@ -215,10 +216,11 @@ async function appendChildren(rows, node, path, depth) {
 function roleTag(role) {
   if (!role) return null;
   const cls = role === "抜く" ? "tag remove" : role === "足す" ? "tag add" : "tag";
-  return el("span", { class: cls }, role);
+  // API の role は変えず、画面の語（削除・追加）で出す
+  return el("span", { class: cls }, { 抜く: "削除", 足す: "追加" }[role] ?? role);
 }
 
-// ツリーの行の印（一部未登録・二重計上の判定）。製品群の画面の行でも使う
+// ツリーの行の印（一部未登録・二重計上の判定）。構成変更の画面の行でも使う
 function nodeMarks(node, head) {
   const marks = [];
   if (node.cost !== null && node.incomplete) marks.push(el("span", { class: "tag warn" }, "一部未登録"));
@@ -350,11 +352,11 @@ function actionsBlock(d) {
     "div",
     { class: "actions" },
     el("label", { for: "act-qty" }, "数量"), qty,
-    el("button", { type: "button", onclick: () => send("REPLACE", { replacement: repl.value }) }, "替える"), repl,
-    el("button", { type: "button", onclick: () => send("REMOVE") }, "抜く"),
-    el("button", { type: "button", onclick: () => send("ADD", { part: addCode.value }) }, "足す"), addCode,
+    el("button", { type: "button", onclick: () => send("REPLACE", { replacement: repl.value }) }, "置換"), repl,
+    el("button", { type: "button", onclick: () => send("REMOVE") }, "削除"),
+    el("button", { type: "button", onclick: () => send("ADD", { part: addCode.value }) }, "追加"), addCode,
     d.in_root
-      ? el("button", { type: "button", onclick: () => send("SET_QUANTITY") }, "数量にする")
+      ? el("button", { type: "button", onclick: () => send("SET_QUANTITY") }, "員数変更")
       : null,
   );
 }
