@@ -226,6 +226,34 @@ class AddScenarios(SampleDbCase):
         self.assert_error(self.call("POST", "/api/group/scenarios", body={"name": NAME}), 400, "版")
 
 
+class Trials(SampleDbCase):
+    """試作キーの一覧と、試作キーの試算がある製品だけに絞る trial。"""
+
+    def test_trial_keys_with_product_count_and_version(self) -> None:
+        self.assertEqual(self.ok("GET", "/api/group/trials"), [])
+        self.ok("POST", "/api/group/scenarios", body={"version_id": "2026-10", "name": NAME, "q": "-1"})
+        self.change("K-200", kind="ADD", part="F-600")
+        self.ok("POST", "/api/group/changes", body={"version_id": "2026-10", "name": "別の検討", "product": "A-100",
+                                                     "kind": "ADD", "part": "F-600"})
+        expected = [{"name": NAME, "version_id": "2026-10", "count": 3},
+                    {"name": "別の検討", "version_id": "2026-10", "count": 1}]
+        self.assertEqual(self.ok("GET", "/api/group/trials"), expected)
+        self.assertEqual(self.ok("GET", "/api/group/trials", "version=2026-10"), expected)
+        self.assertEqual(self.ok("GET", "/api/group/trials", "version=nope"), [])
+
+    def test_trial_flag_limits_products_and_parts(self) -> None:
+        self.ok("POST", "/api/group/scenarios", body={"version_id": "2026-10", "name": NAME, "q": "V-",
+                                                      "head": "MANUFACTURING"})
+        p = self.products(f"&name={NAME}&trial=1&head=MANUFACTURING")
+        self.assertEqual(([x["code"] for x in p["products"]], p["count"], p["head_label"]), (["V-110"], 1, "製造原価"))
+        self.assertIsNotNone(p["products"][0]["scenario_id"])
+        self.assertEqual([x["product"] for x in self.parts(f"&part=部品B&name={NAME}&trial=1")["rows"]], ["V-110"])
+        # 付けなければ今のまま全部の製品
+        self.assertEqual(len(self.products(f"&name={NAME}")["products"]), 3)
+        self.assert_error(self.call("GET", "/api/group/products", "version=2026-10&trial=1"), 400, "検討名")
+        self.assert_error(self.call("GET", "/api/group/parts", "version=2026-10&part=B&trial=1"), 400, "検討名")
+
+
 class ManualSplit(SampleDbCase):
     """手入力の一覧を製品と部品に分ける。製品の表には試算（新製品）も並ぶ。"""
 
@@ -388,6 +416,16 @@ class ProductRule(unittest.TestCase):
         self.assertIn('data-screen="group"', index)
         self.assertIn("group.js", index)
         self.assertEqual(static_response("/group.js").status, 200)
+        self.assertIn('data-screen="trial"', index)
+        self.assertIn("trial.js", index)
+        self.assertEqual(static_response("/trial.js").status, 200)
+        # 帯の並びは 製品群・試作品・比べる・製品から
+        order = [index.index(f'data-screen="{s}"') for s in ("group", "trial", "compare", "product")]
+        self.assertEqual(order, sorted(order))
+        # 製品群は作る専用（費目・部品の検索は試作品の画面へ）
+        group = index[index.index('id="screen-group"'):index.index('id="screen-trial"')]
+        self.assertNotIn("group-head", group)
+        self.assertNotIn("group-part", group)
         self.assertIn('data-screen="compare"', index)
         self.assertIn("compare.js", index)
         self.assertEqual(static_response("/compare.js").status, 200)

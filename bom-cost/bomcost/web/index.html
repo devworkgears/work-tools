@@ -11,6 +11,7 @@
   <h1>BOM 原価モック</h1>
   <div class="seg" id="screen-seg" role="group" aria-label="画面">
     <button type="button" data-screen="group" class="on">製品群</button>
+    <button type="button" data-screen="trial">試作品</button>
     <button type="button" data-screen="compare">比べる</button>
     <button type="button" data-screen="product">製品から</button>
     <button type="button" data-screen="part">部品から</button>
@@ -94,17 +95,33 @@
     </div>
     <div class="form-row">
       <label>版 <select id="group-version"></select></label>
-      <label>費目 <select id="group-head"></select></label>
-      <label>試作品の名前 <input id="group-name" list="group-names" placeholder="例 部品の共通化"></label>
-      <button type="button" id="group-create">試作品を作る</button>
       <label>製品（品番・名称の一部） <input id="group-q"></label>
-      <label>部品（名称・品番の一部） <input id="group-part"></label>
-      <button type="button" class="primary" id="group-show">見る</button>
+      <button type="button" class="primary" id="group-show">絞り込む</button>
+    </div>
+    <div class="form-row">
+      <label>試作キー <input id="group-name" list="group-names" placeholder="例 部品の共通化"></label>
+      <button type="button" id="group-create">作る</button>
     </div>
     <div id="group-body" class="screen-body"></div>
   </section>
 </main>
 <datalist id="group-names"></datalist>
+
+<main class="screen" id="screen-trial" hidden>
+  <section class="panel">
+    <div class="panel-head">
+      <h2>試作品</h2>
+    </div>
+    <div class="form-row">
+      <label>版 <select id="trial-version"></select></label>
+      <label>試作キー <select id="trial-name"></select></label>
+      <button type="button" class="primary" id="trial-open">開く</button>
+      <label>部品（名称・品番の一部） <input id="trial-part"></label>
+      <button type="button" id="trial-part-show">絞り込む</button>
+    </div>
+    <div id="trial-body" class="screen-body"></div>
+  </section>
+</main>
 
 <main class="screen" id="screen-compare" hidden>
   <section class="panel">
@@ -218,6 +235,7 @@
 <script src="app.js"></script>
 <script src="screens.js"></script>
 <script src="group.js"></script>
+<script src="trial.js"></script>
 <script src="compare.js"></script>
 </body>
 </html>

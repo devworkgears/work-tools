@@ -103,6 +103,7 @@ class Group:
             ("GET", r"/api/group/products", self.products),
             ("GET", r"/api/group/parts", self.parts),
             ("GET", r"/api/group/names", self.names),
+            ("GET", r"/api/group/trials", self.trials),
             ("GET", r"/api/group/changes", self.changes),
             ("POST", r"/api/group/changes", self.add_change),
             ("GET", r"/api/group/tree", self.tree),
@@ -248,6 +249,16 @@ class Group:
             codes = [c for c in codes if _matches(c, needle) or _matches(self._name(version, c), needle)]
         return structure, kind, codes
 
+    def _trial_only(self, version: Version, params: dict[str, str], codes: list[str]) -> list[str]:
+        """trial を付けると、検討名の試算がある製品だけに絞る。"""
+        if not _flag(params.get("trial")):
+            return codes
+        name = (params.get("name") or "").strip()
+        if not name:
+            raise ApiError(400, "検討名（name）が空")
+        found = self._scenarios(version, name)
+        return [c for c in codes if c in found]
+
     @staticmethod
     def _name(version: Version, code: str) -> str:
         item = version.items.get(code)
@@ -271,6 +282,7 @@ class Group:
         """版の製品の一覧。name（検討名）があれば製品ごとに 今・後・差・変更の件数 を添える。"""
         version = self._version(params)
         structure, kind, codes = self._products(version, params)
+        codes = self._trial_only(version, params, codes)
         limit = _limit(params.get("limit"), DEFAULT_PRODUCT_LIMIT)
         shown = codes[:limit]
         name = (params.get("name") or "").strip()
@@ -347,6 +359,7 @@ class Group:
         if not needle:
             raise ApiError(400, "部品の名前・品番の一部（part）が空")
         structure, _, codes = self._products(version, params)
+        codes = self._trial_only(version, params, codes)
         limit = _limit(params.get("limit"), DEFAULT_ROW_LIMIT)
         name = (params.get("name") or "").strip()
         scenario_ids = self._scenarios(version, name) if name else {}
@@ -387,6 +400,15 @@ class Group:
         version_id = (params.get("version") or "").strip()
         names = [s.name for s in self.store.list_scenarios() if not version_id or s.version_id == version_id]
         return _json_response(list(dict.fromkeys(names)))
+
+    def trials(self, params: dict[str, str]) -> Response:
+        """試作キー（検討名）と版の組ごとの、試算がある製品の数（作った順）。version を付けるとその版だけ。"""
+        version_id = (params.get("version") or "").strip()
+        bases: dict[tuple[str, str], set[str]] = {}
+        for s in self.store.list_scenarios():
+            if not version_id or s.version_id == version_id:
+                bases.setdefault((s.name, s.version_id), set()).add(s.base)
+        return _json_response([{"name": n, "version_id": v, "count": len(b)} for (n, v), b in bases.items()])
 
     # 替える・足す ------------------------------------------------------------
 
