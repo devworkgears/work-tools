@@ -11,6 +11,16 @@
   --bad: #a3271f;
   --good: #1d6b3a;
   --select: #fff6cc;
+  --down: #3d9a62;
+  --up: #d0574d;
+  --series-0: var(--accent);
+  --series-1: #c98a12;
+  --series-2: #6b4fa0;
+  --series-3: #2b8c94;
+  --chg-replace: #fff4d6;
+  --chg-remove: #fbe3e1;
+  --chg-add: #e2f2e7;
+  --chg-qty: #e4ecfa;
   font-family: "Yu Gothic UI", "Meiryo UI", "Segoe UI", sans-serif;
   font-size: 14px;
 }
@@ -160,7 +170,6 @@ table.grid tbody tr:hover { background: #f2f5f9; }
 .form-row label input[type="checkbox"] { justify-self: start; }
 .check-list { display: flex; flex-wrap: wrap; gap: 2px 10px; max-width: 480px; }
 .form-row .check-list label { display: flex; align-items: center; gap: 4px; }
-tr.compare-trial td { background: #f7f9fb; }
 .cards { display: grid; gap: 10px; }
 .premise-line { font-size: 12px; color: var(--accent); background: var(--accent-soft); padding: 4px 8px; border-radius: 4px; }
 .table-scroll.sample { max-height: 180px; }
@@ -177,6 +186,22 @@ dialog label { display: grid; gap: 2px; }
 .change-line label { white-space: nowrap; cursor: pointer; }
 .change-form input:disabled { background: #eee; color: #aaa; }
 .change-buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+/* ②構成変更: 開いた製品の中（この製品の変更・構成）と、③へ移るボタン */
+tr.trial-open > td { padding: 4px 6px 10px 22px; background: #fbfcfd; }
+.trial-changes { border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; margin-bottom: 6px; background: var(--panel); }
+.trial-changes-head { font-size: 12px; color: var(--muted); }
+tr.trial-changed td { background: #fff8f0; }
+tr.chg-replace td { background: var(--chg-replace); }
+tr.chg-remove td { background: var(--chg-remove); }
+tr.chg-add td { background: var(--chg-add); }
+tr.chg-qty td { background: var(--chg-qty); }
+.trial-layout { margin: 2px 0 4px; }
+table.small .pair-split { border-left: 2px solid var(--line); }
+tr.pair-sides th { font-weight: 600; color: inherit; }
+.trial-plus { color: var(--bad); font-weight: 600; }
+th.sortable { cursor: pointer; user-select: none; }
+tr.trial-total th { color: inherit; font-weight: 600; }
+.trial-foot { display: flex; justify-content: flex-end; padding: 8px 0; }
 
 /* マスタ登録のタブ */
 .manual-tabs { justify-self: start; flex-wrap: wrap; }
@@ -188,3 +213,47 @@ dialog label { display: grid; gap: 2px; }
 .change-replacements { margin: 4px 0; }
 .change-replacements .change-line { display: flex; gap: 4px; }
 .change-replacements .change-register { margin-left: 0; padding-left: 0; }
+
+/* ③原価比較: タイル・左の差の横棒・右の選んだ製品 */
+.cmp-tools { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+.cmp-tools label { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); }
+.cmp-tiles { display: grid; gap: 6px; margin-bottom: 10px; }
+.tile-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: stretch; }
+.tile-name { display: flex; align-items: center; gap: 6px; min-width: 8em; font-weight: 600; }
+.tile { min-width: 120px; padding: 6px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
+.tile-label { font-size: 12px; color: var(--muted); }
+.tile-value { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
+.cmp-legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 12px; }
+.cmp-split { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 12px; align-items: start; }
+.cmp-left, .cmp-right { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; min-width: 0; }
+.cmp-left-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; }
+.cmp-left-head h3, .cmp-right h3 { margin-top: 4px; }
+.cmp-bars { max-height: 70vh; overflow: auto; }
+.cmp-bar-row {
+  display: grid; grid-template-columns: minmax(6em, 12em) 1fr; gap: 8px; align-items: center;
+  padding: 3px 4px; cursor: pointer; border-left: 3px solid transparent; border-bottom: 1px dotted var(--line);
+}
+.cmp-bar-row:hover { background: #f2f5f9; }
+.cmp-bar-row.selected { background: var(--select); border-left-color: var(--accent); }
+.cmp-bar-label { display: flex; flex-direction: column; min-width: 0; }
+.cmp-bar-label .code { font-weight: 600; }
+.cmp-bar-label .name { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cmp-bar-lines { display: grid; gap: 2px; }
+.cmp-bar-line { display: grid; grid-template-columns: 1fr 7em; gap: 8px; align-items: center; }
+.bar-track { position: relative; height: 12px; min-width: 60px; }
+.bar-track::before { content: ""; position: absolute; left: 50%; top: -2px; bottom: -2px; border-left: 1px solid var(--muted); }
+.bar-fill { position: absolute; top: 1px; bottom: 1px; border-radius: 2px; }
+.bar-fill.down { background: var(--down); }
+.bar-fill.up { background: var(--up); }
+.series.s0 { background: var(--series-0); }
+.series.s1 { background: var(--series-1); }
+.series.s2 { background: var(--series-2); }
+.series.s3 { background: var(--series-3); }
+td.cmp-mini { min-width: 90px; width: 25%; }
+td.cmp-mini .bar-track { height: 8px; margin: 1px 0; }
+tr.cmp-current-head td { background: var(--accent-soft); }
+@media (max-width: 860px) {
+  .cmp-split { grid-template-columns: 1fr; }
+  .cmp-bars { max-height: none; }
+}

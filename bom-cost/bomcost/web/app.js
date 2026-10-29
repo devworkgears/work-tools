@@ -22,6 +22,15 @@ const state = {
 
 // 表示 ------------------------------------------------------------------
 
+// replaceChildren・append に配列や null を渡すと "[object HTMLDivElement]" や "null" の文字になる崩れが
+// 3回出たので、el() と同じく深さ無制限で平らにし、null・undefined・false を飛ばす
+for (const method of ["replaceChildren", "append"]) {
+  const original = Element.prototype[method];
+  Element.prototype[method] = function (...children) {
+    return original.apply(this, children.flat(Infinity).filter((c) => c !== null && c !== undefined && c !== false));
+  };
+}
+
 function el(tag, attrs = {}, ...children) {
   const node = document.createElement(tag);
   for (const [key, value] of Object.entries(attrs)) {
@@ -223,9 +232,8 @@ async function appendChildren(rows, node, path, depth) {
 
 function roleTag(role) {
   if (!role) return null;
-  const cls = role === "抜く" ? "tag remove" : role === "足す" ? "tag add" : "tag";
-  // API の role は変えず、画面の語（削除・追加）で出す
-  return el("span", { class: cls }, { 抜く: "削除", 足す: "追加" }[role] ?? role);
+  const cls = role === "削除" ? "tag remove" : role === "追加" ? "tag add" : "tag";
+  return el("span", { class: cls }, role);
 }
 
 // ツリーの行の印（一部未登録・二重計上の判定）。構成変更の画面の行でも使う

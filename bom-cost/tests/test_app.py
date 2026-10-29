@@ -96,9 +96,9 @@ class ListsAndTree(DemoDbCase):
         children = {c["code"]: c for c in data["children"]}
         self.assertEqual((children["A-100"]["quantity"], children["A-100"]["cost"], children["A-100"]["role"]),
                          ("1", "4900", "土台"))
-        self.assertEqual((children["F-600"]["quantity"], children["F-600"]["role"]), ("1", "足す"))
+        self.assertEqual((children["F-600"]["quantity"], children["F-600"]["role"]), ("1", "追加"))
         self.assertEqual((children["C-300"]["quantity"], children["C-300"]["amount"], children["C-300"]["role"]),
-                         ("-1", "-500", "抜く"))
+                         ("-1", "-500", "削除"))
         # 親の登録値 200 は子の足し上げ 4,700 よりずっと小さい
         self.assertEqual(children["A-100"]["verdict"], "自分だけらしい")
         self.assertEqual(children["A-100"]["verdict_values"], ["200", "4700"])

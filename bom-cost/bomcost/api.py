@@ -145,14 +145,14 @@ def _require_known(version: Version, code: str, name: str) -> None:
 def _change_text(change: Change) -> str:
     qty = _s(change.quantity)
     if change.kind is ChangeKind.ADD:
-        return f"{change.part} を {qty} 足す"
+        return f"追加 {change.part} ×{qty}"
     if change.kind is ChangeKind.REMOVE:
-        return f"{change.part} を {qty} 抜く"
+        return f"削除 {change.part} ×{qty}"
     if change.kind is ChangeKind.REPLACE and change.parent is not None:
         return f"{_place(change)} → {change.replacement} ×{qty}"
     if change.kind is ChangeKind.REPLACE:
         return f"{change.part} → {change.replacement}（×{qty}）"
-    return f"{change.part} の数量を {qty} にする"
+    return f"員数変更 {_place(change)} → {qty}"
 
 
 def _place(change: Change) -> str:
@@ -270,7 +270,7 @@ class _View:
             return ""
         if line.child == self.scenario.base and line.quantity > 0:
             return "土台"
-        return "抜く" if line.quantity < 0 else "足す"
+        return "削除" if line.quantity < 0 else "追加"
 
     def name(self, code: str) -> str:
         item = self.version.items.get(code)
@@ -288,9 +288,11 @@ class _View:
             quantity = Decimal(1) if code == self.root else None
         cost = self.cost(code)
         judgement = self.judgement(code)
+        item = self.version.items.get(code)
         return {
             "code": code,
             "name": self.name(code),
+            "kind": "" if item is None else item.kind,
             "parent": parent,
             "balloon": None if line is None else line.balloon,
             "quantity": _s(quantity),
@@ -488,6 +490,12 @@ class Api:
 
     def add_change(self, scenario_id: int, params: dict[str, str], body: dict[str, Any]) -> Response:
         scenario = self._load_scenario(scenario_id)
+        self.apply_change(scenario, body)
+        self.store.save_scenario(scenario)
+        return _json_response(self._summary(scenario))
+
+    def apply_change(self, scenario: Scenario, body: dict[str, Any]) -> None:
+        """body の変更1回分を確かめて試算に当てる（保存はしない）。通らなければ ApiError で、試算は変えない。"""
         kind_name = body.get("kind")
         try:
             kind = ChangeKind[str(kind_name)]
@@ -495,12 +503,14 @@ class Api:
             raise ApiError(400, f"変更の種類が分からない: {kind_name}（ADD・REMOVE・REPLACE・SET_QUANTITY）") from None
         part = to_code(_text_field(body, "part", "品番"))
         if part == scenario.product_code:
-            raise ApiError(400, "試算の製品そのものは足す・抜く・替える対象にできない")
+            raise ApiError(400, "試算の製品そのものは追加・削除・置換の対象にできない")
         _require_known(scenario.version, part, "品番")
         parent = to_optional_code(body.get("parent"), name="親品番")
         balloon = to_optional_code(body.get("balloon"), name="風船番号")
-        if (parent is not None or body.get("replacements") is not None) and kind is not ChangeKind.REPLACE:
-            raise ApiError(400, "場所（parent・balloon）と代わりの部品の並び（replacements）は置換だけに付ける")
+        if body.get("replacements") is not None and kind is not ChangeKind.REPLACE:
+            raise ApiError(400, "代わりの部品の並び（replacements）は置換だけに付ける")
+        if parent is not None and kind not in (ChangeKind.REPLACE, ChangeKind.SET_QUANTITY):
+            raise ApiError(400, "場所（parent・balloon）は置換だけに付ける（員数変更も可）")
         if balloon is not None and parent is None:
             raise ApiError(400, "風船番号（balloon）には親品番（parent）が要る")
         if kind is ChangeKind.REPLACE:
@@ -515,14 +525,12 @@ class Api:
             if scenario.location_quantity(location) == 0:
                 raise ApiError(400, f"{label} は版 {scenario.version.version_id} の構成に無い")
             if location in scenario.replaced_locations():
-                raise ApiError(400, f"{label} はもう置換した")
+                raise ApiError(400, f"{label} はもう置換した（員数変更も含む）")
         elif len(pairs) > 1:
             raise ApiError(400, "代わりの部品を複数入れるには親品番（parent）が要る")
         changes = [Change(kind, part, qty, code, parent, balloon) for code, qty in pairs]
         volume = scenario.version.volume(scenario.product_code)
         scenario.apply_batch(changes, volume=None if volume is None else volume.annual)
-        self.store.save_scenario(scenario)
-        return _json_response(self._summary(scenario))
 
     @staticmethod
     def _replacements(scenario: Scenario, body: dict[str, Any]) -> list[tuple[str, Decimal]]:

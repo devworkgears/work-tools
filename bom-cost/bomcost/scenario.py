@@ -1,4 +1,4 @@
-"""差分モードの試算: 土台の製品に変更（足す・抜く・替える・数量）を順に重ね、履歴を残す。
+"""差分モードの試算: 土台の製品に変更（追加・削除・置換・員数変更）を順に重ね、履歴を残す。
 
 試算の結果の構成は「仮の製品 → 土台 ×1 ＋ 変更の行」で、仮の製品の子を上書きして計算する。
 """
@@ -16,15 +16,18 @@ from .rollup import CostResult, ScopePolicy, calculate_cost
 
 
 class ChangeKind(Enum):
-    ADD = "足す"
-    REMOVE = "抜く"
-    REPLACE = "替える"
-    SET_QUANTITY = "数量"
+    ADD = "追加"
+    REMOVE = "削除"
+    REPLACE = "置換"
+    SET_QUANTITY = "員数変更"
 
 
 @dataclass(frozen=True)
 class Change:
-    """parent を付けた置換は、その親の風船番号 balloon（空欄可）の場所だけを替える。quantity は代わりの部品の員数。"""
+    """parent を付けた置換・員数変更は、その親の風船番号 balloon（空欄可）の場所だけを変える。
+
+    quantity は置換なら代わりの部品の員数、場所の員数変更ならその場所の新しい員数。
+    """
 
     kind: ChangeKind
     part: str
@@ -41,17 +44,19 @@ class Change:
         object.__setattr__(self, "parent", to_optional_code(self.parent, name="親品番"))
         object.__setattr__(self, "balloon", to_optional_code(self.balloon, name="風船番号"))
         if self.kind is ChangeKind.REPLACE and self.replacement is None:
-            raise ValueError("替えるには代わりの品番が要る")
+            raise ValueError("置換には代わりの品番が要る")
         if self.kind in (ChangeKind.ADD, ChangeKind.REMOVE, ChangeKind.REPLACE) and self.quantity <= 0:
-            raise ValueError("足す・抜く・替える数量は正の数で渡す")
-        if self.parent is not None and self.kind is not ChangeKind.REPLACE:
-            raise ValueError("場所（親・風船番号）を付けられるのは置換だけ")
+            raise ValueError("追加・削除・置換の数量は正の数で渡す")
+        if self.parent is not None and self.kind not in (ChangeKind.REPLACE, ChangeKind.SET_QUANTITY):
+            raise ValueError("場所（親・風船番号）を付けられるのは置換と員数変更だけ")
+        if self.parent is not None and self.kind is ChangeKind.SET_QUANTITY and self.quantity < 0:
+            raise ValueError("員数は 0 以上で渡す")
         if self.balloon is not None and self.parent is None:
             raise ValueError("風船番号には親品番が要る")
 
     @property
     def location(self) -> tuple[str, str | None, str] | None:
-        """場所つきの置換なら（親品番, 風船番号, 品番）。"""
+        """場所つきの置換・員数変更なら（親品番, 風船番号, 品番）。"""
         return None if self.parent is None else (self.parent, self.balloon, self.part)
 
 
@@ -160,7 +165,8 @@ class Scenario:
             if location not in removed:
                 removed.add(location)
                 entries.append([change.part, -self.location_quantity(location) * per_unit, False])
-            entries.append([change.replacement, change.quantity * per_unit, False])
+            # 場所の員数変更は、その場所を同じ部品の新しい員数に置き換えるのと同じ
+            entries.append([change.replacement or change.part, change.quantity * per_unit, False])
         merged: dict[str, Decimal] = {}
         for code, qty, _ in entries:
             merged[code] = merged.get(code, Decimal(0)) + qty
@@ -254,6 +260,27 @@ class Scenario:
             while self._history and self._history[-1].batch == last.batch:
                 self._history.pop()
         return last
+
+    def remove_batch(self, sequence: int) -> tuple[ChangeRecord, ...]:
+        """sequence で始まる1回の操作（まとまりなら丸ごと）を、途中のものでも抜く。
+
+        後ろの行の番号（sequence・batch）は詰め直す。原価の記録はそのまま残す。抜いた行を返す（無ければ空）。
+        """
+        removed = tuple(r for r in self._history if r.sequence == sequence or r.batch == sequence)
+        if not removed or removed[0].sequence != sequence or removed[0].batch not in (None, sequence):
+            return ()
+        gone = {r.sequence for r in removed}
+        kept = [r for r in self._history if r.sequence not in gone]
+        shift = len(removed)
+        self._history = [
+            r if r.sequence < sequence else ChangeRecord(**{
+                **r.__dict__,
+                "sequence": r.sequence - shift,
+                "batch": None if r.batch is None else r.batch - shift,
+            })
+            for r in kept
+        ]
+        return removed
 
     def clear(self) -> None:
         self._history.clear()

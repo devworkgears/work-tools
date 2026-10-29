@@ -1,7 +1,7 @@
 """製品群の API: 版の製品を並べ、部品の名前で絞った製品×部品の行を、製品ごとの試算で替える・足す。
 
 製品ごとの試算は今の試算（Scenario）をそのまま使い、検討名・土台の製品・版の組で引く（保存の形は変えない）。
-変更は今の試算の変更（Api.add_change）に渡し、取り消しは今の undo を使う。
+変更は今の試算の変更（Api.apply_change）に渡す。取り消しは今の undo のほか、途中の1回の操作も抜ける（undo_change）。
 """
 
 import json
@@ -106,6 +106,8 @@ class Group:
             ("GET", r"/api/group/trials", self.trials),
             ("GET", r"/api/group/changes", self.changes),
             ("POST", r"/api/group/changes", self.add_change),
+            ("POST", r"/api/group/changes/bulk", self.add_changes),
+            ("POST", r"/api/group/changes/undo", self.undo_change),
             ("GET", r"/api/group/tree", self.tree),
             ("POST", r"/api/group/scenarios", self.add_scenarios),
             ("GET", r"/api/group/compare", self.compare),
@@ -118,6 +120,8 @@ class Group:
 
         償却費が出せない（足し上げる範囲に登録値が1つも無い）行があれば 400。
         ignore_amortization を付けると償却費は null で通す。incomplete は範囲のどこかに未登録がある費目。
+        新の行には元との差（differences）と変更の一覧（changes・原価は今の登録値で当て直した値）を添え、summary に検討名×費目の合計の差と、
+        下がった・上がった・変わらない・未登録の製品の数を置く。
         """
         version = self._version(params)
         names = _names(params.get("names"))
@@ -136,14 +140,18 @@ class Group:
             scenario_ids = {n: self._scenarios(version, n) for n in names}
             for code in shown:
                 product_name = self._name(version, code)
-                rows.append(self._compare_row(bulk, code, code, product_name, None, None, ignore, failed))
+                base = self._compare_row(bulk, code, code, product_name, None, None, ignore, failed)
+                rows.append(base)
                 for n in names:
                     sid = scenario_ids[n].get(code)
                     if sid is None:
                         continue
-                    view = _View(self.store.load_scenario(sid, version), "diff", CostHead.MATERIAL, False,
-                                 amortization=True)
-                    rows.append(self._compare_row(view, view.root, code, product_name, n, sid, ignore, failed))
+                    scenario = self.store.load_scenario(sid, version)
+                    view = _View(scenario, "diff", CostHead.MATERIAL, False, amortization=True)
+                    row = self._compare_row(view, view.root, code, product_name, n, sid, ignore, failed)
+                    row["differences"] = _differences(base["costs"], row["costs"])
+                    row["changes"] = [_batch_json(records) for records in replayed_batches(scenario)]
+                    rows.append(row)
         if failed:
             raise ApiError(400, "償却費を出せない（未登録あり）: " + "、".join(failed))
         return _json_response(
@@ -156,6 +164,7 @@ class Group:
                 "limit": limit,
                 "truncated": len(codes) > limit,
                 "rows": rows,
+                "summary": _compare_summary(names, rows),
             }
         )
 
@@ -187,18 +196,33 @@ class Group:
     # 変更の一覧 --------------------------------------------------------------
 
     def changes(self, params: dict[str, str]) -> Response:
-        """検討名の全製品の変更を1表に。差は履歴に残した変更前・変更後の原価から出し、合計の差も返す。"""
+        """検討名の全製品（product を付けるとその製品だけ）の変更を、1回の操作ごとに1表に。合計の差も返す。
+
+        原価は履歴に残した値でなく、今の版（manual を重ねたもの）の上で変更の並びを当て直した値（記録は書き換えない）。
+        費目は head（省けば試算ごとの費目）。
+        """
         version = self._version(params)
         name = (params.get("name") or "").strip()
         if not name:
             raise ApiError(400, "検討名（name）が空")
+        head = _head(params["head"], CostHead.MATERIAL) if (params.get("head") or "").strip() else None
+        only = (params.get("product") or "").strip()
+        only = to_code(only) if only else None
         rows: list[dict[str, Any]] = []
         total = Decimal(0)
         missing = 0
         for product, sid in sorted(self._scenarios(version, name).items()):
+            if only is not None and product != only:
+                continue
             scenario = self.store.load_scenario(sid, version)
-            for records in _batches(scenario.history):
+            for recorded, records in zip(_batches(scenario.history), replayed_batches(scenario, head)):
                 row = _batch_json(records)
+                row["sequence"], row["batch"] = recorded[0].sequence, recorded[0].batch
+                row["part_name"] = self._name(version, row["part"])
+                row["part_kind"] = self._kind(version, row["part"])
+                for r in row["replacements"]:
+                    r["name"] = self._name(version, r["code"])
+                    r["kind"] = self._kind(version, r["code"])
                 if row["difference"] is None:
                     missing += 1
                 else:
@@ -265,6 +289,11 @@ class Group:
         item = version.items.get(code)
         return "" if item is None else item.name
 
+    @staticmethod
+    def _kind(version: Version, code: str) -> str:
+        item = version.items.get(code)
+        return "" if item is None else item.kind
+
     def _version(self, params: dict[str, Any], key: str = "version") -> Version:
         version_id = str(params.get(key) or "").strip()
         if not version_id:
@@ -292,10 +321,15 @@ class Group:
             {"code": c, "name": self._name(version, c), "has_structure": c in structure.children}
             for c in shown
         ]
+        totals: dict[str, Any] = {}
         if name and shown:
             costs = self._costs(version, name, head, shown)
             for row in rows:
                 row.update(costs[row["code"]])
+            known = [Decimal(r["difference"]) for r in rows if r["difference"] is not None]
+            # 表に出した製品の差の合計（差が未登録の製品は除き、その数を添える）
+            totals = {"difference": _s(sum(known, Decimal(0))) if known or len(known) == len(rows) else None,
+                      "missing_count": len(rows) - len(known)}
         return _json_response(
             {
                 "version_id": version.version_id,
@@ -307,6 +341,7 @@ class Group:
                 "limit": limit,
                 "truncated": len(codes) > limit,
                 "products": rows,
+                **totals,
             }
         )
 
@@ -438,6 +473,59 @@ class Group:
             {"scenario_id": sid, "created": created, "product": product, "summary": response.json()}
         )
 
+    def add_changes(self, params: dict[str, str], body: dict[str, Any]) -> Response:
+        """検討名で、製品×部品の組（items）の全部を同じ代わりの部品（replacement・quantity）に置換する。
+
+        1つの組は、製品の構成でその部品が入る場所（親・風船番号）ごとに1回の場所の置換（POST changes と同じ記録）。
+        quantity が空なら場所ごとに版の員数のまま。全部が通ってから保存し、1つでも通らなければ何も残さない。
+        """
+        name = _text_field(body, "name", "検討名")
+        version = self._version(body, "version_id")
+        head = _head(body.get("head"), CostHead.MATERIAL)
+        replacement = _text_field(body, "replacement", "代わりの品番")
+        quantity = str(body.get("quantity") or "").strip()
+        items = body.get("items")
+        if not isinstance(items, list) or not items or not all(isinstance(x, dict) for x in items):
+            raise ApiError(400, "置換する所（items）は製品・部品の組の配列にする")
+        structure = _Structure(version)
+        existing = self._scenarios(version, name)
+        touched: dict[str, Scenario] = {}
+        count = 0
+        for item in items:
+            product = to_code(_text_field(item, "product", "製品の品番"))
+            part = to_code(_text_field(item, "part", "部品の品番"))
+            _require_known(version, product, "製品")
+            scenario = touched.get(product)
+            if scenario is None:
+                sid = existing.get(product)
+                scenario = (self._new_scenario(version, name, product, head) if sid is None
+                            else self.store.load_scenario(sid, version))
+                touched[product] = scenario
+            places = _places(version, structure, product, part)
+            if not places:
+                raise ApiError(400, f"{part} は {product} の構成に無い")
+            for parent, balloon, place_qty in places:
+                self.api.apply_change(scenario, {
+                    "kind": "REPLACE", "part": part, "parent": parent, "balloon": balloon,
+                    "replacements": [{"code": replacement, "quantity": quantity or _s(place_qty)}],
+                })
+                count += 1
+        for scenario in touched.values():
+            self.store.save_scenario(scenario)
+        return _json_response({"version_id": version.version_id, "name": name, "count": count,
+                               "products": sorted(touched)})
+
+    def undo_change(self, params: dict[str, str], body: dict[str, Any]) -> Response:
+        """試算（scenario_id）の、sequence で始まる1回の操作を取り消す。最後のものでなくてもよい。"""
+        sid = _int_field(body, "scenario_id", "試算")
+        sequence = _int_field(body, "sequence", "変更の番号")
+        scenario = self.api._load_scenario(sid)
+        removed = scenario.remove_batch(sequence)
+        if not removed:
+            raise ApiError(400, f"取り消す変更が無い: {sequence}")
+        self.store.save_scenario(scenario)
+        return _json_response({"scenario_id": sid, "removed": len(removed), "change_count": len(scenario.history)})
+
     def add_scenarios(self, params: dict[str, str], body: dict[str, Any]) -> Response:
         """検討名で、一覧（q・kind で絞った後・件数の上限も一覧と同じ）の製品ごとに試算をまとめて作る。既にあれば作らない。"""
         name = _text_field(body, "name", "検討名")
@@ -479,6 +567,34 @@ class Group:
         return code
 
 
+def _differences(base: dict[str, str | None], after: dict[str, str | None]) -> dict[str, str | None]:
+    """費目ごとの 新 − 元。どちらかが未登録なら None。"""
+    return {
+        head: None if base[head] is None or after[head] is None else _s(Decimal(after[head]) - Decimal(base[head]))
+        for head in base
+    }
+
+
+def _compare_summary(names: list[str], rows: list[dict[str, Any]]) -> dict[str, dict[str, dict[str, Any]]]:
+    """検討名 → 費目 → 合計の差（未登録の製品は除く）と、下がった・上がった・変わらない・未登録の製品の数。"""
+    summary: dict[str, dict[str, dict[str, Any]]] = {}
+    for name in names:
+        trials = [r for r in rows if r["kind"] == "trial" and r["name"] == name]
+        by_head: dict[str, dict[str, Any]] = {}
+        for head in COMPARE_HEADS:
+            values = [r["differences"][head.name] for r in trials]
+            known = [Decimal(v) for v in values if v is not None]
+            by_head[head.name] = {
+                "difference": _s(sum(known, Decimal(0))),
+                "down": sum(1 for v in known if v < 0),
+                "up": sum(1 for v in known if v > 0),
+                "same": sum(1 for v in known if v == 0),
+                "missing": len(values) - len(known),
+            }
+        summary[name] = {"products": len(trials), "heads": by_head}
+    return summary
+
+
 def _batches(history: tuple[ChangeRecord, ...]) -> list[list[ChangeRecord]]:
     """履歴を1回の操作ごとに束ねる（batch の無い行は1行で1回）。"""
     groups: list[list[ChangeRecord]] = []
@@ -488,6 +604,50 @@ def _batches(history: tuple[ChangeRecord, ...]) -> list[list[ChangeRecord]]:
         else:
             groups.append([record])
     return groups
+
+
+def replayed_batches(scenario: Scenario, head: CostHead | None = None) -> list[list[ChangeRecord]]:
+    """履歴の操作を、試算の今の版・計上範囲の上で記録のときと同じ apply_batch で当て直した行（1回の操作ごと）。
+
+    原価は今の登録値で、費目は head（省けば試算の費目）。試算そのものと保存した記録は変えない。
+    """
+    head = head or scenario.head
+    fresh = Scenario(scenario.name, scenario.base, scenario.product_code, scenario.version, head,
+                     scenario.policy, scenario.note)
+    batches = [
+        list(fresh.apply_batch([r.change for r in records], records[0].recorded_at, records[0].volume,
+                               records[0].allocation))
+        for records in _batches(scenario.history)
+    ]
+    # 前・後の原価は製品の表と同じ見方で出す（足し上げる範囲に登録値が1つも無ければ 0 でなく未登録）
+    records = fresh.history
+    totals = [
+        _View(Scenario(fresh.name, fresh.base, fresh.product_code, fresh.version, head, fresh.policy,
+                       history=records[:k]), "diff", head, False).total
+        for k in range(len(records) + 1)
+    ]
+    by_sequence = {r.sequence: i for i, r in enumerate(records)}
+    return [
+        [ChangeRecord(**{**r.__dict__, "cost_before": totals[by_sequence[r.sequence]],
+                         "cost_after": totals[by_sequence[r.sequence] + 1]}) for r in batch]
+        for batch in batches
+    ]
+
+
+def _places(version: Version, structure: _Structure, product: str, part: str) -> list[tuple[str, str | None, Decimal]]:
+    """製品の構成で part が入る場所（親・風船番号・員数）。製品の中の組立品の下も含む。"""
+    places = []
+    for parent in dict.fromkeys([product, *structure.usage(product)]):
+        places.extend((parent, line.balloon, line.quantity)
+                      for line in version.children(parent, by_balloon=True) if line.child == part)
+    return places
+
+
+def _int_field(body: dict[str, Any], key: str, label: str) -> int:
+    text = str(body.get(key) if body.get(key) is not None else "").strip()
+    if not text.isdigit():
+        raise ApiError(400, f"{label}（{key}）は整数にする: {text}")
+    return int(text)
 
 
 def _batch_json(records: list[ChangeRecord]) -> dict[str, Any]:

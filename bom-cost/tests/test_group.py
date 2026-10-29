@@ -185,7 +185,7 @@ class Tree(SampleDbCase):
         r = self.tree(f"&product=A-100&name={NAME}")
         self.assertEqual((r["scenario_id"], r["view"]["mode"]), (sid, "diff"))
         self.assertEqual([(c["code"], c["quantity"], c["role"]) for c in r["children"]],
-                         [("A-100", "1", "土台"), ("C-300", "-3", "抜く"), ("F-600", "3", "足す")])
+                         [("A-100", "1", "土台"), ("C-300", "-3", "削除"), ("F-600", "3", "追加")])
         same = self.ok("GET", f"/api/scenarios/{sid}/tree", "mode=diff&head=MATERIAL")
         self.assertEqual((r["node"], r["children"]), (same["node"], same["children"]))
         inner = self.tree(f"&product=A-100&name={NAME}&code=A-100")
@@ -318,7 +318,7 @@ class ChangeList(SampleDbCase):
         self.assertEqual([(x["product"], x["kind"], x["text"], x["cost_before"], x["cost_after"], x["difference"])
                           for x in r["rows"]],
                          [("A-100", "REPLACE", "B-200 → X-610（×2）", "200", "-2600", "-2800"),
-                          ("K-200", "ADD", "F-600 を 1 足す", "3000", "3250", "250")])
+                          ("K-200", "ADD", "追加 F-600 ×1", "3000", "3250", "250")])
         self.assertEqual((r["count"], r["difference"], r["missing_count"]), (2, "-2550", 0))
         self.assertEqual((r["rows"][0]["part"], r["rows"][0]["replacement"], r["rows"][0]["quantity"]),
                          ("B-200", "X-610", "2"))
@@ -331,6 +331,192 @@ class ChangeList(SampleDbCase):
     def test_empty(self) -> None:
         r = self.ok("GET", "/api/group/changes", f"version=2026-10&name={NAME}")
         self.assertEqual((r["rows"], r["difference"]), ([], "0"))
+
+    def test_costs_follow_registered_values_and_records_stay(self) -> None:
+        sid = self.change("A-100", kind="REPLACE", part="B-200", replacement="X-610", quantity="2")["scenario_id"]
+        self.change("K-200", kind="ADD", part="F-600", quantity="1")
+        self.ok("PUT", "/api/manual/items", body={"code": "X-610", "name": "試作品", "costs": {"MATERIAL": "300"}})
+        r = self.ok("GET", "/api/group/changes", f"version=2026-10&name={NAME}")
+        a = r["rows"][0]
+        # 200 − 2×1,600 ＋ 2×300（記録した時は X-610 が 200 で −2,800）
+        self.assertEqual((a["cost_before"], a["cost_after"], a["difference"]), ("200", "-2400", "-2600"))
+        self.assertEqual((a["part_name"], a["replacements"]),
+                         ("部品B", [{"code": "X-610", "quantity": "2", "name": "試作品", "kind": ""}]))
+        self.assertEqual((r["difference"], a["sequence"], a["scenario_id"]), ("-2350", 1, sid))
+        # 記録の値は書き換えない
+        record = self.store.load_scenario(sid).history[0]
+        self.assertEqual((str(record.cost_after), str(record.difference)), ("-2600", "-2800"))
+        # 構成の行は区分も持つ（②の構成の表の列）
+        tree = self.ok("GET", "/api/group/tree", "version=2026-10&product=A-100&by_balloon=1")
+        self.assertEqual([(c["balloon"], c["code"], c["kind"]) for c in tree["children"]],
+                         [("1", "B-200", "B"), ("2", "C-300", "B")])
+        # 製品で絞れる
+        only = self.ok("GET", "/api/group/changes", f"version=2026-10&name={NAME}&product=K-200")
+        self.assertEqual(([x["product"] for x in only["rows"]], only["difference"]), (["K-200"], "250"))
+
+
+class TrialHeadAndWords(SampleDbCase):
+    """②の差は製品の行と同じ費目でそろえる・変更の語は 置換・削除・追加・員数変更。"""
+
+    def test_changes_follow_requested_head_like_product_rows(self) -> None:
+        self.change("A-100", kind="REPLACE", part="B-200", replacement="X-610", quantity="2", head="MANUFACTURING")
+        self.change("K-200", kind="ADD", part="F-600", quantity="1", head="MANUFACTURING")
+        # 費目を付けなければ今まで通り試算の費目（ここでは製造原価で、サンプルは未登録）
+        plain = self.ok("GET", "/api/group/changes", f"version=2026-10&name={NAME}")
+        self.assertEqual([x["difference"] for x in plain["rows"]], [None, None])
+        for head in ("MATERIAL", "MANUFACTURING"):
+            changes = self.ok("GET", "/api/group/changes", f"version=2026-10&name={NAME}&head={head}")
+            products = self.products(f"&name={NAME}&head={head}")
+            by_product = {p["code"]: p["difference"] for p in products["products"]}
+            for row in changes["rows"]:
+                self.assertEqual(row["difference"], by_product[row["product"]], (head, row["product"]))
+            self.assertEqual(products["difference"], {"MATERIAL": "-2550", "MANUFACTURING": None}[head])
+            self.assertEqual(products["missing_count"], {"MATERIAL": 0, "MANUFACTURING": 3}[head])
+        # 製品の行の差の合計は表に出した製品の差の合計（未登録の製品は除いて数える）
+        self.ok("PUT", "/api/manual/items", body={"code": "K-200", "name": "既存品", "kind": "P",
+                                                 "costs": {"MANUFACTURING": "100"}})
+        self.ok("PUT", "/api/manual/items", body={"code": "F-600", "name": "部品F", "kind": "B",
+                                                 "costs": {"MANUFACTURING": "40"}})
+        products = self.products(f"&name={NAME}&head=MANUFACTURING")
+        # K-200 は ＋40、V-110 は F-600 を含むので 0、A-100 だけ未登録
+        self.assertEqual((products["difference"], products["missing_count"]), ("40", 1))
+        k200 = self.ok("GET", "/api/group/changes", f"version=2026-10&name={NAME}&head=MANUFACTURING&product=K-200")
+        self.assertEqual(k200["rows"][0]["difference"], "40")
+
+    def test_place_quantity_change(self) -> None:
+        r = self.change("A-100", kind="SET_QUANTITY", part="C-300", parent="A-100", balloon="2", quantity="1")
+        self.assertEqual(r["summary"]["total"], "-800")  # 200 − 3×500 ＋ 1×500
+        # 組立品の下の場所も、その親の使用数をかけて変える（V-110 の中の A-100 は1台に1つ）
+        v = self.change("V-110", kind="SET_QUANTITY", part="C-300", parent="A-100", balloon="2", quantity="1")
+        self.assertEqual(v["summary"]["total"], "-1050")  # −50 − 2×500
+        rows = self.ok("GET", "/api/group/changes", f"version=2026-10&name={NAME}&product=A-100")["rows"]
+        self.assertEqual([(x["kind"], x["kind_label"], x["text"], x["parent"], x["balloon"], x["quantity"]) for x in rows],
+                         [("SET_QUANTITY", "員数変更", "員数変更 #2 C-300 → 1", "A-100", "2", "1")])
+        # 同じ場所はもう置換・員数変更できない。場所は追加・削除には付けられない
+        self.assert_error(self.call("POST", "/api/group/changes", body={
+            "version_id": "2026-10", "name": NAME, "product": "A-100", "kind": "REPLACE", "part": "C-300",
+            "parent": "A-100", "balloon": "2", "replacement": "F-600"}), 400, "もう置換した")
+        self.assert_error(self.call("POST", "/api/group/changes", body={
+            "version_id": "2026-10", "name": NAME, "product": "A-100", "kind": "ADD", "part": "C-300",
+            "parent": "A-100"}), 400, "置換だけ")
+        self.assert_error(self.call("POST", "/api/group/changes", body={
+            "version_id": "2026-10", "name": NAME, "product": "A-100", "kind": "SET_QUANTITY", "part": "B-200",
+            "parent": "A-100", "balloon": "9", "quantity": "1"}), 400, "構成に無い")
+
+    def test_words_of_each_kind_and_compare_uses_current_costs(self) -> None:
+        self.change("A-100", kind="REPLACE", part="B-200", replacement="X-610", quantity="2")
+        self.change("A-100", kind="REMOVE", part="C-300", quantity="1")
+        self.change("A-100", kind="ADD", part="F-600", quantity="1")
+        self.change("A-100", kind="SET_QUANTITY", part="F-600", quantity="2")
+        rows = self.ok("GET", "/api/group/changes", f"version=2026-10&name={NAME}")["rows"]
+        self.assertEqual([(x["kind_label"], x["text"]) for x in rows],
+                         [("置換", "B-200 → X-610（×2）"), ("削除", "削除 C-300 ×1"), ("追加", "追加 F-600 ×1"),
+                          ("員数変更", "員数変更 F-600 → 2")])
+        # ③の変更の一覧の差も、記録した時点でなく今の登録値で当て直した値
+        self.ok("PUT", "/api/manual/items", body={"code": "X-610", "name": "試作品", "costs": {"MATERIAL": "300"}})
+        r = self.ok("GET", "/api/group/compare", f"version=2026-10&names={quote(NAME)}&q=A-100&ignore_amortization=1")
+        changes = r["rows"][1]["changes"]
+        self.assertEqual((changes[0]["kind_label"], changes[0]["difference"]), ("置換", "-2600"))
+        self.assertEqual([c["text"] for c in changes][1:], ["削除 C-300 ×1", "追加 F-600 ×1", "員数変更 F-600 → 2"])
+
+
+class PairViewData(SampleDbCase):
+    """②の左右の表示に要る、変更の行の場所・代わりの部品（名称・区分）・員数がそろって返ること。"""
+
+    def test_each_kind_lines_up_with_its_place(self) -> None:
+        self.change("V-110", kind="REPLACE", part="B-200", parent="A-100", balloon="1",
+                    replacements=[{"code": "X-610", "quantity": "1"}, {"code": "F-600", "quantity": "1"}])
+        self.change("V-110", kind="SET_QUANTITY", part="F-600", parent="V-110", balloon="2", quantity="3")
+        self.change("V-110", kind="REMOVE", part="C-300", quantity="1")
+        self.change("V-110", kind="ADD", part="K-200", quantity="1")
+        rows = self.ok("GET", "/api/group/changes", f"version=2026-10&name={NAME}&product=V-110")["rows"]
+        self.assertEqual(
+            [(x["kind"], x["parent"], x["balloon"], x["part"], x["part_name"], x["part_kind"], x["quantity"],
+              [(r["code"], r["name"], r["kind"], r["quantity"]) for r in x["replacements"]]) for x in rows],
+            [("REPLACE", "A-100", "1", "B-200", "部品B", "B", "1", [("X-610", "試作品", "", "1"), ("F-600", "部品F", "B", "1")]),
+             ("SET_QUANTITY", "V-110", "2", "F-600", "部品F", "B", "3", []),
+             ("REMOVE", None, None, "C-300", "部品C", "B", "1", []),
+             ("ADD", None, None, "K-200", "既存品", "P", "1", [])])
+        # 行を合わせる相手（版の構成の場所）は tree の by_balloon の行の 親・風船番号・品番 と同じ形
+        tree = self.ok("GET", "/api/group/tree", "version=2026-10&product=V-110&code=A-100&by_balloon=1")
+        self.assertIn(("A-100", "1", "B-200"), [(c["parent"], c["balloon"], c["code"]) for c in tree["children"]])
+
+
+class UndoChange(SampleDbCase):
+    def undo(self, sid: int, sequence: object) -> object:
+        return self.call("POST", "/api/group/changes/undo", body={"scenario_id": sid, "sequence": sequence})
+
+    def test_removes_one_operation_from_the_middle(self) -> None:
+        sid = self.change("A-100", kind="ADD", part="F-600", quantity="1")["scenario_id"]
+        self.change("A-100", kind="REPLACE", part="B-200", parent="A-100", balloon="1",
+                    replacements=[{"code": "X-610", "quantity": "1"}, {"code": "F-600", "quantity": "1"}])
+        self.change("A-100", kind="REPLACE", part="C-300", parent="A-100", balloon="2",
+                    replacements=[{"code": "X-610", "quantity": "1"}, {"code": "F-600", "quantity": "2"}])
+        self.change("A-100", kind="ADD", part="F-600", quantity="2")
+        self.assertEqual([(r.sequence, r.batch) for r in self.store.load_scenario(sid).history],
+                         [(1, None), (2, 2), (3, 2), (4, 4), (5, 4), (6, None)])
+        # まとまりの途中の行からは取り消せない
+        self.assert_error(self.undo(sid, 3), 400, "取り消す変更")
+        r = self.undo(sid, 2)
+        self.assertEqual(r.status, 200, r.body.decode("utf-8"))
+        self.assertEqual(r.json()["removed"], 2)
+        history = self.store.load_scenario(sid).history
+        self.assertEqual([(h.sequence, h.batch, h.change.part, h.change.replacement) for h in history],
+                         [(1, None, "F-600", None), (2, 2, "C-300", "X-610"), (3, 2, "C-300", "F-600"),
+                          (4, None, "F-600", None)])
+        # 残りの原価は今の構成で出し直す: 200 ＋ 250 − 3×500 ＋ 200 ＋ 2×250 ＋ 2×250
+        rows = self.ok("GET", "/api/group/changes", f"version=2026-10&name={NAME}")["rows"]
+        self.assertEqual([x["sequence"] for x in rows], [1, 2, 4])
+        self.assertEqual(self.by_code()["A-100"]["after"], "150")
+        self.assert_error(self.undo(sid, 9), 400, "取り消す変更")
+        self.assert_error(self.undo(sid, "x"), 400, "整数")
+        self.assert_error(self.undo(999, 1), 404, "999")
+
+
+class BulkReplace(SampleDbCase):
+    def bulk(self, items: list[dict], **extra: str) -> object:
+        return self.call("POST", "/api/group/changes/bulk",
+                         body={"version_id": "2026-10", "name": NAME, "items": items, **extra})
+
+    def test_one_place_replace_per_location_across_products(self) -> None:
+        r = self.bulk([{"product": "A-100", "part": "B-200"}, {"product": "V-110", "part": "B-200"}],
+                      replacement="X-610")
+        self.assertEqual(r.status, 200, r.body.decode("utf-8"))
+        self.assertEqual((r.json()["count"], r.json()["products"]), (2, ["A-100", "V-110"]))
+        by_base = {s.base: self.store.load_scenario(s.scenario_id) for s in self.store.list_scenarios()}
+        # 員数が空なら場所の員数のまま。V-110 の B-200 は組立品 A-100 の下の場所
+        self.assertEqual([(c.part, c.parent, c.balloon, c.replacement, str(c.quantity)) for c in by_base["A-100"].changes],
+                         [("B-200", "A-100", "1", "X-610", "2")])
+        self.assertEqual([(c.parent, c.balloon) for c in by_base["V-110"].changes], [("A-100", "1")])
+        rows = self.by_code()
+        self.assertEqual((rows["A-100"]["difference"], rows["V-110"]["difference"]), ("-2800", "-2800"))
+        # 1か所ずつ今の置換と同じ形で一覧に出る
+        changes = self.ok("GET", "/api/group/changes", f"version=2026-10&name={NAME}")["rows"]
+        self.assertEqual([x["text"] for x in changes], ["#1 B-200 → X-610 ×2", "#1 B-200 → X-610 ×2"])
+
+    def test_every_location_with_given_quantity(self) -> None:
+        r = self.bulk([{"product": "V-110", "part": "C-300"}], replacement="F-600", quantity="1")
+        self.assertEqual(r.status, 200, r.body.decode("utf-8"))
+        changes = self.store.load_scenario(self.store.list_scenarios()[0].scenario_id).changes
+        self.assertEqual([(c.parent, c.balloon, str(c.quantity)) for c in changes], [("V-110", "3", "1"), ("A-100", "2", "1")])
+
+    def test_all_or_nothing(self) -> None:
+        sid = self.change("A-100", kind="ADD", part="F-600")["scenario_id"]
+        # V-110 の C-300 は員数 −1 の場所なので、員数が空だと置換できない
+        bad = self.bulk([{"product": "A-100", "part": "B-200"}, {"product": "V-110", "part": "C-300"}],
+                        replacement="X-610")
+        self.assert_error(bad, 400, "正の数")
+        self.assertEqual([s.scenario_id for s in self.store.list_scenarios()], [sid])
+        self.assertEqual(len(self.store.load_scenario(sid).history), 1)
+        self.assert_error(self.bulk([{"product": "A-100", "part": "B-200"}], replacement="NOPE"), 400, "NOPE")
+        self.assert_error(self.bulk([{"product": "K-200", "part": "B-200"}], replacement="X-610"), 400, "K-200")
+        # 同じ場所を2回は置換できない（今の置換と同じ）
+        twice = self.bulk([{"product": "V-110", "part": "B-200"}, {"product": "V-110", "part": "B-200"}],
+                          replacement="X-610")
+        self.assert_error(twice, 400, "もう置換した")
+        self.assertEqual(len(self.store.list_scenarios()), 1)
+        self.assert_error(self.bulk([], replacement="X-610"), 400, "items")
+        self.assert_error(self.bulk([{"product": "A-100", "part": "B-200"}]), 400, "代わりの品番")
 
 
 class Compare(SampleDbCase):
@@ -363,6 +549,27 @@ class Compare(SampleDbCase):
         # 名前が1つなら新の行も1つ。製品の絞り込みも効く
         one = self.compare(f"&names={quote(NAME)}&q=土台&ignore_amortization=true")
         self.assertEqual([(x["kind"], x["name"]) for x in one["rows"]], [("base", None), ("trial", NAME)])
+
+    def test_differences_changes_and_summary(self) -> None:
+        names = quote(json.dumps([NAME, "別の検討", "無い検討"]))
+        r = self.compare(f"&names={names}&ignore_amortization=1")
+        trial, other = r["rows"][1], r["rows"][2]
+        self.assertNotIn("differences", r["rows"][0])
+        self.assertEqual((trial["differences"]["MATERIAL"], other["differences"]["MATERIAL"]), ("-2800", "250"))
+        # 未登録（片方でも）と無視した償却費は差も None で、0 と分ける
+        self.assertIsNone(trial["differences"]["DIRECT"])
+        self.assertIsNone(trial["differences"]["AMORTIZATION"])
+        self.assertEqual([(c["kind"], c["text"]) for c in trial["changes"]], [("REPLACE", "B-200 → X-610（×2）")])
+        self.assertEqual(other["changes"][0]["difference"], "250")
+        s = r["summary"]
+        self.assertEqual(list(s), [NAME, "別の検討", "無い検討"])
+        self.assertEqual(s[NAME]["products"], 1)
+        self.assertEqual(s[NAME]["heads"]["MATERIAL"],
+                         {"difference": "-2800", "down": 1, "up": 0, "same": 0, "missing": 0})
+        self.assertEqual(s["別の検討"]["heads"]["MATERIAL"]["up"], 1)
+        self.assertEqual(s[NAME]["heads"]["DIRECT"],
+                         {"difference": "0", "down": 0, "up": 0, "same": 0, "missing": 1})
+        self.assertEqual(s["無い検討"]["products"], 0)
 
     def test_registered_values_of_replacement_move_new_row(self) -> None:
         names = quote(json.dumps([NAME]))
