@@ -18,6 +18,7 @@ async function enterGroup() {
   options(document.getElementById("group-head"), state.meta.heads.map((h) => [h.id, h.label]));
   await loadGroupNames();
   await loadCodes(version.value);
+  if (version.value) await drawGroup();
 }
 
 async function loadGroupNames() {

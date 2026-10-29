@@ -4,7 +4,7 @@
 
 const MAX_FILE_BYTES = 16 * 1024 * 1024; // サーバーの上限と同じ
 const screenState = {
-  screen: "product",
+  screen: "group",
   allocation: "BY_USAGE",
   allocations: [],
   manual: null,

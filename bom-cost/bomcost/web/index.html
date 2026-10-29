@@ -10,14 +10,14 @@
 <header class="bar">
   <h1>BOM 原価モック</h1>
   <div class="seg" id="screen-seg" role="group" aria-label="画面">
-    <button type="button" data-screen="product" class="on">製品から</button>
-    <button type="button" data-screen="group">製品群</button>
+    <button type="button" data-screen="group" class="on">製品群</button>
+    <button type="button" data-screen="product">製品から</button>
     <button type="button" data-screen="part">部品から</button>
     <button type="button" data-screen="change">モデルチェンジ</button>
     <button type="button" data-screen="manual">手入力</button>
     <button type="button" data-screen="import">取り込み・版</button>
   </div>
-  <div class="bar-group" id="product-controls">
+  <div class="bar-group" id="product-controls" hidden>
   <div class="seg" id="mode-seg" role="group" aria-label="モード">
     <button type="button" data-mode="diff" class="on">差分</button>
     <button type="button" data-mode="bulk">一括</button>
@@ -41,7 +41,7 @@
 
 <div id="message" class="message" hidden></div>
 
-<main class="layout" id="main-layout">
+<main class="layout" id="main-layout" hidden>
   <section class="panel left" id="left-panel">
     <div class="panel-head">
       <h2 id="left-title">構成</h2>
@@ -86,7 +86,7 @@
   </section>
 </main>
 
-<main class="screen" id="screen-group" hidden>
+<main class="screen" id="screen-group">
   <section class="panel">
     <div class="panel-head">
       <h2>製品群</h2>

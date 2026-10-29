@@ -117,11 +117,8 @@ async function init() {
     showMessage("版なし", "info");
     return;
   }
-  if (!state.scenarios.length) {
-    showMessage("試算なし", "info");
-    return;
-  }
-  await selectScenario(state.scenarios[0].scenario_id);
+  if (state.scenarios.length) await selectScenario(state.scenarios[0].scenario_id);
+  await showScreen("group");  // 開いたときの画面は製品群
 }
 
 async function loadLists() {
