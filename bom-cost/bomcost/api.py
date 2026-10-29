@@ -233,12 +233,13 @@ class _View:
             self._judgements[code] = judge_double_counting(self.version, [code])
         return self._judgements[code]
 
-    def verdict(self, code: str, head: CostHead | None = None) -> str | None:
+    def judgement(self, code: str, head: CostHead | None = None) -> Judgement | None:
         head = head or self.head
-        for j in self.judgements(code):
-            if j.head is head:
-                return j.verdict.value
-        return None
+        return next((j for j in self.judgements(code) if j.head is head), None)
+
+    def verdict(self, code: str, head: CostHead | None = None) -> str | None:
+        j = self.judgement(code, head)
+        return None if j is None else j.verdict.value
 
     def verdict_text(self, code: str) -> str:
         return "・".join(f"{j.head.value}: {j.verdict.value}" for j in self.judgements(code))
@@ -267,6 +268,7 @@ class _View:
             code = code or self.root
             quantity = Decimal(1) if code == self.root else None
         cost = self.cost(code)
+        judgement = self.judgement(code)
         return {
             "code": code,
             "name": self.name(code),
@@ -279,7 +281,9 @@ class _View:
             "incomplete": self.incomplete(code),
             "has_children": bool(self.lines(code)),
             "role": self.role(parent, line) if line is not None or code == self.root else "",
-            "verdict": self.verdict(code),
+            "verdict": None if judgement is None else judgement.verdict.value,
+            # 判定が比べた2つの値（登録値と、子の足し上げ・製造原価なら4費目の合計）
+            "verdict_values": None if judgement is None else [_s(judgement.item_value), _s(judgement.compared_value)],
             "usage": _s(self.usage(code)),
         }
 

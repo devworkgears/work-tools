@@ -231,7 +231,13 @@ function nodeRow(node, path, depth) {
   else costCell = el("span", { class: "num" }, fmt(node.cost));
   const marks = [];
   if (node.cost !== null && node.incomplete) marks.push(el("span", { class: "tag warn" }, "一部未登録"));
-  if (node.verdict && node.verdict !== "判定できない") marks.push(el("span", { class: "tag warn", title: "二重計上の判定（推定）" }, node.verdict));
+  if (node.verdict && node.verdict !== "判定できない") {
+    // 印の数は計算に効かない。比べた2つの値を並べ、何を見て推定したかを出す
+    const [own, compared] = node.verdict_values || [null, null];
+    const label = document.getElementById("head-select").value === "MANUFACTURING" ? "4費目の合計" : "子の足し上げ";
+    marks.push(el("span", { class: "tag warn", title: "二重計上の判定（推定）" },
+      `${node.verdict}（登録 ${fmt(own)}／${label} ${fmt(compared)}）`));
+  }
   const row = el(
     "div",
     { class: "node", "data-path": path, style: `padding-left:${8 + depth * 18}px` },

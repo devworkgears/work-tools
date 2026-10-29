@@ -98,6 +98,7 @@ class ListsAndTree(DemoDbCase):
                          ("-1", "-500", "抜く"))
         # 親の登録値 200 は子の足し上げ 4,700 よりずっと小さい
         self.assertEqual(children["A-100"]["verdict"], "自分だけらしい")
+        self.assertEqual(children["A-100"]["verdict_values"], ["200", "4700"])
 
         sub = self.ok("GET", self.url("/tree"), "code=A-100")
         self.assertEqual({c["code"]: (c["quantity"], c["cost"]) for c in sub["children"]},
