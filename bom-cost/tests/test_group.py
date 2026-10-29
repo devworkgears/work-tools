@@ -226,6 +226,46 @@ class AddScenarios(SampleDbCase):
         self.assert_error(self.call("POST", "/api/group/scenarios", body={"name": NAME}), 400, "版")
 
 
+class ManualSplit(SampleDbCase):
+    """手入力の一覧を製品と部品に分ける。製品の表には試算（新製品）も並ぶ。"""
+
+    def put(self, code: str, **extra: str) -> dict:
+        return self.ok("PUT", "/api/manual/items", body={"code": code, "name": f"品目{code}", **extra})
+
+    def test_role_decides_kind_and_table(self) -> None:
+        self.put("N-900", role="product")
+        data = self.put("Q-901", role="part", kind="B")
+        self.assertEqual(data["product_kind"], "P")  # 版で製品とみなす記号に合わせる
+        by_code = {i["code"]: (i["kind"], i["role"]) for i in data["items"]}
+        self.assertEqual(by_code, {"X-610": ("", "part"), "N-900": ("P", "product"), "Q-901": ("B", "part")})
+        # 製品として登録したものは製品群の製品の一覧にも出る
+        self.assertIn("N-900", [x["code"] for x in self.products()["products"]])
+
+    def test_part_cannot_take_product_kind_and_role_is_checked(self) -> None:
+        self.assert_error(self.call("PUT", "/api/manual/items", body={"code": "Q", "name": "q", "role": "part",
+                                                                      "kind": "P"}), 400, "製品の記号")
+        self.assert_error(self.call("PUT", "/api/manual/items", body={"code": "Q", "name": "q", "role": "x"}),
+                          400, "role")
+
+    def test_without_role_keeps_kind_as_sent(self) -> None:
+        data = self.put("R-902", kind="P")
+        self.assertEqual({i["code"]: i["role"] for i in data["items"]}["R-902"], "product")
+
+    def test_trials_are_listed_as_products(self) -> None:
+        self.change("V-110", kind="ADD", part="F-600")
+        self.ok("POST", "/api/group/scenarios", body={"version_id": "2026-10", "name": NAME, "q": "A-"})
+        trials = self.ok("GET", "/api/manual")["trials"]
+        self.assertEqual([(t["code"], t["name"], t["base"], t["trial_name"], t["version_id"]) for t in trials],
+                         [(f"V-110#{NAME}", "新しい製品", "V-110", NAME, "2026-10"),
+                          (f"A-100#{NAME}", "土台の製品", "A-100", NAME, "2026-10")])
+
+
+class EmptyManual(EmptyDbCase):
+    def test_product_kind_without_versions(self) -> None:
+        data = self.ok("PUT", "/api/manual/items", body={"code": "N-1", "name": "n", "role": "product"})
+        self.assertEqual((data["product_kind"], data["items"][0]["kind"], data["trials"]), ("製品", "製品", []))
+
+
 class DemoTree(unittest.TestCase):
     def test_demo_a100_children(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -167,7 +167,7 @@ function trialItemBlock() {
   const costs = Object.fromEntries(state.meta.heads.map((h) => [h.id, el("input", { inputmode: "decimal", size: 7 })]));
   const save = async () => {
     await api("PUT", "/api/manual/items", {
-      code: code.value.trim(), name: name.value.trim(),
+      role: "part", code: code.value.trim(), name: name.value.trim(),
       costs: Object.fromEntries(Object.entries(costs).map(([k, input]) => [k, input.value])),
     });
     await loadCodes(groupInputs().version);

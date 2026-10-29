@@ -189,6 +189,7 @@ class ScenarioInfo:
     name: str
     base: str
     version_id: str
+    product_code: str = ""  # 試算の製品（仮の品目）の品番
 
 
 def _text(value: Decimal | None) -> str | None:
@@ -621,7 +622,7 @@ class Store:
 
     def list_scenarios(self) -> list[ScenarioInfo]:
         rows = self._conn.execute(
-            "SELECT scenario_id, name, base, version_id FROM scenario ORDER BY scenario_id"
+            "SELECT scenario_id, name, base, version_id, product_code FROM scenario ORDER BY scenario_id"
         ).fetchall()
         return [ScenarioInfo(*r) for r in rows]
 

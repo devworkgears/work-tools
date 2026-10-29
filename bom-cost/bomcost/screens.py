@@ -21,6 +21,7 @@ from .importer import (
     xlsx_sheet_names,
 )
 from .model import MANUAL_VERSION_ID, CostHead, CostRow, ImportWarning, Item, Version, Volume
+from .group import PRODUCT_KIND_TEXT, Group, _Structure
 from .modelchange import compare_structures
 from .mold import Allocation, MoldCost, ReuseTarget, allocate_mold_cost, part_users, reuse_impact
 from .normalize import to_code, to_decimal, to_optional_code
@@ -298,17 +299,59 @@ class Screens:
 
     # 手入力 ------------------------------------------------------------------
 
+    def _product_kind(self, versions: dict[str, Version | None]) -> str:
+        """手入力の製品に付ける区分の記号。一番新しい版（manual を重ねる）で製品とみなす記号、版が無ければ「製品」。
+
+        製品群は版ごとに記号を選ぶので、版の記号に合わせないと手入力の製品が製品の一覧から外れる。
+        """
+        latest = self.store.list_versions()
+        version = self._cached_version(versions, latest[0].version_id) if latest else None
+        if version is None:
+            return PRODUCT_KIND_TEXT
+        return Group.product_kind(version, _Structure(version)) or PRODUCT_KIND_TEXT
+
+    def _cached_version(self, versions: dict[str, Version | None], version_id: str) -> Version | None:
+        if version_id not in versions:
+            try:
+                versions[version_id] = self.store.load_version(version_id)
+            except KeyError:
+                versions[version_id] = None
+        return versions[version_id]
+
+    def _trials(self, versions: dict[str, Version | None]) -> list[dict[str, Any]]:
+        """試算（新製品）の一覧。製品群の試作品も「新しい試算」で作ったものも1本1行。"""
+        rows = []
+        for s in self.store.list_scenarios():
+            version = self._cached_version(versions, s.version_id)
+            base = None if version is None else version.items.get(s.base)
+            rows.append(
+                {
+                    "scenario_id": s.scenario_id,
+                    "code": s.product_code,
+                    "name": "" if base is None else base.name,
+                    "base": s.base,
+                    "trial_name": s.name,
+                    "version_id": s.version_id,
+                }
+            )
+        return rows
+
     def manual(self, params: dict[str, str]) -> Response:
+        """手入力の品目（role で製品・部品に分ける）と試算（新製品）の一覧ほか。"""
         manual = self.store.load_manual()
+        versions: dict[str, Version | None] = {}
+        product_kind = self._product_kind(versions)
         codes = list(manual.items) + [r.code for r in manual.cost_rows if r.code not in manual.items]
         items = []
         for code in codes:
             item = manual.items.get(code)
+            kind = "" if item is None else item.kind
             items.append(
                 {
                     "code": code,
                     "name": "" if item is None else item.name,
-                    "kind": "" if item is None else item.kind,
+                    "kind": kind,
+                    "role": "product" if kind == product_kind else "part",
                     "costs": {h.name: _s(manual.cost_value(code, h)) for h in HEADS},
                 }
             )
@@ -316,6 +359,8 @@ class Screens:
             {
                 "heads": [{"id": h.name, "label": h.value} for h in HEADS],
                 "items": items,
+                "product_kind": product_kind,
+                "trials": self._trials(versions),
                 "volumes": [{"product": v.product, "annual": _s(v.annual), "kind": v.kind.value}
                             for v in manual.volumes.values()],
                 "molds": [{"part": m.part, "amount": _s(m.amount), "years": _s(m.years),
@@ -328,7 +373,11 @@ class Screens:
         )
 
     def put_manual_item(self, params: dict[str, str], body: dict[str, Any]) -> Response:
-        """試作品の品目と原価を足す・直す（同じ品番は入れ替え）。手入力の版 manual に入る。"""
+        """試作品の品目と原価を足す・直す（同じ品番は入れ替え）。手入力の版 manual に入る。
+
+        role（product・part）を送ると区分はそれで決まる: product は製品とみなす記号、part は kind（製品の記号は不可）。
+        role が無ければ kind をそのまま区分にする。
+        """
         code = to_code(_text_field(body, "code", "品番"))
         name = _text_field(body, "name", "名称")
         costs = body.get("costs") or {}
@@ -341,10 +390,20 @@ class Screens:
             except KeyError:
                 raise ApiError(400, f"費目が分からない: {key}") from None
             values[head] = _optional_number(value, head.value)
+        kind = _optional_text(body, "kind")
+        role = _optional_text(body, "role")
+        if role:
+            product_kind = self._product_kind({})
+            if role == "product":
+                kind = product_kind
+            elif role != "part":
+                raise ApiError(400, f"role が分からない: {role}（product・part）")
+            elif kind == product_kind:
+                raise ApiError(400, f"部品の区分に製品の記号 {kind} は使えない")
         manual = self.store.load_manual()
         kept = manual.items.get(code)
         result = _manual_copy(manual, drop_item=code)
-        result.add_item(Item(code, name, _optional_text(body, "kind"),
+        result.add_item(Item(code, name, kind,
                              "" if kept is None else kept.lifecycle,
                              False if kept is None else kept.has_children))
         if any(v is not None for v in values.values()):

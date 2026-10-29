@@ -307,27 +307,44 @@ async function renderManual(data) {
   };
   const val = (key, name, fallback = "") => (screenState.editing[key]?.[name] ?? fallback) ?? "";
 
-  // 品目と原価
+  // 品目と原価（製品と部品に分ける。製品には試算＝新製品も並べる）
   const itemInputs = {
+    role: el("select", {}, el("option", { value: "part" }, "部品"), el("option", { value: "product" }, "製品")),
     code: el("input", { value: val("item", "code"), placeholder: "例 X-610" }),
     name: el("input", { value: val("item", "name"), placeholder: "例 試作品" }),
     kind: el("input", { value: val("item", "kind"), size: 4 }),
   };
+  itemInputs.role.value = val("item", "role", "part");
   const costInputs = Object.fromEntries(m.heads.map((h) => [h.id, el("input", { value: val("item", h.id), inputmode: "decimal", size: 9 })]));
+  const empty = (n) => [el("tr", {}, el("td", { colspan: n, class: "muted" }, "なし"))];
+  const itemCells = (i) => [
+    m.heads.map((h) => numTd(i.costs[h.id])),
+    el("td", {},
+      el("button", { type: "button", onclick: edit("item", { code: i.code, name: i.name, kind: i.kind, role: i.role, ...i.costs }) }, "直す"),
+      el("button", { type: "button", onclick: del(`/api/manual/items?${qs({ code: i.code })}`) }, "消す")),
+  ];
+  const productRows = [
+    ...m.items.filter((i) => i.role === "product").map((i) => el("tr", {},
+      el("td", {}, i.code), el("td", {}, i.name), el("td", {}, "—"), el("td", {}, "—"), el("td", {}, "—"), ...itemCells(i))),
+    ...m.trials.map((t) => el("tr", {},
+      el("td", {}, t.code), el("td", {}, t.name), el("td", {}, t.base), el("td", {}, t.trial_name), el("td", {}, t.version_id),
+      m.heads.map(() => el("td", {}, "")), el("td", {}))),
+  ];
+  const productHeads = ["品番", "名称", "土台", "試作品", "版", ...m.heads.map((h) => numTh(h.label)), ""];
+  const partHeads = ["品番", "名称", "区分", ...m.heads.map((h) => numTh(h.label)), ""];
+  const partRows = m.items.filter((i) => i.role !== "product").map((i) => el("tr", {},
+    el("td", {}, i.code), el("td", {}, i.name), el("td", {}, i.kind), ...itemCells(i)));
   const items = el("div", {},
-    table(["品番", "名称", "区分", ...m.heads.map((h) => numTh(h.label)), ""], m.items.map((i) => el(
-      "tr", {},
-      el("td", {}, i.code), el("td", {}, i.name), el("td", {}, i.kind),
-      m.heads.map((h) => numTd(i.costs[h.id])),
-      el("td", {},
-        el("button", { type: "button", onclick: edit("item", { code: i.code, name: i.name, kind: i.kind, ...i.costs }) }, "直す"),
-        el("button", { type: "button", onclick: del(`/api/manual/items?${qs({ code: i.code })}`) }, "消す")),
-    ))),
+    el("h3", {}, `製品（区分 ${m.product_kind}）`),
+    table(productHeads, productRows.length ? productRows : empty(productHeads.length)),
+    el("h3", {}, "部品"),
+    table(partHeads, partRows.length ? partRows : empty(partHeads.length)),
     el("div", { class: "form-row" },
-      field("品番", itemInputs.code), field("名称", itemInputs.name), field("区分", itemInputs.kind),
+      field("種類", itemInputs.role), field("品番", itemInputs.code), field("名称", itemInputs.name), field("区分", itemInputs.kind),
       m.heads.map((h) => field(h.label, costInputs[h.id])),
       el("button", { type: "button", class: "primary", onclick: () => send("PUT", "/api/manual/items", {
-        code: itemInputs.code.value, name: itemInputs.name.value, kind: itemInputs.kind.value,
+        role: itemInputs.role.value, code: itemInputs.code.value, name: itemInputs.name.value,
+        kind: itemInputs.role.value === "product" ? "" : itemInputs.kind.value,
         costs: Object.fromEntries(m.heads.map((h) => [h.id, costInputs[h.id].value])),
       }) }, "保存")),
   );
@@ -404,7 +421,7 @@ async function renderManual(data) {
   );
 
   document.getElementById("manual-body").replaceChildren(
-    card("試作品の品目と原価", items),
+    card("製品と部品", items),
     card("年間台数（新製品の計画）", volumes),
     card("型費", molds),
     card("流用先", reuse),
