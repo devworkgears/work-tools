@@ -273,6 +273,8 @@ table.cmp-grid tr.cmp-grid-first > * { border-top: 2px solid var(--line); }
 table.cmp-grid tr.cmp-grid-total td { font-weight: 600; }
 table.cmp-grid tr.cmp-grid-total th { font-weight: 600; color: var(--text); }
 .cmp-grid-label { color: var(--muted); white-space: nowrap; }
+.cmp-grid-volume { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.cmp-grid-volume.missing { color: var(--warn); }
 .cmp-grid-mark { margin-left: 2px; color: var(--warn); font-size: 11px; vertical-align: super; cursor: help; }
 @media (max-width: 860px) {
   .cmp-split { grid-template-columns: 1fr; }

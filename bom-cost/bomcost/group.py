@@ -7,10 +7,14 @@
 import json
 import unicodedata
 from collections import Counter
+from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import TYPE_CHECKING, Any, Callable
+from urllib.parse import quote
 
-from .api import ApiError, Response, _flag, _head, _json_response, _known_codes, _place, _require_known, _record_json, _s, _text_field, _View
+from .api import (XLSX_TYPE, ApiError, Response, _flag, _head, _json_response, _known_codes, _place, _require_known,
+                  _record_json, _s, _text_field, _View, version_label)
+from .comparebook import compare_file_name, compare_workbook
 from .model import BomLine, CostHead, Version
 from .normalize import to_code
 from .scenario import ChangeKind, ChangeRecord, Scenario
@@ -128,6 +132,7 @@ class Group:
             ("POST", r"/api/group/scenarios", self.add_scenarios),
             ("GET", r"/api/group/compare", self.compare),
             ("GET", r"/api/group/compare/table", self.compare_table),
+            ("GET", r"/api/group/compare/table/xlsx", self.compare_table_xlsx),
         ]
 
     # 比べる ------------------------------------------------------------------
@@ -160,31 +165,50 @@ class Group:
 
         差% は 差 ÷ 現行 ×100（小数1桁・四捨五入）で、現行が未登録か 0 なら None。計は検討名×費目で、
         現行・変更後のどちらかが未登録の製品を除いた合計（除いた数を excluded に）。
+        製品ごとの volume は版の年間台数（マスタ登録を重ねた値）、検討名ごとの effect は 差 × 年間台数（年間効果額）で、
+        どちらかが未登録なら None。effect_totals は検討名×費目の年間効果額の合計と、None で除いた製品の数。
         """
+        return _json_response(self._table_data(params)[1])
+
+    def compare_table_xlsx(self, params: dict[str, str]) -> Response:
+        """compare/table と同じ問い合わせの表を .xlsx で（比較のシートと前提のシート）。"""
+        version, data = self._table_data(params)
+        query = (params.get("q") or "").strip()
+        body = compare_workbook(data, version_label(version), query, datetime.now())
+        # 版 ID は画面に出さないので、ファイル名も開発番号と第何版で
+        name = compare_file_name(f"{version.dev_number or version.version_id}第{version.revision}版", data["names"])
+        return Response(200, body, XLSX_TYPE, {
+            "Content-Disposition": f"attachment; filename=\"bom-cost-compare.xlsx\"; filename*=UTF-8''{quote(name)}",
+        })
+
+    def _table_data(self, params: dict[str, str]) -> tuple[Version, dict[str, Any]]:
         version, names, ignore, codes, limit, rows = self._compare_rows(params, with_changes=False)
         products: list[dict[str, Any]] = []
         for row in rows:
             if row["kind"] == "base":
+                volume = version.volume(row["product"])
                 products.append({"product": row["product"], "product_name": row["product_name"],
+                                 "volume": None if volume is None else _s(volume.annual),
                                  "current": row["costs"], "trials": []})
                 continue
-            percents = {h: _percent(row["differences"][h], products[-1]["current"][h]) for h in row["costs"]}
-            products[-1]["trials"].append({"name": row["name"], "scenario_id": row["scenario_id"], "after": row["costs"],
-                                           "difference": row["differences"], "percent": percents})
-        return _json_response(
-            {
-                "version_id": version.version_id,
-                "names": names,
-                "heads": [{"id": h.name, "label": h.value} for h in COMPARE_HEADS],
-                "ignore_amortization": ignore,
-                "count": len(codes),
-                "limit": limit,
-                "truncated": len(codes) > limit,
-                "products": [p for p in products if p["trials"]],
-                "without_trial": sum(1 for p in products if not p["trials"]),
-                "totals": {n: _table_totals(n, products) for n in names},
-            }
-        )
+            p = products[-1]
+            percents = {h: _percent(row["differences"][h], p["current"][h]) for h in row["costs"]}
+            effects = {h: _effect(row["differences"][h], p["volume"]) for h in row["costs"]}
+            p["trials"].append({"name": row["name"], "scenario_id": row["scenario_id"], "after": row["costs"],
+                                "difference": row["differences"], "percent": percents, "effect": effects})
+        return version, {
+            "version_id": version.version_id,
+            "names": names,
+            "heads": [{"id": h.name, "label": h.value} for h in COMPARE_HEADS],
+            "ignore_amortization": ignore,
+            "count": len(codes),
+            "limit": limit,
+            "truncated": len(codes) > limit,
+            "products": [p for p in products if p["trials"]],
+            "without_trial": sum(1 for p in products if not p["trials"]),
+            "totals": {n: _table_totals(n, products) for n in names},
+            "effect_totals": {n: _effect_totals(n, products) for n in names},
+        }
 
     def _compare_rows(self, params: dict[str, str], with_changes: bool
                       ) -> tuple[Version, list[str], bool, list[str], int, list[dict[str, Any]]]:
@@ -655,6 +679,22 @@ def _table_totals(name: str, products: list[dict[str, Any]]) -> dict[str, dict[s
             "percent": _percent(difference, _s(current) if found else None),
             "excluded": len(pairs) - len(known),
         }
+    return totals
+
+
+def _effect(difference: str | None, volume: str | None) -> str | None:
+    """年間効果額＝差 × 年間台数。どちらかが未登録なら None。"""
+    return None if difference is None or volume is None else _s(Decimal(difference) * Decimal(volume))
+
+
+def _effect_totals(name: str, products: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """検討名の費目ごとの年間効果額の合計。年間台数か差が未登録の製品は除いて数える（除いた数を excluded に）。"""
+    totals: dict[str, dict[str, Any]] = {}
+    for head in COMPARE_HEADS:
+        values = [t["effect"][head.name] for p in products for t in p["trials"] if t["name"] == name]
+        known = [Decimal(v) for v in values if v is not None]
+        totals[head.name] = {"effect": _s(sum(known, Decimal(0))) if known else None,
+                             "excluded": len(values) - len(known)}
     return totals
 
 

@@ -1,5 +1,6 @@
 """製品群の API（製品の一覧・部品の検索・検討名ごとの替える・足す）。samples/ の CSV を取り込んだ DB で確かめる。ソケットは開かない。"""
 
+import io
 import json
 import tempfile
 import unittest
@@ -10,12 +11,19 @@ from bomcost import BomLine, Item, Version, overlay_manual
 from bomcost.api import Api
 from bomcost.app import static_response
 from bomcost.demo import build_demo
+from bomcost.importer import load_openpyxl
 from bomcost.store import Store
-from bomcost import group
+from bomcost import comparebook, group
 from bomcost.group import Group, _Structure
 from test_screens import SAMPLES, EmptyDbCase, b64
 
 NAME = "群の検討"
+
+try:
+    load_openpyxl()
+    HAS_OPENPYXL = True
+except ImportError:
+    HAS_OPENPYXL = False
 
 
 class SampleDbCase(EmptyDbCase):
@@ -685,7 +693,93 @@ class CompareTable(SampleDbCase):
         self.assertEqual(group._percent("1", "3"), "33.3")
         self.assertEqual(group._percent("-1", "8"), "-12.5")
 
+    def test_annual_effect_per_product_and_total(self) -> None:
+        names = quote(json.dumps([NAME, "別の検討"]))
+        query = f"version=2026-10&names={names}&ignore_amortization=1"
+        r = self.ok("GET", "/api/group/compare/table", query)
+        a = r["products"][0]
+        self.assertIsNone(a["volume"])
+        self.assertEqual(a["trials"][0]["effect"]["MATERIAL"], None)
+        self.assertEqual(r["effect_totals"][NAME]["MATERIAL"], {"effect": None, "excluded": 1})
+        # 年間台数はマスタ登録を重ねた値
+        self.ok("PUT", "/api/manual/volumes", body={"product": "A-100", "annual": "1000"})
+        r = self.ok("GET", "/api/group/compare/table", query)
+        a = r["products"][0]
+        trial, other = a["trials"]
+        self.assertEqual(a["volume"], "1000")
+        self.assertEqual((trial["effect"]["MATERIAL"], other["effect"]["MATERIAL"]), ("-2800000", "250000"))
+        self.assertIsNone(trial["effect"]["DIRECT"])
+        self.assertEqual(r["effect_totals"][NAME]["MATERIAL"], {"effect": "-2800000", "excluded": 0})
+        self.assertEqual(r["effect_totals"][NAME]["DIRECT"], {"effect": None, "excluded": 1})
+        self.assertEqual(r["effect_totals"]["別の検討"]["MATERIAL"], {"effect": "250000", "excluded": 0})
+
+    def test_effect_totals_skip_missing(self) -> None:
+        products = [
+            {"trials": [{"name": "n", "effect": {**{h.name: "-500" for h in group.COMPARE_HEADS}, "DIRECT": None}}]},
+            {"trials": [{"name": "n", "effect": {h.name: "200" for h in group.COMPARE_HEADS}},
+                        {"name": "m", "effect": {h.name: "7" for h in group.COMPARE_HEADS}}]},
+        ]
+        t = group._effect_totals("n", products)
+        self.assertEqual(t["MATERIAL"], {"effect": "-300", "excluded": 0})
+        self.assertEqual(t["DIRECT"], {"effect": "200", "excluded": 1})
+        self.assertEqual(group._effect("-2.5", "40"), "-100.0")
+        self.assertIsNone(group._effect(None, "40"))
+        self.assertIsNone(group._effect("1", None))
+
+    @unittest.skipUnless(HAS_OPENPYXL, "openpyxl が無い")
+    def test_export_xlsx(self) -> None:
+        self.ok("PUT", "/api/manual/volumes", body={"product": "A-100", "annual": "1000"})
+        names = quote(json.dumps([NAME, "別の検討"]))
+        response = self.call("GET", "/api/group/compare/table/xlsx",
+                             f"version=2026-10&names={names}&ignore_amortization=1&q=A-1")
+        self.assertEqual(response.status, 200)
+        self.assertIn("spreadsheetml", response.content_type)
+        disposition = response.headers["Content-Disposition"]
+        disposition.encode("latin-1")  # 見出しは latin-1 で送るので日本語は filename* に符号化して入れる
+        self.assertIn("filename*=UTF-8''" + quote(f"原価比較_2026-10第1版_{NAME}・別の検討.xlsx"), disposition)
+        wb = load_openpyxl().load_workbook(io.BytesIO(response.body))
+        ws = wb["比較"]
+        rows = list(ws.iter_rows())
+        values = [[c.value for c in r] for r in rows]
+        self.assertEqual(values[0], ["品番", "名称", "年間台数", None, "材料費", "償却費", "調整費", "直接費", "間接費",
+                                     "製造原価"])
+        # 製品1つ × 検討2つ（現行＋4行ずつ）、計 2 つ × 5 行
+        self.assertEqual([v[3] for v in values[1:]], [
+            "現行", f"変更後（{NAME}）", f"差（{NAME}）", f"差%（{NAME}）", f"年間効果額（{NAME}）",
+            "変更後（別の検討）", "差（別の検討）", "差%（別の検討）", "年間効果額（別の検討）",
+            "現行", "変更後", "差", "差%", "年間効果額", "現行", "変更後", "差", "差%", "年間効果額"])
+        self.assertEqual(values[1][:3], ["A-100", "土台の製品", 1000])
+        material = [r[4] for r in rows]
+        self.assertEqual([c.value for c in material[1:6]], [200, -2600, -2800, -14, -2800000])
+        for cell in material[1:6]:
+            self.assertIsInstance(cell.value, (int, float))
+        self.assertEqual(material[4].number_format, "0.0%")
+        self.assertEqual(material[5].number_format, "#,##0")
+        self.assertEqual(material[9].value, 250000)
+        # 計（群の検討）は 10 行目から
+        self.assertEqual(values[10][0], f"計（{NAME}）")
+        self.assertEqual([c.value for c in material[10:15]], [200, -2600, -2800, -14, -2800000])
+        # 償却費を無視した列は —、未登録（直接費）は空のセルに印、計は除いた数を添える
+        self.assertEqual(rows[1][5].value, "—")
+        direct = [r[7] for r in rows]
+        self.assertIsNone(direct[1].value)
+        self.assertIn("計から除く", direct[1].comment.text)
+        self.assertEqual(direct[1].fill.fgColor.rgb[-6:], "FFF2CC")
+        self.assertIsNone(direct[5].value)
+        self.assertIsNone(direct[14].value)
+        self.assertIn("未登録 1 製品を除く", direct[14].comment.text)
+        premises = dict(wb["前提"].iter_rows(values_only=True))
+        self.assertEqual(premises["版"], "2026-10（第1版）")
+        self.assertEqual(premises["検討案"], f"{NAME}・別の検討")
+        self.assertEqual(premises["製品の絞り込み"], "A-1")
+        self.assertEqual(premises["償却費"], "無視（—）")
+        self.assertRegex(premises["書き出した日時"], r"^\d{4}-\d\d-\d\d \d\d:\d\d$")
+
+    def test_file_name_replaces_unsafe_characters(self) -> None:
+        self.assertEqual(comparebook.compare_file_name("D-1/r2", ['案:1', 'b?"c']), "原価比較_D-1_r2_案_1・b__c.xlsx")
+
     def test_same_errors_as_compare(self) -> None:
+        self.assertEqual(self.call("GET", "/api/group/compare/table/xlsx", "version=2026-10").status, 400)
         self.assert_error(self.call("GET", "/api/group/compare/table", "version=2026-10"), 400, "names")
         self.assert_error(self.call("GET", "/api/group/compare/table", f"version=2026-10&names={quote(NAME)}"),
                           400, "償却費")
@@ -759,6 +853,9 @@ class ProductRule(unittest.TestCase):
         self.assertIn("function codeTitle", screens)
         self.assertIn("/api/group/compare/table", compare)
         self.assertIn('button("table", "表")', compare)
+        self.assertIn("/api/group/compare/table/xlsx", compare)
+        self.assertIn("Excel に書き出す", compare)
+        self.assertIn("cmp-grid-volume", css)
 
 
 if __name__ == "__main__":
