@@ -80,6 +80,7 @@ class Group:
             ("GET", r"/api/group/names", self.names),
             ("GET", r"/api/group/changes", self.changes),
             ("POST", r"/api/group/changes", self.add_change),
+            ("POST", r"/api/group/scenario", self.open_scenario),
         ]
 
     # 変更の一覧 --------------------------------------------------------------
@@ -271,21 +272,30 @@ class Group:
 
     # 替える・足す ------------------------------------------------------------
 
-    def add_change(self, params: dict[str, str], body: dict[str, Any]) -> Response:
-        """検討名・製品の試算に変更を1件足す。試算が無ければ作り、変更が通らなければ作った試算を消す。"""
+    def _ensure(self, body: dict[str, Any]) -> tuple[int, bool, str]:
+        """検討名・製品・版の試算を引く。無ければ作る。返すのは (試算の ID, 作ったか, 製品の品番)。"""
         name = _text_field(body, "name", "検討名")
         product = to_code(_text_field(body, "product", "製品の品番"))
         version = self._version(body, "version_id")
         _require_known(version, product, "製品")
         head = _head(body.get("head"), CostHead.MATERIAL)
         sid = self._scenarios(version, name).get(product)
-        created = sid is None
-        if created:
-            scenario = Scenario(name, product, self._trial_code(version, name, product), version, head,
-                                self.store.load_scope_policy())
-            scenario.calculate()  # 構成の循環などをここで弾く
-            sid = self.store.save_scenario(scenario)
-        change = {k: body[k] for k in ("kind", "part", "replacement", "quantity") if k in body}
+        if sid is not None:
+            return sid, False, product
+        scenario = Scenario(name, product, self._trial_code(version, name, product), version, head,
+                            self.store.load_scope_policy())
+        scenario.calculate()  # 構成の循環などをここで弾く
+        return self.store.save_scenario(scenario), True, product
+
+    def open_scenario(self, params: dict[str, str], body: dict[str, Any]) -> Response:
+        """製品の構成を製品群の画面で開くため、検討名・製品の試算を引く（無ければ作る）。"""
+        sid, created, product = self._ensure(body)
+        return _json_response({"scenario_id": sid, "created": created, "product": product})
+
+    def add_change(self, params: dict[str, str], body: dict[str, Any]) -> Response:
+        """検討名・製品の試算に変更を1件足す。試算が無ければ作り、変更が通らなければ作った試算を消す。"""
+        sid, created, product = self._ensure(body)
+        change ={k: body[k] for k in ("kind", "part", "replacement", "quantity") if k in body}
         try:
             response = self.api.add_change(sid, {}, change)
         except Exception:

@@ -34,18 +34,48 @@ async function groupChange(product, change) {
   await loadLists();
   await loadGroupNames();
   await drawGroup();
+  if (layoutHome.parent) await reloadAll();
 }
 
 async function groupUndo(scenarioId) {
   await api("POST", `/api/scenarios/${scenarioId}/undo`, {});
   await drawGroup();
+  if (layoutHome.parent) await reloadAll();
 }
 
-async function openGroupScenario(scenarioId) {
-  await loadLists();
-  await selectScenario(scenarioId);
-  await showScreen("product");
+// 製品から見る画面（ツリー・選んだ品目・履歴）を、製品群の一覧の下へそのまま移して使う。画面を替えると元へ戻す
+const layoutHome = { parent: null, next: null };
+
+function dockProduct(on) {
+  const layout = document.getElementById("main-layout");
+  if (on && !layoutHome.parent) {
+    layoutHome.parent = layout.parentNode;
+    layoutHome.next = layout.nextSibling;
+    document.getElementById("group-product").append(layout);
+  } else if (!on && layoutHome.parent) {
+    layoutHome.parent.insertBefore(layout, layoutHome.next);
+    layoutHome.parent = null;
+  }
+  layout.hidden = !on && screenState.screen !== "product";
 }
+
+async function openGroupProduct(product) {
+  const g = groupInputs();
+  if (!g.name) throw new Error("検討名が空");
+  const r = await api("POST", "/api/group/scenario", { version_id: g.version, name: g.name, head: g.head, product });
+  await loadLists();
+  dockProduct(true);
+  await selectScenario(r.scenario_id);
+  await drawGroup();
+  document.getElementById("group-product").scrollIntoView();
+}
+
+const showScreenBase = showScreen;
+showScreen = async (name) => { dockProduct(false); await showScreenBase(name); };
+
+// 開いたツリーで替えたら製品群の表も、製品群で替えたら開いたツリーも取り直す
+const afterChangeBase = afterChange;
+afterChange = async () => { await afterChangeBase(); if (layoutHome.parent) await drawGroup(); };
 
 // 変えた所だけの表: 製品・変更・その変更での原価の前 → 後と差、最後に合計の差
 function changeListBlock(c) {
@@ -122,7 +152,7 @@ async function drawGroup() {
         addPart, addQty,
         el("button", { type: "button", onclick: () => guarded(() => groupChange(x.code, { kind: "ADD", part: addPart.value.trim(), quantity: addQty.value })) }, "足す"),
         withCost && x.change_count ? el("button", { type: "button", onclick: () => guarded(() => groupUndo(x.scenario_id)) }, "取り消す") : null,
-        withCost && x.scenario_id ? el("button", { type: "button", onclick: () => guarded(() => openGroupScenario(x.scenario_id)) }, "開く") : null),
+        withCost ? el("button", { type: "button", onclick: () => guarded(() => openGroupProduct(x.code)) }, "構成") : null),
     );
   });
   const productHeads = ["品番", "名称", ...(withCost ? [numTh(`今（${p.head_label}）`), numTh("後"), numTh("差"), numTh("変更")] : []), ""];

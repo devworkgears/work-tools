@@ -152,6 +152,15 @@ class Changes(SampleDbCase):
                           400, "変更の種類")
         self.assertEqual([s.scenario_id for s in self.store.list_scenarios()], [sid])
 
+    def test_open_scenario_gets_or_creates(self) -> None:
+        body = {"version_id": "2026-10", "name": NAME, "product": "A-100"}
+        first = self.ok("POST", "/api/group/scenario", body=body)
+        self.assertTrue(first["created"])
+        again = self.ok("POST", "/api/group/scenario", body=body)
+        self.assertEqual((again["created"], again["scenario_id"]), (False, first["scenario_id"]))
+        # 開いた試算に、製品群からの変更が重なる
+        self.assertEqual(self.change("A-100", kind="ADD", part="F-600")["scenario_id"], first["scenario_id"])
+
 
 class ChangeList(SampleDbCase):
     def test_all_changes_of_name_with_differences(self) -> None:
