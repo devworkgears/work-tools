@@ -49,8 +49,18 @@ class VolumeKind(Enum):
     PLAN = "新製品の計画"
 
 
-# 手入力の分を置く版。消えず、どの版で計算するときも上に重なる
+# 手入力の分（マスタ登録）を置く版。この ID は「共通」の登録で、どの版にも重なる。
+# 開発番号ごとの登録は manual_version_id(開発番号) の版に置き、その開発番号の版にだけ重なる
 MANUAL_VERSION_ID = "manual"
+
+
+def manual_version_id(dev_number: str = "") -> str:
+    """マスタ登録を置く版の ID。開発番号が空なら共通の版 manual。"""
+    return f"{MANUAL_VERSION_ID}:{dev_number}" if dev_number else MANUAL_VERSION_ID
+
+
+def is_manual_version_id(version_id: str) -> bool:
+    return version_id == MANUAL_VERSION_ID or version_id.startswith(MANUAL_VERSION_ID + ":")
 
 MBOM_CODE_LENGTH = 11
 BASE_VARIATION = "00"
@@ -174,7 +184,7 @@ class BomConflict:
 
 @dataclass(frozen=True)
 class ManualOverlap:
-    """取り込みの版と manual の両方にあり、manual を採った品番（構成は親品番）。"""
+    """取り込みの版とマスタ登録の両方にあり、取り込みの版（BOM）を採った品番（構成は親品番）。"""
 
     table: str  # "item"・"bom_line"・"cost"・"volume"
     code: str
@@ -281,42 +291,51 @@ class Version:
         return self.volumes.get(to_code(product))
 
 
-def overlay_manual(base: Version, manual: Version) -> Version:
-    """取り込みの版の上に manual を重ねた版を作る。元の2つの版は変えない。
+def overlay_manual(base: Version, *layers: Version) -> Version:
+    """取り込みの版の下にマスタ登録（layers・強い順）を敷いた版を作る。元の版は変えない。
 
-    同じ品番は manual を採り、重なりを manual_overlaps に残す。構成は親品番の単位で差し替える
-    （manual に子の行がある親は、取り込みの子の行を使わない）。manual の行の出どころは手入力になる。
+    同じ品番は左を採る: 取り込みの版 ＞ layers[0] ＞ layers[1] …（品目・原価・年間台数のそれぞれ）。
+    構成は親品番の単位で採る（取り込みの版に子の行がある親は、登録の子の行を使わない）。
+    取り込みの版に隠れた登録は manual_overlaps に残す。登録の行の出どころは手入力になる。
     """
     result = Version(base.version_id, base.imported_at, base.note, base.source_name,
                      dev_number=base.dev_number, dev_name=base.dev_name, revision=base.revision)
-    overlaps: list[ManualOverlap] = []
+    overlaps: dict[ManualOverlap, None] = {}
+    base_parents = set(base.parents())
 
     result.items = dict(base.items)
-    for code, item in manual.items.items():
-        if code in result.items:
-            overlaps.append(ManualOverlap("item", code))
-        result.items[code] = replace(item, source=Source.MANUAL)
-
-    manual_parents = set(manual.parents())
-    for parent in manual_parents:
-        if base.children(parent):
-            overlaps.append(ManualOverlap("bom_line", parent))
-    result._lines = {k: v for k, v in base._lines.items() if k[0] not in manual_parents}
-    result._lines.update(manual._lines)
-    result._conflicts = {k: list(v) for k, v in base._conflicts.items() if k[0] not in manual_parents}
-    result._conflicts.update({k: list(v) for k, v in manual._conflicts.items()})
-
+    result._lines = dict(base._lines)
+    result._conflicts = {k: list(v) for k, v in base._conflicts.items()}
     result._costs = dict(base._costs)
-    for code, row in manual._costs.items():
-        if code in result._costs:
-            overlaps.append(ManualOverlap("cost", code))
-        result._costs[code] = replace(row, source=Source.MANUAL)
-
     result.volumes = dict(base.volumes)
-    for product, volume in manual.volumes.items():
-        if product in result.volumes:
-            overlaps.append(ManualOverlap("volume", product))
-        result.volumes[product] = replace(volume, source=Source.MANUAL)
+    taken_parents = set(base_parents)
+    for layer in layers:
+        for code, item in layer.items.items():
+            if code in base.items:
+                overlaps[ManualOverlap("item", code)] = None
+            result.items.setdefault(code, replace(item, source=Source.MANUAL))
+        layer_parents = set(layer.parents())
+        for parent in layer_parents & base_parents:
+            overlaps[ManualOverlap("bom_line", parent)] = None
+        new_parents = layer_parents - taken_parents
+        result._lines.update({k: v for k, v in layer._lines.items() if k[0] in new_parents})
+        result._conflicts.update({k: list(v) for k, v in layer._conflicts.items() if k[0] in new_parents})
+        taken_parents |= new_parents
+        for code, row in layer._costs.items():
+            taken = result._costs.get(code)
+            if taken is None:
+                result._costs[code] = replace(row, source=Source.MANUAL)
+                continue
+            # 費目ごとに、強い側が空欄の所だけ登録で埋める（BOM で未登録の製造原価などを登録で補える）
+            if code in base._costs and any(base._costs[code].values[h] is not None and v is not None
+                                           for h, v in row.values.items()):
+                overlaps[ManualOverlap("cost", code)] = None
+            merged = {h: v if v is not None else row.values[h] for h, v in taken.values.items()}
+            result._costs[code] = replace(taken, values=merged)
+        for product, volume in layer.volumes.items():
+            if product in base.volumes:
+                overlaps[ManualOverlap("volume", product)] = None
+            result.volumes.setdefault(product, replace(volume, source=Source.MANUAL))
 
     result.manual_overlaps = tuple(overlaps)
     result.warnings = base.warnings

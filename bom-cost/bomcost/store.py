@@ -23,6 +23,8 @@ from .model import (
     Source,
     Version,
     Volume,
+    is_manual_version_id,
+    manual_version_id,
     overlay_manual,
 )
 from .mold import Allocation, MoldCost, ReuseTarget
@@ -87,15 +89,18 @@ CREATE TABLE IF NOT EXISTS volume (
     PRIMARY KEY (version_id, product)
 );
 CREATE TABLE IF NOT EXISTS mold_cost (
-    part TEXT PRIMARY KEY,
+    part TEXT NOT NULL,
     amount TEXT NOT NULL,
-    years TEXT NOT NULL
+    years TEXT NOT NULL,
+    dev_number TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (dev_number, part)
 );
 CREATE TABLE IF NOT EXISTS reuse_target (
     part TEXT NOT NULL,
     product TEXT NOT NULL,
     quantity TEXT NOT NULL,
-    replaced_part TEXT
+    replaced_part TEXT,
+    dev_number TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS part_map (
     old_product TEXT NOT NULL,
@@ -103,7 +108,8 @@ CREATE TABLE IF NOT EXISTS part_map (
     old_part TEXT NOT NULL,
     new_part TEXT NOT NULL,
     old_balloon TEXT,
-    new_balloon TEXT
+    new_balloon TEXT,
+    dev_number TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS scope (
     code TEXT NOT NULL,
@@ -159,6 +165,7 @@ CHANGE_ADDED_COLUMNS: tuple[tuple[str, str], ...] = (("parent", "TEXT"), ("ballo
 VERSION_ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
     ("dev_number", "TEXT"), ("dev_name", "TEXT NOT NULL DEFAULT ''"), ("revision", "INTEGER NOT NULL DEFAULT 1")
 )
+PART_MAP_COLUMNS = "old_product, new_product, old_part, new_part, old_balloon, new_balloon, dev_number"
 CHANGE_COLUMNS = (
     "scenario_id, sequence, recorded_at, kind, part, replacement, quantity, cost_before, cost_after, "
     "version_id, head, volume, allocation, parent, balloon, batch"
@@ -250,11 +257,31 @@ class Store:
             if column not in existing:
                 self._conn.execute(f"ALTER TABLE version ADD COLUMN {column} {sql_type}")
         self._conn.execute("UPDATE version SET dev_number = version_id WHERE dev_number IS NULL OR dev_number = ''")
+        self._migrate_master_tables()
         self._conn.execute(
             "INSERT OR IGNORE INTO version (version_id, note) VALUES (?, ?)",
             (MANUAL_VERSION_ID, "手入力"),
         )
         self._conn.commit()
+
+    def _migrate_master_tables(self) -> None:
+        """古い DB の型費・流用先・対応表に開発番号の列を足す。今ある行は共通（空）になる。
+
+        型費は主キーが部品だけだったので、（開発番号, 部品）の主キーの表に作り直す。
+        """
+        for table in ("reuse_target", "part_map"):
+            if "dev_number" not in {row[1] for row in self._conn.execute(f"PRAGMA table_info({table})")}:
+                self._conn.execute(f"ALTER TABLE {table} ADD COLUMN dev_number TEXT NOT NULL DEFAULT ''")
+        if "dev_number" not in {row[1] for row in self._conn.execute("PRAGMA table_info(mold_cost)")}:
+            self._conn.execute("ALTER TABLE mold_cost RENAME TO mold_cost_old")
+            self._conn.execute(
+                "CREATE TABLE mold_cost (part TEXT NOT NULL, amount TEXT NOT NULL, years TEXT NOT NULL, "
+                "dev_number TEXT NOT NULL DEFAULT '', PRIMARY KEY (dev_number, part))"
+            )
+            self._conn.execute(
+                "INSERT INTO mold_cost (part, amount, years) SELECT part, amount, years FROM mold_cost_old ORDER BY rowid"
+            )
+            self._conn.execute("DROP TABLE mold_cost_old")
 
     def close(self) -> None:
         self._conn.close()
@@ -278,7 +305,7 @@ class Store:
         warnings は取り込みの検証の結果（VersionImport.warnings）。省けば version.warnings を保存する。
         """
         warnings_text = _warnings_json(version.warnings if warnings is None else warnings)
-        if version.version_id == MANUAL_VERSION_ID:
+        if is_manual_version_id(version.version_id):
             raise ValueError("manual は save_manual で保存する")
         if _has_manual_rows(version):
             raise ValueError("手入力の行（manual を重ねた版）は取り込みの版として保存できない")
@@ -306,28 +333,44 @@ class Store:
                 )
             self._insert_rows(version.version_id, version)
 
-    def save_manual(self, manual: Version) -> None:
-        """手入力の品目・原価・構成・台数を、版 manual の中身としてまるごと入れ替える。"""
+    def save_manual(self, manual: Version, dev_number: str = "") -> None:
+        """マスタ登録の品目・原価・構成・台数を、まるごと入れ替える。開発番号が空なら共通の登録。"""
+        version_id = manual_version_id(dev_number)
         with self._conn:
-            self._delete_rows(MANUAL_VERSION_ID)
-            self._insert_rows(MANUAL_VERSION_ID, manual)
+            self._conn.execute(
+                "INSERT OR IGNORE INTO version (version_id, note, dev_number) VALUES (?, ?, ?)",
+                (version_id, "手入力", dev_number or version_id),
+            )
+            self._delete_rows(version_id)
+            self._insert_rows(version_id, manual)
 
-    def load_manual(self) -> Version:
-        return self._load_rows(MANUAL_VERSION_ID, Source.MANUAL)
+    def load_manual(self, dev_number: str = "") -> Version:
+        """マスタ登録（その開発番号の分だけ。空なら共通）。登録が無ければ空の版。"""
+        version_id = manual_version_id(dev_number)
+        try:
+            return self._load_rows(version_id, Source.MANUAL)
+        except KeyError:
+            return Version(version_id)
+
+    def overlay_master(self, version: Version) -> Version:
+        """取り込みの版に、その開発番号の登録と共通の登録を敷く（同じ品番は BOM ＞ 開発番号 ＞ 共通）。"""
+        return overlay_manual(version, self.load_manual(version.dev_number), self.load_manual())
 
     def load_version(self, version_id: str, with_manual: bool = True) -> Version:
-        """版を読み戻す。with_manual=True なら manual を上に重ねる（重なりは manual_overlaps）。"""
+        """版を読み戻す。with_manual=True ならマスタ登録を敷く（overlay_master。BOM に隠れた登録は manual_overlaps）。"""
         if version_id == MANUAL_VERSION_ID:
             return self.load_manual()
+        if is_manual_version_id(version_id):
+            raise KeyError(f"版 {version_id} は無い")
         version = self._load_rows(version_id, Source.IMPORTED)
-        return overlay_manual(version, self.load_manual()) if with_manual else version
+        return self.overlay_master(version) if with_manual else version
 
     def list_versions(self) -> list[VersionInfo]:
-        """取り込みの版の一覧（manual は含めない）。取り込んだ日時の新しい順。"""
+        """取り込みの版の一覧（マスタ登録の版は含めない）。取り込んだ日時の新しい順。"""
         rows = self._conn.execute(
             "SELECT version_id, imported_at, source_name, note, warnings, dev_number, dev_name, revision FROM version "
-            "WHERE version_id <> ? ORDER BY imported_at DESC, version_id DESC",
-            (MANUAL_VERSION_ID,),
+            "WHERE version_id <> ? AND substr(version_id, 1, ?) <> ? ORDER BY imported_at DESC, version_id DESC",
+            (MANUAL_VERSION_ID, len(MANUAL_VERSION_ID) + 1, MANUAL_VERSION_ID + ":"),
         ).fetchall()
         return [VersionInfo(r[0], _time(r[1]), r[2], r[3], len(_warnings_from_json(r[4])), r[5], r[6], r[7])
                 for r in rows]
@@ -341,7 +384,7 @@ class Store:
         """取り込みの版に振る版 ID（開発番号-r版の番号）。既にある ID・manual と重なれば後ろに番号を足す。"""
         base = f"{dev_number}-r{revision}"
         candidate, n = base, 1
-        while candidate == MANUAL_VERSION_ID or self._conn.execute(
+        while is_manual_version_id(candidate) or self._conn.execute(
             "SELECT 1 FROM version WHERE version_id = ?", (candidate,)
         ).fetchone():
             n += 1
@@ -356,8 +399,8 @@ class Store:
         return _warnings_from_json(row[0])
 
     def set_version_note(self, version_id: str, note: str) -> None:
-        """版のメモだけを書き換える。manual と無い版は KeyError。"""
-        if version_id == MANUAL_VERSION_ID:
+        """版のメモだけを書き換える。マスタ登録の版と無い版は KeyError。"""
+        if is_manual_version_id(version_id):
             raise KeyError(f"版 {version_id} は無い")
         with self._conn:
             cursor = self._conn.execute("UPDATE version SET note = ? WHERE version_id = ?", (note, version_id))
@@ -365,8 +408,8 @@ class Store:
             raise KeyError(f"版 {version_id} は無い")
 
     def delete_version(self, version_id: str) -> None:
-        """版を消す。manual と、試算が使っている版は消せない。"""
-        if version_id == MANUAL_VERSION_ID:
+        """版を消す。マスタ登録の版と、試算が使っている版は消せない。"""
+        if is_manual_version_id(version_id):
             raise ValueError("manual は消せない")
         users = self._conn.execute(
             "SELECT DISTINCT s.name FROM scenario s LEFT JOIN change c ON c.scenario_id = s.scenario_id "
@@ -458,62 +501,129 @@ class Store:
         molds: Iterable[MoldCost],
         reuse: Iterable[ReuseTarget],
         part_maps: Iterable[tuple[str, str, str, str, str | None, str | None]],
+        dev_number: str = "",
     ) -> None:
         """マスタのブックの取り込みを1回の書き込みで入れる（途中で落ちたら何も入らない）。
 
-        manual は入れ替える手入力の版（None なら触らない）。型費と流用先は同じキーを入れ替え、対応表は足す。
+        manual は入れ替えるその開発番号（空なら共通）の登録（None なら触らない）。型費と流用先は同じキーを入れ替え、
+        対応表は足す。
         """
+        version_id = manual_version_id(dev_number)
         with self._conn:
             if manual is not None:
-                self._delete_rows(MANUAL_VERSION_ID)
-                self._insert_rows(MANUAL_VERSION_ID, manual)
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO version (version_id, note, dev_number) VALUES (?, ?, ?)",
+                    (version_id, "手入力", dev_number or version_id),
+                )
+                self._delete_rows(version_id)
+                self._insert_rows(version_id, manual)
             self._conn.executemany(
-                "INSERT OR REPLACE INTO mold_cost VALUES (?, ?, ?)",
-                [(m.part, str(m.amount), str(m.years)) for m in molds],
+                "INSERT OR REPLACE INTO mold_cost (part, amount, years, dev_number) VALUES (?, ?, ?, ?)",
+                [(m.part, str(m.amount), str(m.years), dev_number) for m in molds],
             )
             for t in reuse:
-                self._conn.execute("DELETE FROM reuse_target WHERE part = ? AND product = ?", (t.part, t.product))
+                self._conn.execute("DELETE FROM reuse_target WHERE part = ? AND product = ? AND dev_number = ?",
+                                   (t.part, t.product, dev_number))
                 self._conn.execute(
-                    "INSERT INTO reuse_target VALUES (?, ?, ?, ?)",
-                    (t.part, t.product, str(t.quantity_per_unit), t.replaced_part),
+                    "INSERT INTO reuse_target (part, product, quantity, replaced_part, dev_number) VALUES (?, ?, ?, ?, ?)",
+                    (t.part, t.product, str(t.quantity_per_unit), t.replaced_part, dev_number),
                 )
-            self._conn.executemany("INSERT INTO part_map VALUES (?, ?, ?, ?, ?, ?)", list(part_maps))
-
-    # 手入力のデータと設定 -------------------------------------------------
-
-    def save_mold_cost(self, mold: MoldCost) -> None:
-        with self._conn:
-            self._conn.execute(
-                "INSERT OR REPLACE INTO mold_cost VALUES (?, ?, ?)",
-                (mold.part, str(mold.amount), str(mold.years)),
+            self._conn.executemany(
+                f"INSERT INTO part_map ({PART_MAP_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [(*key, dev_number) for key in part_maps],
             )
 
-    def mold_costs(self) -> dict[str, MoldCost]:
-        rows = self._conn.execute("SELECT part, amount, years FROM mold_cost ORDER BY rowid").fetchall()
+    def master_dev_numbers(self) -> list[str]:
+        """開発番号ごとの登録（品目・原価・構成・台数・型費・流用先・対応表）がある開発番号。"""
+        found: set[str] = set()
+        prefix = MANUAL_VERSION_ID + ":"
+        for (version_id,) in self._conn.execute(
+            "SELECT version_id FROM version WHERE substr(version_id, 1, ?) = ?", (len(prefix), prefix)
+        ):
+            if any(self._conn.execute(f"SELECT 1 FROM {t} WHERE version_id = ? LIMIT 1", (version_id,)).fetchone()
+                   for t in ("item", "bom_line", "cost", "volume")):
+                found.add(version_id[len(prefix):])
+        for table in ("mold_cost", "reuse_target", "part_map"):
+            found.update(r[0] for r in self._conn.execute(f"SELECT DISTINCT dev_number FROM {table} WHERE dev_number <> ''"))
+        return sorted(found)
+
+    def bom_entries(self, codes: Iterable[str], dev_number: str = "") -> dict[str, list[tuple[str, int]]]:
+        """品番 → BOM（取り込みの版の品目・構成・原価・台数）に初めて入った（開発番号, 第何版）の並び。
+
+        開発番号を渡せばその開発番号の版だけを見る。BOM に無い品番は入れない。
+        """
+        wanted = list(dict.fromkeys(to_code(c) for c in codes))
+        found: dict[str, dict[str, int]] = {}
+        for start in range(0, len(wanted), 500):
+            chunk = wanted[start:start + 500]
+            marks = ", ".join("?" * len(chunk))
+            sql = (
+                "SELECT x.code, v.dev_number, MIN(v.revision) FROM ("
+                "SELECT version_id, code FROM item UNION SELECT version_id, code FROM cost "
+                "UNION SELECT version_id, parent FROM bom_line UNION SELECT version_id, child FROM bom_line "
+                "UNION SELECT version_id, product FROM volume) x JOIN version v ON v.version_id = x.version_id "
+                f"WHERE x.code IN ({marks}) AND v.version_id <> ? AND substr(v.version_id, 1, ?) <> ?"
+            )
+            params: list[Any] = [*chunk, MANUAL_VERSION_ID, len(MANUAL_VERSION_ID) + 1, MANUAL_VERSION_ID + ":"]
+            if dev_number:
+                sql += " AND v.dev_number = ?"
+                params.append(dev_number)
+            for code, dev, revision in self._conn.execute(sql + " GROUP BY x.code, v.dev_number", params):
+                found.setdefault(code, {})[dev] = revision
+        return {code: sorted(found[code].items()) for code in wanted if code in found}
+
+    # 型費・流用先・部品の対応表（dev_number が空なら共通の登録。*_for は開発番号の分と共通を重ねて読む） ----
+
+    def save_mold_cost(self, mold: MoldCost, dev_number: str = "") -> None:
+        with self._conn:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO mold_cost (part, amount, years, dev_number) VALUES (?, ?, ?, ?)",
+                (mold.part, str(mold.amount), str(mold.years), dev_number),
+            )
+
+    def mold_costs(self, dev_number: str = "") -> dict[str, MoldCost]:
+        rows = self._conn.execute(
+            "SELECT part, amount, years FROM mold_cost WHERE dev_number = ? ORDER BY rowid", (dev_number,)
+        ).fetchall()
         return {p: MoldCost(p, Decimal(a), Decimal(y)) for p, a, y in rows}
 
-    def delete_mold_cost(self, part: str) -> None:
-        with self._conn:
-            self._conn.execute("DELETE FROM mold_cost WHERE part = ?", (to_code(part),))
+    def mold_costs_for(self, dev_number: str) -> dict[str, MoldCost]:
+        """その開発番号の版で使う型費（同じ部品は開発番号の登録 ＞ 共通）。"""
+        molds = self.mold_costs()
+        if dev_number:
+            molds.update(self.mold_costs(dev_number))
+        return molds
 
-    def add_reuse_target(self, target: ReuseTarget) -> None:
+    def delete_mold_cost(self, part: str, dev_number: str = "") -> None:
+        with self._conn:
+            self._conn.execute("DELETE FROM mold_cost WHERE part = ? AND dev_number = ?", (to_code(part), dev_number))
+
+    def add_reuse_target(self, target: ReuseTarget, dev_number: str = "") -> None:
         with self._conn:
             self._conn.execute(
-                "INSERT INTO reuse_target VALUES (?, ?, ?, ?)",
-                (target.part, target.product, str(target.quantity_per_unit), target.replaced_part),
+                "INSERT INTO reuse_target (part, product, quantity, replaced_part, dev_number) VALUES (?, ?, ?, ?, ?)",
+                (target.part, target.product, str(target.quantity_per_unit), target.replaced_part, dev_number),
             )
 
-    def reuse_targets(self, part: str | None = None) -> list[ReuseTarget]:
+    def reuse_targets(self, part: str | None = None, dev_number: str = "") -> list[ReuseTarget]:
         rows = self._conn.execute(
-            "SELECT part, product, quantity, replaced_part FROM reuse_target ORDER BY rowid"
+            "SELECT part, product, quantity, replaced_part FROM reuse_target WHERE dev_number = ? ORDER BY rowid",
+            (dev_number,),
         ).fetchall()
         targets = [ReuseTarget(p, pr, Decimal(qty), old) for p, pr, qty, old in rows]
         return targets if part is None else [t for t in targets if t.part == to_code(part)]
 
-    def delete_reuse_target(self, target: ReuseTarget) -> None:
+    def reuse_targets_for(self, dev_number: str, part: str | None = None) -> list[ReuseTarget]:
+        """その開発番号の版で使う流用先（同じ部品と流用先の組は開発番号の登録 ＞ 共通）。"""
+        own = self.reuse_targets(part, dev_number) if dev_number else []
+        keys = {(t.part, t.product) for t in own}
+        return own + [t for t in self.reuse_targets(part) if (t.part, t.product) not in keys]
+
+    def delete_reuse_target(self, target: ReuseTarget, dev_number: str = "") -> None:
         with self._conn:
             self._conn.execute(
-                "DELETE FROM reuse_target WHERE part = ? AND product = ?", (target.part, target.product)
+                "DELETE FROM reuse_target WHERE part = ? AND product = ? AND dev_number = ?",
+                (target.part, target.product, dev_number),
             )
 
     def add_part_map(
@@ -524,35 +634,42 @@ class Store:
         new_part: str,
         old_balloon: str | int | None = None,
         new_balloon: str | int | None = None,
+        dev_number: str = "",
     ) -> None:
         with self._conn:
             self._conn.execute(
-                "INSERT INTO part_map VALUES (?, ?, ?, ?, ?, ?)",
+                f"INSERT INTO part_map ({PART_MAP_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (*(to_code(c) for c in (old_product, new_product, old_part, new_part)),
-                 to_optional_code(old_balloon, name="風船番号"), to_optional_code(new_balloon, name="風船番号")),
+                 to_optional_code(old_balloon, name="風船番号"), to_optional_code(new_balloon, name="風船番号"),
+                 dev_number),
             )
 
-    def part_map(self, old_product: str, new_product: str) -> dict[str, str]:
+    def part_map(self, old_product: str, new_product: str, dev_number: str = "") -> dict[str, str]:
         """元の製品と新しい製品の部品の対応（compare_structures の part_map に渡す形）。"""
-        rows = self._conn.execute(
-            "SELECT old_part, new_part FROM part_map WHERE old_product = ? AND new_product = ? ORDER BY rowid",
-            (to_code(old_product), to_code(new_product)),
-        ).fetchall()
-        return dict(rows)
+        return {r.old_part: r.new_part for r in self.part_map_rows(old_product, new_product, dev_number)}
 
-    def part_map_rows(self, old_product: str, new_product: str) -> list[PartMapRow]:
+    def part_map_for(self, dev_number: str, old_product: str, new_product: str) -> dict[str, str]:
+        """その開発番号の版で使う部品の対応（同じ元の部品は開発番号の登録 ＞ 共通）。"""
+        mapping = self.part_map(old_product, new_product)
+        if dev_number:
+            mapping.update(self.part_map(old_product, new_product, dev_number))
+        return mapping
+
+    def part_map_rows(self, old_product: str, new_product: str, dev_number: str = "") -> list[PartMapRow]:
         """part_map と同じ対応を、風船番号（空欄可）つきの行で返す。"""
         rows = self._conn.execute(
             "SELECT old_part, new_part, old_balloon, new_balloon FROM part_map "
-            "WHERE old_product = ? AND new_product = ? ORDER BY rowid",
-            (to_code(old_product), to_code(new_product)),
+            "WHERE old_product = ? AND new_product = ? AND dev_number = ? ORDER BY rowid",
+            (to_code(old_product), to_code(new_product), dev_number),
         ).fetchall()
         return [PartMapRow(*r) for r in rows]
 
-    def part_map_pairs(self) -> list[tuple[str, str]]:
+    def part_map_pairs(self, dev_number: str = "") -> list[tuple[str, str]]:
         """対応表がある（元の製品, 新しい製品）の組。足した順。"""
         rows = self._conn.execute(
-            "SELECT old_product, new_product FROM part_map GROUP BY old_product, new_product ORDER BY MIN(rowid)"
+            "SELECT old_product, new_product FROM part_map WHERE dev_number = ? "
+            "GROUP BY old_product, new_product ORDER BY MIN(rowid)",
+            (dev_number,),
         ).fetchall()
         return [(r[0], r[1]) for r in rows]
 
@@ -564,16 +681,20 @@ class Store:
         new_part: str,
         old_balloon: str | int | None = None,
         new_balloon: str | int | None = None,
+        dev_number: str = "",
     ) -> int:
         """対応表の行を消し、消した行の数を返す（風船番号の空欄どうしも同じとみなす）。"""
         with self._conn:
             cursor = self._conn.execute(
                 "DELETE FROM part_map WHERE old_product = ? AND new_product = ? AND old_part = ? AND new_part = ? "
-                "AND old_balloon IS ? AND new_balloon IS ?",
+                "AND old_balloon IS ? AND new_balloon IS ? AND dev_number = ?",
                 (*(to_code(c) for c in (old_product, new_product, old_part, new_part)),
-                 to_optional_code(old_balloon, name="風船番号"), to_optional_code(new_balloon, name="風船番号")),
+                 to_optional_code(old_balloon, name="風船番号"), to_optional_code(new_balloon, name="風船番号"),
+                 dev_number),
             )
         return cursor.rowcount
+
+    # 設定 ----------------------------------------------------------------
 
     def save_scope_policy(self, policy: ScopePolicy) -> None:
         """費目の既定は品番 '*' の行、品目ごとの上書きはその品番の行として入れ替える。"""

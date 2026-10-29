@@ -305,15 +305,15 @@ class ManualVersion(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.save_version(ex.imported_2026_10())
 
-    def test_manual_wins_and_overlap_reported(self) -> None:
+    def test_bom_wins_and_overlap_reported(self) -> None:
         manual = self.store.load_manual()
         manual.add_cost(CostRow("C-300", {M: 450}))
         manual.add_bom_lines([BomLine("A-100", "1", "B-200", 1)])
         self.store.save_manual(manual)
         v = self.store.load_version("2026-10")
-        self.assertEqual(v.cost_value("C-300", M), d(450))
-        self.assertIs(v.cost_row("C-300").source, Source.MANUAL)
-        self.assertEqual([l.child for l in v.children("A-100")], ["B-200"])
+        self.assertEqual(v.cost_value("C-300", M), d(500))
+        self.assertIs(v.cost_row("C-300").source, Source.IMPORTED)
+        self.assertEqual([l.child for l in v.children("A-100")], ["B-200", "C-300"])
         self.assertEqual(set(v.manual_overlaps),
                          {ManualOverlap("cost", "C-300"), ManualOverlap("bom_line", "A-100")})
 

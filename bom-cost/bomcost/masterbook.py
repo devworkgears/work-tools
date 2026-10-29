@@ -66,6 +66,7 @@ class MasterPlan:
     molds: list[MoldCost] = field(default_factory=list)
     reuse: list[ReuseTarget] = field(default_factory=list)
     part_maps: list[PartMapKey] = field(default_factory=list)
+    dev_number: str = ""  # 入れる先の開発番号（空は共通）
 
     def total(self, key: str) -> int:
         return sum(getattr(c, key) for c in self.counts.values())
@@ -85,25 +86,28 @@ class _Current:
     part_maps: set[PartMapKey]
 
     @classmethod
-    def load(cls, store: Store) -> "_Current":
+    def load(cls, store: Store, dev_number: str = "") -> "_Current":
         return cls(
-            store.load_manual(),
-            store.mold_costs(),
-            store.reuse_targets(),
+            store.load_manual(dev_number),
+            store.mold_costs(dev_number),
+            store.reuse_targets(dev_number=dev_number),
             {(old, new, r.old_part, r.new_part, r.old_balloon, r.new_balloon)
-             for old, new in store.part_map_pairs() for r in store.part_map_rows(old, new)},
+             for old, new in store.part_map_pairs(dev_number) for r in store.part_map_rows(old, new, dev_number)},
         )
 
 
 # 書き出し ------------------------------------------------------------------
 
 
-def book_bytes(store: Store, product_kind: str) -> bytes:
-    """今の登録を6シートのブックにする。試算（検討案でできた製品）は手入力の版に無いので入らない。"""
+def book_bytes(store: Store, product_kind: str, dev_number: str = "") -> bytes:
+    """今の登録（その開発番号の分・空は共通）を6シートのブックにする。
+
+    試算（検討案でできた製品）は手入力の版に無いので入らない。
+    """
     openpyxl = load_openpyxl()
     from openpyxl.styles import Font
 
-    manual = store.load_manual()
+    manual = store.load_manual(dev_number)
     codes = list(manual.items) + [r.code for r in manual.cost_rows if r.code not in manual.items]
     products: list[list[Any]] = []
     parts: list[list[Any]] = []
@@ -120,10 +124,12 @@ def book_bytes(store: Store, product_kind: str) -> bytes:
         PRODUCT: products,
         PART: parts,
         VOLUME: [[v.product, v.annual] for v in manual.volumes.values()],
-        MOLD: [[m.part, m.amount, m.years] for m in store.mold_costs().values()],
-        REUSE: [[t.part, t.product, t.quantity_per_unit, t.replaced_part] for t in store.reuse_targets()],
+        MOLD: [[m.part, m.amount, m.years] for m in store.mold_costs(dev_number).values()],
+        REUSE: [[t.part, t.product, t.quantity_per_unit, t.replaced_part]
+                for t in store.reuse_targets(dev_number=dev_number)],
         PART_MAP: [[old, new, r.old_part, r.old_balloon, r.new_part, r.new_balloon]
-                   for old, new in store.part_map_pairs() for r in store.part_map_rows(old, new)],
+                   for old, new in store.part_map_pairs(dev_number)
+                   for r in store.part_map_rows(old, new, dev_number)],
     }
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
@@ -196,14 +202,14 @@ def _read_sheets(data: bytes) -> dict[str, list[tuple[Any, ...]]]:
         workbook.close()
 
 
-def plan_book(store: Store, product_kind: str, data: bytes) -> MasterPlan:
-    """ブックを読み、今の登録との差（追加・変更・同じ）と行の誤りを返す。何も保存しない。
+def plan_book(store: Store, product_kind: str, data: bytes, dev_number: str = "") -> MasterPlan:
+    """ブックを読み、今の登録（その開発番号の分・空は共通）との差（追加・変更・同じ）と行の誤りを返す。何も保存しない。
 
     読めないブックは ValueError 以外の例外（zipfile など）も出るので、呼ぶ側でまとめて受ける。
     """
     sheets = _read_sheets(data)
-    plan = MasterPlan()
-    current = _Current.load(store)
+    plan = MasterPlan(dev_number=dev_number)
+    current = _Current.load(store, dev_number)
     item_rows: dict[str, tuple[str, int]] = {}  # 品番 → 最初に出たシートと行（製品と部品をまたいで見る）
 
     for sheet, headers in SHEETS.items():
@@ -353,10 +359,10 @@ def _plan_row(
 
 
 def apply_plan(store: Store, plan: MasterPlan) -> None:
-    """誤りの無い plan を1回の書き込みで入れる。"""
+    """誤りの無い plan を1回の書き込みで入れる（plan の開発番号の登録に入る）。"""
     if plan.errors:
         raise ValueError("行の誤りがある plan は入れない")
-    manual = store.load_manual()
+    manual = store.load_manual(plan.dev_number)
     new_manual: Version | None = None
     if plan.items or plan.volumes:
         new_manual = Version(MANUAL_VERSION_ID)
@@ -377,7 +383,7 @@ def apply_plan(store: Store, plan: MasterPlan) -> None:
         volumes.update({x.product: x for x in plan.volumes})
         for volume in volumes.values():
             new_manual.add_volume(volume)
-    store.apply_master(new_manual, plan.molds, plan.reuse, plan.part_maps)
+    store.apply_master(new_manual, plan.molds, plan.reuse, plan.part_maps, plan.dev_number)
 
 
 def plan_json(plan: MasterPlan) -> dict[str, Any]:

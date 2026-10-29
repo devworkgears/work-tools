@@ -6,6 +6,7 @@
 
 import base64
 import binascii
+import re
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -21,7 +22,16 @@ from .importer import (
     read_table_bytes,
     xlsx_sheet_names,
 )
-from .model import MANUAL_VERSION_ID, CostHead, CostRow, ImportWarning, Item, Version, Volume, overlay_manual
+from .model import (
+    MANUAL_VERSION_ID,
+    CostHead,
+    CostRow,
+    ImportWarning,
+    Item,
+    Version,
+    Volume,
+    is_manual_version_id,
+)
 from .group import PRODUCT_KIND_TEXT, Group, _Structure, _batches
 from .masterbook import MasterPlan, apply_plan, book_bytes, plan_book, plan_json, save_book
 from .modelchange import compare_structures
@@ -249,8 +259,8 @@ class Screens:
         dev_number = _optional_text(body, "dev_number") or explicit_id
         if not dev_number:
             raise ApiError(400, "開発番号が空")
-        if explicit_id == MANUAL_VERSION_ID:
-            raise ApiError(400, f"{MANUAL_VERSION_ID} は手入力の版の名前なので使えない")
+        if is_manual_version_id(explicit_id):
+            raise ApiError(400, f"{explicit_id} は手入力の版の名前なので使えない")
         if explicit_id and any(v.version_id == explicit_id for v in self.store.list_versions()):
             raise ApiError(409, f"版 {explicit_id} はもうある（別の ID にするか、先に版を消す）")
         files = body.get("files")
@@ -353,7 +363,7 @@ class Screens:
 
         変更は記録のときと同じ apply_batch を通し、原価を新しい版で計算し直す。
         """
-        version = overlay_manual(imported, self.store.load_manual())
+        version = self.store.overlay_master(imported)
         policy = self.store.load_scope_policy()
         copies = []
         for info in self.store.list_scenarios():
@@ -404,12 +414,27 @@ class Screens:
 
     # 手入力 ------------------------------------------------------------------
 
-    def _product_kind(self, versions: dict[str, Version | None]) -> str:
-        """手入力の製品に付ける区分の記号。一番新しい版（manual を重ねる）で製品とみなす記号、版が無ければ「製品」。
+    def _dev_number(self, params: dict[str, Any], body: dict[str, Any] | None = None) -> str:
+        """登録の開発番号（空は共通）。dev_number か、version（その版の開発番号）で受ける。"""
+        data = {**params, **(body or {})}
+        version_id = _optional_text(data, "version")
+        if version_id:
+            info = next((v for v in self.store.list_versions() if v.version_id == version_id), None)
+            if info is None:
+                raise ApiError(404, f"版 {version_id} は無い")
+            return info.dev_number
+        return _optional_text(data, "dev_number")
 
+    def _product_kind(self, versions: dict[str, Version | None], dev_number: str = "") -> str:
+        """手入力の製品に付ける区分の記号。一番新しい版（マスタ登録を敷く）で製品とみなす記号、版が無ければ「製品」。
+
+        開発番号を渡せば、その開発番号の一番新しい版（無ければ全体の一番新しい版）で見る。
         製品群は版ごとに記号を選ぶので、版の記号に合わせないと手入力の製品が製品の一覧から外れる。
         """
         latest = self.store.list_versions()
+        own = self.store.latest_revision(dev_number) if dev_number else None
+        if own is not None:
+            latest = [own]
         version = self._cached_version(versions, latest[0].version_id) if latest else None
         if version is None:
             return PRODUCT_KIND_TEXT
@@ -423,10 +448,16 @@ class Screens:
                 versions[version_id] = None
         return versions[version_id]
 
-    def _trials(self, versions: dict[str, Version | None]) -> list[dict[str, Any]]:
-        """試算（新製品）の一覧。製品群の試作品も「新しい試算」で作ったものも1本1行。"""
+    def _trials(self, versions: dict[str, Version | None], dev_number: str = "") -> list[dict[str, Any]]:
+        """試算（新製品）の一覧。製品群の試作品も「新しい試算」で作ったものも1本1行。
+
+        開発番号を渡せば、その開発番号の版の試算だけ（空なら全部）。
+        """
         rows = []
+        devs = {v.version_id: v.dev_number for v in self.store.list_versions()}
         for s in self.store.list_scenarios():
+            if dev_number and devs.get(s.version_id) != dev_number:
+                continue
             version = self._cached_version(versions, s.version_id)
             base = None if version is None else version.items.get(s.base)
             rows.append(
@@ -442,10 +473,14 @@ class Screens:
         return rows
 
     def manual(self, params: dict[str, str]) -> Response:
-        """手入力の品目（role で製品・部品に分ける）と試算（新製品）の一覧ほか。"""
-        manual = self.store.load_manual()
+        """手入力の品目（role で製品・部品に分ける）と試算（新製品）の一覧ほか。
+
+        dev_number（空は共通）の登録だけを返す。in_bom は BOM に入った登録の品番 → [{開発番号, 第何版から}]。
+        """
+        dev = self._dev_number(params)
+        manual = self.store.load_manual(dev)
         versions: dict[str, Version | None] = {}
-        product_kind = self._product_kind(versions)
+        product_kind = self._product_kind(versions, dev)
         codes = list(manual.items) + [r.code for r in manual.cost_rows if r.code not in manual.items]
         items = []
         for code in codes:
@@ -460,29 +495,38 @@ class Screens:
                     "costs": {h.name: _s(manual.cost_value(code, h)) for h in HEADS},
                 }
             )
+        in_bom = self.store.bom_entries([*codes, *manual.parents(), *manual.volumes], dev)
+        dev_numbers = list(dict.fromkeys([*(v.dev_number for v in self.store.list_versions()),
+                                          *self.store.master_dev_numbers()]))
         return _json_response(
             {
+                "dev_number": dev,
+                "dev_numbers": dev_numbers,
                 "heads": [{"id": h.name, "label": h.value} for h in HEADS],
                 "items": items,
                 "product_kind": product_kind,
-                "trials": self._trials(versions),
+                "trials": self._trials(versions, dev),
                 "volumes": [{"product": v.product, "annual": _s(v.annual), "kind": v.kind.value}
                             for v in manual.volumes.values()],
                 "molds": [{"part": m.part, "amount": _s(m.amount), "years": _s(m.years),
-                           "annual_amount": _s(m.annual_amount)} for m in self.store.mold_costs().values()],
+                           "annual_amount": _s(m.annual_amount)} for m in self.store.mold_costs(dev).values()],
                 "reuse": [{"part": t.part, "product": t.product, "quantity": _s(t.quantity_per_unit),
-                           "replaced_part": t.replaced_part} for t in self.store.reuse_targets()],
-                "part_maps": self._part_map_rows(),
+                           "replaced_part": t.replaced_part} for t in self.store.reuse_targets(dev_number=dev)],
+                "part_maps": self._part_map_rows(dev_number=dev),
+                "in_bom": {code: [{"dev_number": d, "revision": r} for d, r in entries]
+                           for code, entries in in_bom.items()},
                 "allocations": [{"id": a.name, "label": a.value} for a in Allocation],
             }
         )
 
     def put_manual_item(self, params: dict[str, str], body: dict[str, Any]) -> Response:
-        """試作品の品目と原価を足す・直す（同じ品番は入れ替え）。手入力の版 manual に入る。
+        """試作品の品目と原価を足す・直す（同じ品番は入れ替え）。マスタ登録に入る。
 
+        dev_number（空は共通）か version（その版の開発番号）の登録に入る。
         role（product・part）を送ると区分はそれで決まる: product は製品とみなす記号、part は kind（製品の記号は不可）。
         role が無ければ kind をそのまま区分にする。
         """
+        dev = self._dev_number(params, body)
         code = to_code(_text_field(body, "code", "品番"))
         name = _text_field(body, "name", "名称")
         costs = body.get("costs") or {}
@@ -498,14 +542,14 @@ class Screens:
         kind = _optional_text(body, "kind")
         role = _optional_text(body, "role")
         if role:
-            product_kind = self._product_kind({})
+            product_kind = self._product_kind({}, dev)
             if role == "product":
                 kind = product_kind
             elif role != "part":
                 raise ApiError(400, f"role が分からない: {role}（product・part）")
             elif kind == product_kind:
                 raise ApiError(400, f"部品の区分に製品の記号 {kind} は使えない")
-        manual = self.store.load_manual()
+        manual = self.store.load_manual(dev)
         kept = manual.items.get(code)
         result = _manual_copy(manual, drop_item=code)
         result.add_item(Item(code, name, kind,
@@ -513,38 +557,42 @@ class Screens:
                              False if kept is None else kept.has_children))
         if any(v is not None for v in values.values()):
             result.add_cost(CostRow(code, values))
-        self.store.save_manual(result)
-        return self.manual({})
+        self.store.save_manual(result, dev)
+        return self.manual({"dev_number": dev})
 
     def delete_manual_item(self, params: dict[str, str]) -> Response:
+        dev = self._dev_number(params)
         code = to_code(_param(params, "code", "品番"))
-        manual = self.store.load_manual()
+        manual = self.store.load_manual(dev)
         if code not in manual.items and manual.cost_row(code) is None:
             raise ApiError(404, f"手入力の品目 {code} は無い")
-        self.store.save_manual(_manual_copy(manual, drop_item=code))
-        return self.manual({})
+        self.store.save_manual(_manual_copy(manual, drop_item=code), dev)
+        return self.manual({"dev_number": dev})
 
     def put_volume(self, params: dict[str, str], body: dict[str, Any]) -> Response:
         """新製品の年間台数（計画）を足す・直す。"""
+        dev = self._dev_number(params, body)
         product = to_code(_text_field(body, "product", "製品の品番"))
         annual = _required_number(body.get("annual"), "年間台数")
         if annual < 0:
             raise ApiError(400, "年間台数は 0 以上にする")
-        manual = self.store.load_manual()
+        manual = self.store.load_manual(dev)
         result = _manual_copy(manual, drop_volume=product)
         result.add_volume(Volume(product, annual))
-        self.store.save_manual(result)
-        return self.manual({})
+        self.store.save_manual(result, dev)
+        return self.manual({"dev_number": dev})
 
     def delete_volume(self, params: dict[str, str]) -> Response:
+        dev = self._dev_number(params)
         product = to_code(_param(params, "product", "製品の品番"))
-        manual = self.store.load_manual()
+        manual = self.store.load_manual(dev)
         if product not in manual.volumes:
             raise ApiError(404, f"手入力の年間台数 {product} は無い")
-        self.store.save_manual(_manual_copy(manual, drop_volume=product))
-        return self.manual({})
+        self.store.save_manual(_manual_copy(manual, drop_volume=product), dev)
+        return self.manual({"dev_number": dev})
 
     def put_mold(self, params: dict[str, str], body: dict[str, Any]) -> Response:
+        dev = self._dev_number(params, body)
         part = to_code(_text_field(body, "part", "部品の品番"))
         amount = _required_number(body.get("amount"), "型費")
         years = _required_number(body.get("years", "2"), "償却年数")
@@ -552,18 +600,20 @@ class Screens:
             raise ApiError(400, "型費は 0 以上にする")
         if years <= 0:
             raise ApiError(400, "償却年数は正の数にする")
-        self.store.save_mold_cost(MoldCost(part, amount, years))
-        return self.manual({})
+        self.store.save_mold_cost(MoldCost(part, amount, years), dev)
+        return self.manual({"dev_number": dev})
 
     def delete_mold(self, params: dict[str, str]) -> Response:
+        dev = self._dev_number(params)
         part = to_code(_param(params, "part", "部品の品番"))
-        if part not in self.store.mold_costs():
+        if part not in self.store.mold_costs(dev):
             raise ApiError(404, f"型費 {part} は無い")
-        self.store.delete_mold_cost(part)
-        return self.manual({})
+        self.store.delete_mold_cost(part, dev)
+        return self.manual({"dev_number": dev})
 
     def put_reuse(self, params: dict[str, str], body: dict[str, Any]) -> Response:
         """流用先を足す・直す。同じ部品と流用先の組は入れ替える。original があればその組を消してから足す。"""
+        dev = self._dev_number(params, body)
         part = to_code(_text_field(body, "part", "部品の品番"))
         product = to_code(_text_field(body, "product", "流用先の品番"))
         quantity = _required_number(body.get("quantity"), "使用数")
@@ -573,27 +623,28 @@ class Screens:
         target = ReuseTarget(part, product, quantity, replaced)
         original = body.get("original")
         if isinstance(original, dict) and original.get("part") and original.get("product"):
-            self.store.delete_reuse_target(ReuseTarget(original["part"], original["product"], 1))
-        self.store.delete_reuse_target(target)
-        self.store.add_reuse_target(target)
-        return self.manual({})
+            self.store.delete_reuse_target(ReuseTarget(original["part"], original["product"], 1), dev)
+        self.store.delete_reuse_target(target, dev)
+        self.store.add_reuse_target(target, dev)
+        return self.manual({"dev_number": dev})
 
     def delete_reuse(self, params: dict[str, str]) -> Response:
+        dev = self._dev_number(params)
         target = ReuseTarget(_param(params, "part", "部品の品番"), _param(params, "product", "流用先の品番"), 1)
-        if not any(t.product == target.product for t in self.store.reuse_targets(target.part)):
+        if not any(t.product == target.product for t in self.store.reuse_targets(target.part, dev)):
             raise ApiError(404, f"流用先 {target.part} → {target.product} は無い")
-        self.store.delete_reuse_target(target)
-        return self.manual({})
+        self.store.delete_reuse_target(target, dev)
+        return self.manual({"dev_number": dev})
 
     # 部品の対応表 ------------------------------------------------------------
 
-    def _part_map_rows(self, pair: tuple[str, str] | None = None) -> list[dict[str, Any]]:
-        pairs = [pair] if pair is not None else self.store.part_map_pairs()
+    def _part_map_rows(self, pair: tuple[str, str] | None = None, dev_number: str = "") -> list[dict[str, Any]]:
+        pairs = [pair] if pair is not None else self.store.part_map_pairs(dev_number)
         return [
             {"old_product": old, "new_product": new, "old_part": r.old_part, "new_part": r.new_part,
              "old_balloon": r.old_balloon, "new_balloon": r.new_balloon}
             for old, new in pairs
-            for r in self.store.part_map_rows(old, new)
+            for r in self.store.part_map_rows(old, new, dev_number)
         ]
 
     @staticmethod
@@ -610,18 +661,20 @@ class Screens:
     def part_maps(self, params: dict[str, str]) -> Response:
         old, new = params.get("old_product"), params.get("new_product")
         pair = (to_code(old), to_code(new)) if old and new else None
-        return _json_response(self._part_map_rows(pair))
+        return _json_response(self._part_map_rows(pair, self._dev_number(params)))
 
     def add_part_map(self, params: dict[str, str], body: dict[str, Any]) -> Response:
+        dev = self._dev_number(params, body)
         key = self._part_map_key(body)
         if key[0] == key[1]:
             raise ApiError(400, "元の製品と新しい製品は別の品番にする")
         if key[2] == key[3]:
             raise ApiError(400, "同じ品番どうしは対応表に入れなくても自動で対応する")
-        self.store.add_part_map(*key)
-        return _json_response(self._part_map_rows(), 201)
+        self.store.add_part_map(*key, dev_number=dev)
+        return _json_response(self._part_map_rows(dev_number=dev), 201)
 
     def update_part_map(self, params: dict[str, str], body: dict[str, Any]) -> Response:
+        dev = self._dev_number(params, body)
         original = body.get("original")
         if not isinstance(original, dict):
             raise ApiError(400, "直す元の行（original）が空")
@@ -629,31 +682,38 @@ class Screens:
         new_key = self._part_map_key(body)
         if new_key[2] == new_key[3]:
             raise ApiError(400, "同じ品番どうしは対応表に入れなくても自動で対応する")
-        if self.store.delete_part_map(*old_key) == 0:
+        if self.store.delete_part_map(*old_key, dev_number=dev) == 0:
             raise ApiError(404, "直す元の対応表の行が無い")
-        self.store.add_part_map(*new_key)
-        return _json_response(self._part_map_rows())
+        self.store.add_part_map(*new_key, dev_number=dev)
+        return _json_response(self._part_map_rows(dev_number=dev))
 
     def delete_part_map(self, params: dict[str, str]) -> Response:
-        if self.store.delete_part_map(*self._part_map_key(dict(params))) == 0:
+        dev = self._dev_number(params)
+        if self.store.delete_part_map(*self._part_map_key(dict(params)), dev_number=dev) == 0:
             raise ApiError(404, "対応表の行が無い")
-        return _json_response(self._part_map_rows())
+        return _json_response(self._part_map_rows(dev_number=dev))
 
     # マスタのブック（Excel で開いて打ち込み、まとめて取り込む） ----------------
 
-    def _book_path(self) -> Path:
+    def _book_path(self, dev_number: str = "") -> Path:
+        """ブックの置き場。開発番号ごとの登録はファイル名に開発番号を入れる（共通は今までの名前）。"""
         folder = self.api.master_dir
         if folder is None:
             if self.store.path is None:
                 raise ApiError(400, "DB がファイルでないのでブックの置き場が無い")
             folder = self.store.path.parent
         stem = "bom-cost" if self.store.path is None else self.store.path.stem
-        return Path(folder) / f"{stem}-master.xlsx"
+        suffix = "" if not dev_number else "-" + re.sub(r'[\\/:*?"<>|\s]', "_", dev_number)
+        return Path(folder) / f"{stem}-master{suffix}.xlsx"
 
     def write_master_book(self, params: dict[str, str], body: dict[str, Any]) -> Response:
-        """今の登録をブックに書き、Windows では既定のアプリで開く。開けない環境ではパスを返すだけ。"""
-        path = self._book_path()
-        data = book_bytes(self.store, self._product_kind({}))
+        """今の登録（dev_number の分・空は共通）をブックに書き、Windows では既定のアプリで開く。
+
+        開けない環境ではパスを返すだけ。
+        """
+        dev = self._dev_number(params, body)
+        path = self._book_path(dev)
+        data = book_bytes(self.store, self._product_kind({}, dev), dev)
         try:
             save_book(path, data)
         except PermissionError:
@@ -664,7 +724,7 @@ class Screens:
 
     def open_master_book(self, params: dict[str, str], body: dict[str, Any]) -> Response:
         """置き場のブックを書き直さずに開く。無ければ 404。"""
-        path = self._book_path()
+        path = self._book_path(self._dev_number(params, body))
         if not path.is_file():
             raise ApiError(404, "ブックがまだ無い（先に［Excel で開く］）")
         return self._open_book(path)
@@ -679,14 +739,15 @@ class Screens:
                 pass
         return _json_response({"path": str(path), "opened": opened})
 
-    def _master_plan(self, body: dict[str, Any]) -> tuple[str, MasterPlan]:
-        """body に content があれば送られたブック、無ければ置き場のブックを読む。"""
+    def _master_plan(self, params: dict[str, str], body: dict[str, Any]) -> tuple[str, MasterPlan]:
+        """body に content があれば送られたブック、無ければ置き場のブックを読む。dev_number の登録と比べる。"""
+        dev = self._dev_number(params, body)
         if body.get("content"):
             name, data = self._upload_bytes(body)
             if not name.lower().endswith((".xlsx", ".xlsm")):
                 raise ApiError(400, f"{name} は Excel のブック（.xlsx）でない")
         else:
-            path = self._book_path()
+            path = self._book_path(dev)
             name = str(path)
             try:
                 data = path.read_bytes()
@@ -695,24 +756,24 @@ class Screens:
             except PermissionError:
                 raise ApiError(409, "ブックを読めない（Excel が開いたまま？）") from None
         try:
-            plan = plan_book(self.store, self._product_kind({}), data)
+            plan = plan_book(self.store, self._product_kind({}, dev), data, dev)
         except Exception:  # 壊れた .xlsx は zipfile などの例外で落ちるので、まとめて読めないとする
             raise ApiError(400, f"{name} を Excel のブックとして読めない") from None
         return name, plan
 
     def check_master_book(self, params: dict[str, str], body: dict[str, Any]) -> Response:
         """ブックと今の登録の差（追加・変更・同じの件数）と行の誤りを返す。何も保存しない。"""
-        name, plan = self._master_plan(body)
+        name, plan = self._master_plan(params, body)
         return _json_response({"source": name, **plan_json(plan)})
 
     def apply_master_book(self, params: dict[str, str], body: dict[str, Any]) -> Response:
         """ブックを読み直して入れる。行の誤りが1つでもあれば何も入れず 400（errors つき）。"""
-        name, plan = self._master_plan(body)
+        name, plan = self._master_plan(params, body)
         if plan.errors:
             return _json_response({"error": f"行の誤りが {len(plan.errors)} 件あるので取り込まない",
                                    "source": name, **plan_json(plan)}, 400)
         apply_plan(self.store, plan)
-        return _json_response({"source": name, **plan_json(plan), "manual": self.manual({}).json()})
+        return _json_response({"source": name, **plan_json(plan), "manual": self.manual({"dev_number": plan.dev_number}).json()})
 
     # 部品から見る ------------------------------------------------------------
 
@@ -736,8 +797,8 @@ class Screens:
             raise ApiError(400, f"品番 {part} は版 {version_id} に無い")
         policy = self.store.load_scope_policy()
         overrides = scenario.overrides() if scenario is not None else None
-        reuse = self.store.reuse_targets(part)
-        mold = self.store.mold_costs().get(part)
+        reuse = self.store.reuse_targets_for(version.dev_number, part)
+        mold = self.store.mold_costs_for(version.dev_number).get(part)
         users, unknown = part_users(version, part, reuse, overrides)
         alloc = None if mold is None else allocate_mold_cost(version, mold, allocation, reuse, overrides)
         costs: dict[tuple[str, CostHead], Decimal | None] = {}
@@ -854,7 +915,13 @@ class Screens:
             if not (scenario is not None and code == new_product) and not version.children(code):
                 raise ApiError(400, f"製品 {code} の構成が版 {version.version_id} に無い")
         direct_only = str(params.get("direct_only", "")).lower() in ("1", "true", "yes")
-        mapping = self.store.part_map(old_product, new_product)
+        # 対応表は新しい製品の版の開発番号の分と共通を使う
+        dev = new_version.dev_number
+        mapping = self.store.part_map_for(dev, old_product, new_product)
+        map_rows = [{**r, "dev_number": dev} for r in self._part_map_rows((old_product, new_product), dev)] if dev else []
+        own = {(r["old_part"], r["new_part"], r["old_balloon"], r["new_balloon"]) for r in map_rows}
+        map_rows += [{**r, "dev_number": ""} for r in self._part_map_rows((old_product, new_product))
+                     if (r["old_part"], r["new_part"], r["old_balloon"], r["new_balloon"]) not in own]
         rows = compare_structures(old_version, old_product, new_version, new_product, mapping, direct_only,
                                   new_overrides=new_overrides)
 
@@ -887,7 +954,8 @@ class Screens:
                     }
                     for r in rows
                 ],
-                "part_maps": self._part_map_rows((old_product, new_product)),
+                "new_dev_number": dev,
+                "part_maps": map_rows,
             }
         )
 

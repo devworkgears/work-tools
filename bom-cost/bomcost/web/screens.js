@@ -10,6 +10,7 @@ const screenState = {
   manual: null,
   editing: {}, // マスタ登録の表ごとに「直す元」の行
   manualTab: "product", // マスタ登録で選んでいるタブ
+  manualDev: "", // マスタ登録で選んでいる開発番号（空は共通）
   masterFile: null, // マスタのブックを選ぶ欄（描き直しても選んだファイルを残すため1つを使い回す）
   masterCheck: null, // { body, result }: 取り込みの確認
   preview: null, // { file, content, data }
@@ -257,7 +258,7 @@ async function drawChange() {
     type: "button",
     onclick: () => guarded(async () => {
       await api("POST", "/api/partmaps", {
-        old_product: c.old_product, new_product: c.new_product, old_part: oldPart.value, new_part: newPart.value,
+        dev_number: c.new_dev_number, old_product: c.old_product, new_product: c.new_product, old_part: oldPart.value, new_part: newPart.value,
         old_balloon: oldBalloon.value, new_balloon: newBalloon.value,
       });
       await drawChange();
@@ -299,18 +300,33 @@ function card(title, body) {
 }
 
 async function renderManual(data) {
-  const m = data || (await api("GET", "/api/manual"));
+  const m = data || (await api("GET", `/api/manual?${qs({ dev_number: screenState.manualDev })}`));
   screenState.manual = m;
   screenState.allocations = m.allocations;
+  const dev = m.dev_number;
   const send = (method, path, body) => guarded(async () => {
-    const result = await api(method, path, body);
+    const result = await api(method, path, body && { ...body, dev_number: dev });
     screenState.editing = {};
     await renderManual(Array.isArray(result) ? null : result);
     showMessage("保存しました。", "info");
   });
   const del = (path) => () => {
-    if (confirm("消しますか？")) send("DELETE", path);
+    if (confirm("消しますか？")) send("DELETE", dev ? `${path}&${qs({ dev_number: dev })}` : path);
   };
+  // BOM に入った登録の印（計算は BOM の値を使う）
+  const inBom = (code) => {
+    const entries = m.in_bom[code];
+    if (!entries) return null;
+    const text = entries.map((e) => `${dev ? "" : `${e.dev_number} `}第${e.revision}版から BOM`).join("・");
+    return el("span", { class: "mreg-inbom" }, text);
+  };
+  const devSelect = el("select", { onchange: (e) => {
+    screenState.manualDev = e.target.value;
+    screenState.editing = {};
+    screenState.masterCheck = null;
+    guarded(() => renderManual());
+  } });
+  options(devSelect, [["", "共通"], ...m.dev_numbers.map((d) => [d, d])], { value: dev });
   const edit = (key, values) => () => {
     screenState.editing[key] = values;
     renderManual(screenState.manual);
@@ -340,7 +356,7 @@ async function renderManual(data) {
   };
   const productRows = [
     ...m.items.filter((i) => i.role === "product").map((i) => el("tr", {},
-      el("td", {}, i.code), el("td", {}, i.name), el("td", {}, "—"), el("td", {}, "—"), el("td", {}, "—"), ...itemCells(i))),
+      el("td", {}, i.code, " ", inBom(i.code)), el("td", {}, i.name), el("td", {}, "—"), el("td", {}, "—"), el("td", {}, "—"), ...itemCells(i))),
     ...m.trials.map((t) => el("tr", {},
       el("td", {}, t.code), el("td", {}, t.name), el("td", {}, t.base), el("td", {}, t.trial_name), el("td", {}, versionLabel(t.version_id)),
       m.heads.map(() => el("td", {}, "")), el("td", {}))),
@@ -348,7 +364,7 @@ async function renderManual(data) {
   const productHeads = ["品番", "名称", "土台", "検討案", "版", ...m.heads.map((h) => numTh(h.label)), ""];
   const partHeads = ["品番", "名称", "区分", ...m.heads.map((h) => numTh(h.label)), ""];
   const partRows = m.items.filter((i) => i.role !== "product").map((i) => el("tr", {},
-    el("td", {}, i.code), el("td", {}, i.name), el("td", {}, i.kind), ...itemCells(i)));
+    el("td", {}, i.code, " ", inBom(i.code)), el("td", {}, i.name), el("td", {}, i.kind), ...itemCells(i)));
   const products = el("div", {},
     el("h3", {}, `区分 ${m.product_kind}`),
     table(productHeads, productRows.length ? productRows : empty(productHeads.length)),
@@ -364,7 +380,7 @@ async function renderManual(data) {
   const volAnnual = el("input", { value: val("volume", "annual"), inputmode: "decimal" });
   const volumes = el("div", {},
     table(["製品の品番", numTh("年間台数"), "種別", ""], m.volumes.map((v) => el("tr", {},
-      el("td", {}, v.product), numTd(v.annual), el("td", {}, v.kind),
+      el("td", {}, v.product, " ", inBom(v.product)), numTd(v.annual), el("td", {}, v.kind),
       el("td", {},
         el("button", { type: "button", onclick: edit("volume", v) }, "直す"),
         el("button", { type: "button", onclick: del(`/api/manual/volumes?${qs({ product: v.product })}`) }, "消す")),
@@ -445,7 +461,8 @@ async function renderManual(data) {
     renderManual(screenState.manual);
   };
   document.getElementById("manual-body").replaceChildren(
-    masterBookBar(),
+    el("div", { class: "form-row mreg-dev" }, field("開発番号 ", devSelect)),
+    masterBookBar(dev),
     masterCheckPanel(),
     el("div", { class: "seg manual-tabs", role: "tablist" }, tabs.map(([key, label]) =>
       el("button", { type: "button", role: "tab", class: key === current[0] ? "on" : null, "aria-selected": String(key === current[0]), onclick: pick(key) }, label))),
@@ -461,18 +478,18 @@ async function masterBookBody() {
   return { filename: file.name, content: await readAsBase64(file) };
 }
 
-function masterBookBar() {
+function masterBookBar(dev) {
   if (!screenState.masterFile) screenState.masterFile = el("input", { type: "file", accept: ".xlsx,.xlsm" });
   const open = () => guarded(async () => {
     // 置き場のブックに取り込んでいない差があるなら、作り直して消す前に確かめる（ブックが無い・読めない時は作り直す）
-    const diff = await api("POST", "/api/master/check", {}).catch(() => null);
+    const diff = await api("POST", "/api/master/check", { dev_number: dev }).catch(() => null);
     const keep = diff && diff.added + diff.changed > 0
       && !confirm(`取り込んでいない差があります（追加 ${diff.added}件・変更 ${diff.changed}件）。ブックを作り直しますか？`);
-    const r = await api("POST", keep ? "/api/master/open" : "/api/master/book");
+    const r = await api("POST", keep ? "/api/master/open" : "/api/master/book", { dev_number: dev });
     showMessage(`${r.opened ? "開きました" : "書き出しました"}: ${r.path}`, "info");
   });
   const check = () => guarded(async () => {
-    const body = await masterBookBody();
+    const body = { ...(await masterBookBody()), dev_number: dev };
     screenState.masterCheck = { body, result: await api("POST", "/api/master/check", body) };
     await renderManual(screenState.manual);
   });

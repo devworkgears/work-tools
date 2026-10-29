@@ -34,6 +34,7 @@ from .model import (
     Volume,
     VolumeKind,
     base_code,
+    manual_version_id,
     mbom_to_ebom,
     overlay_manual,
 )
@@ -73,7 +74,7 @@ __all__ = [
     "ScenarioInfo", "Scope", "ScopePolicy", "Source", "Store", "StructureRow", "TABLE_FIELDS", "Table",
     "Verdict", "Version", "VersionComparison", "VersionImport", "VersionInUseError", "VersionInfo", "Volume",
     "VolumeKind", "allocate_mold_cost", "base_code", "calculate_cost", "compare_structures",
-    "judge_double_counting", "mbom_to_ebom", "overlay_manual", "part_users", "read_csv", "read_table",
+    "judge_double_counting", "manual_version_id", "mbom_to_ebom", "overlay_manual", "part_users", "read_csv", "read_table",
     "read_xlsx", "reuse_impact", "tally", "to_code", "to_decimal", "to_flag", "to_optional_code",
     "to_optional_decimal", "to_symbol", "usage_per_unit",
 ]

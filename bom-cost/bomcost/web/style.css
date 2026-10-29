@@ -205,6 +205,8 @@ tr.trial-total th { color: inherit; font-weight: 600; }
 
 /* マスタ登録のタブ */
 .manual-tabs { justify-self: start; flex-wrap: wrap; }
+.mreg-dev { justify-self: start; }
+.mreg-inbom { font-size: 11px; padding: 0 5px; border-radius: 3px; background: var(--warn-soft); color: var(--warn); white-space: nowrap; }
 
 /* 変更の欄: 品番が無い時の登録 */
 .change-register { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 2px 0 6px 6em; padding-left: 8px; }

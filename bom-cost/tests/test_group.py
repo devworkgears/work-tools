@@ -11,6 +11,7 @@ from bomcost.api import Api
 from bomcost.app import static_response
 from bomcost.demo import build_demo
 from bomcost.store import Store
+from bomcost import group
 from bomcost.group import Group, _Structure
 from test_screens import SAMPLES, EmptyDbCase, b64
 
@@ -99,6 +100,19 @@ class Parts(SampleDbCase):
         self.assertEqual((len(cut["rows"]), cut["truncated"]), (2, True))
         # 製品そのもの（組立品として下に入る A-100 は別）は自分の行に出さない
         self.assertEqual([(x["product"], x["part"]) for x in self.parts("&part=A-100")["rows"]], [("V-110", "A-100")])
+
+    def test_words_width_and_hyphen(self) -> None:
+        rows = lambda q: [(x["product"], x["part"]) for x in self.parts("&q=A-100&part=" + quote(q))["rows"]]
+        self.assertEqual(rows("部品"), [("A-100", "B-200"), ("A-100", "C-300")])
+        # 空白で区切った語は全部を含む物だけ（全角の空白も区切り）
+        self.assertEqual(rows("部品　ｂ"), [("A-100", "B-200")])
+        self.assertEqual(rows("部品 B Z"), [])
+        # 全角半角・ハイフンの有無は同じに扱う
+        self.assertEqual(rows("Ｃ３００"), [("A-100", "C-300")])
+        # 中ほどの一致も消さない。品番が語で始まるかの判定も全角・ハイフンを同じに扱う
+        self.assertEqual(rows("00"), [("A-100", "B-200"), ("A-100", "C-300")])
+        self.assertTrue(group._code_starts("C-300", "部品 ｃ３"))
+        self.assertFalse(group._code_starts("B-200", "部品 ｃ３"))
 
 
 class Changes(SampleDbCase):

@@ -5,6 +5,7 @@
 """
 
 import json
+import unicodedata
 from collections import Counter
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Callable
@@ -56,8 +57,23 @@ def _limit(value: Any, default: int) -> int:
     return min(int(text), MAX_LIMIT)
 
 
-def _matches(text: str, needle: str) -> bool:
-    return needle.casefold() in text.casefold()
+def _fold(text: str) -> str:
+    """全角半角・大文字小文字・ハイフンの有無を同じに扱う形。"""
+    return unicodedata.normalize("NFKC", text).casefold().replace("-", "").replace("‐", "").replace("−", "")
+
+
+def _words(needle: str) -> list[str]:
+    return [w for w in (_fold(x) for x in unicodedata.normalize("NFKC", needle).split()) if w]
+
+
+def _matches(texts: tuple[str, ...], needle: str) -> bool:
+    """空白で区切った語の全部が、どれかの text に含まれる。"""
+    folded = [_fold(t) for t in texts]
+    return all(any(w in t for t in folded) for w in _words(needle))
+
+
+def _code_starts(code: str, needle: str) -> bool:
+    return any(_fold(code).startswith(w) for w in _words(needle))
 
 
 class _Structure:
@@ -271,7 +287,7 @@ class Group:
         codes = self.product_codes(version, structure, kind)
         needle = (params.get("q") or "").strip()
         if needle:
-            codes = [c for c in codes if _matches(c, needle) or _matches(self._name(version, c), needle)]
+            codes = [c for c in codes if _matches((c, self._name(version, c)), needle)]
         return structure, kind, codes
 
     def _trial_only(self, version: Version, params: dict[str, str], codes: list[str]) -> list[str]:
@@ -410,9 +426,11 @@ class Group:
                 for change in scenario.changes:
                     if change.kind is ChangeKind.REPLACE and change.replacement is not None:
                         changed.setdefault(change.part, []).append(change.replacement)
-            for part, usage in structure.usage(product).items():
-                if part == product or not (_matches(part, needle) or _matches(self._name(version, part), needle)):
-                    continue
+            hits = [(p, u) for p, u in structure.usage(product).items()
+                    if p != product and _matches((p, self._name(version, p)), needle)]
+            # 品番が語で始まる部品を上に（中ほどの一致も消さない）
+            hits.sort(key=lambda h: not _code_starts(h[0], needle))
+            for part, usage in hits:
                 if len(rows) >= limit:
                     truncated = True
                     break

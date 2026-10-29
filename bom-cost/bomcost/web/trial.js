@@ -239,7 +239,7 @@ function openChangeForm(row, product, ops, send = (change) => trialChange(produc
     const line = lines.find((l) => l.radio.checked);
     const regs = toRegister(line);
     if (regs.length) {
-      for (const r of regs) await api("PUT", "/api/manual/items", r.reg.body());
+      for (const r of regs) await api("PUT", "/api/manual/items", { ...r.reg.body(), version: trialOpened.version });
       await loadCodes(trialOpened.version);
       sync();
     }
@@ -478,7 +478,9 @@ async function drawTrial() {
       el("td", {}, twistyCell(x.code, true), x.code),
       el("td", {}, x.name),
       el("td", { class: "num" }, String(own.length)),
-      el("td", { class: `num ${signClass(x.difference)}` }, fmt(x.difference, { sign: true, missing: "—" })),
+      el("td", { class: `num ${signClass(x.difference)}`,
+        title: own.map((c) => `${c.text}　${fmt(c.difference, { sign: true, missing: "—" })}`).join("\n") },
+        fmt(x.difference, { sign: true, missing: "—" })),
     ));
     if (trialOpen.has(x.code)) productRows.push(await trialProductPanel(t, x.code, own));
   }
