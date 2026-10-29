@@ -84,6 +84,7 @@ const trialChecked = new Set(); // 部品の絞り込みでチェックした「
 let trialSort = { key: null, desc: false }; // 構成の表の並べ替え（# は風船番号）
 
 const checkKey = (r) => `${r.product}\t${r.part}`;
+const trialCode = (code) => codeSpan(trialOpened?.version, code);
 
 function toggleTrial(path) {
   if (trialOpen.has(path)) trialOpen.delete(path);
@@ -286,16 +287,16 @@ function rowButton(ctx, node, change) {
 
 function trialNodeRow(ctx, node, path, depth) {
   const change = rowChange(ctx.changes, node);
-  let code = node.code;
+  let code = trialCode(node.code);
   let name = node.name;
   let quantity = fmt(node.quantity, { missing: "" });
   if (change?.kind === "REPLACE") {
-    code = `${node.code}→${change.replacements.map((r) => r.code).join("・")}`;
+    code = [trialCode(node.code), "→", change.replacements.flatMap((r, i) => [i ? "・" : null, trialCode(r.code)])];
     name = `${node.name}→${change.replacements.map((r) => r.name || r.code).join("・")}`;
   } else if (change?.kind === "SET_QUANTITY") {
     quantity = `${quantity}→${fmt(change.quantity)}`;
   } else if (change) {
-    code = [el("s", {}, node.code), " (削除)"];
+    code = [el("s", { title: codeTitle(trialOpened?.version, node.code) }, node.code), " (削除)"];
     name = el("s", {}, node.name);
   }
   return el(
@@ -332,7 +333,7 @@ function addedRows(changes) {
     "tr",
     { class: `group-node trial-changed ${CHANGE_CLASS[c.kind]}` },
     el("td", {}, ""),
-    el("td", {}, el("span", { class: "trial-plus" }, c.kind === "ADD" ? "＋ " : "員数 "), c.part),
+    el("td", {}, el("span", { class: "trial-plus" }, c.kind === "ADD" ? "＋ " : "員数 "), trialCode(c.part)),
     el("td", {}, c.part_name ?? ""),
     el("td", { class: "num" }, fmt(c.quantity)),
     el("td", {}, c.part_kind ?? ""),
@@ -347,7 +348,7 @@ const emptyCells = () => Array.from({ length: PAIR_COLS }, (_, i) => el("td", { 
 function pairCells(node, depth, twisty, first) {
   return [
     el("td", { class: `num ${first ? "pair-split" : ""}` }, node.balloon ?? ""),
-    el("td", { style: `padding-left:${6 + depth * 18}px` }, twisty, node.code),
+    el("td", { style: `padding-left:${6 + depth * 18}px` }, twisty, trialCode(node.code)),
     el("td", {}, node.name ?? ""),
     el("td", { class: "num" }, fmt(node.quantity, { missing: "" })),
     el("td", {}, node.kind || ""),
@@ -438,8 +439,8 @@ function partBlock(parts) {
     "tr",
     {},
     el("td", {}, boxes[i]),
-    el("td", {}, `${r.product} ${r.product_name}`),
-    el("td", {}, r.part),
+    el("td", {}, trialCode(r.product), ` ${r.product_name}`),
+    el("td", {}, trialCode(r.part)),
     el("td", {}, r.part_name),
     numTd(r.usage),
     el("td", {}, r.replaced_by.length ? r.replaced_by.map((c) => el("span", { class: "tag add" }, `→ ${c}`)) : "—"),
@@ -475,7 +476,7 @@ async function drawTrial() {
     productRows.push(el(
       "tr",
       {},
-      el("td", {}, twistyCell(x.code, true), x.code),
+      el("td", {}, twistyCell(x.code, true), trialCode(x.code)),
       el("td", {}, x.name),
       el("td", { class: "num" }, String(own.length)),
       el("td", { class: `num ${signClass(x.difference)}`,

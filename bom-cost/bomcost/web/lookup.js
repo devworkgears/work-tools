@@ -13,7 +13,12 @@ async function enterLookup() {
 // 表の中の品番。押すとその品番の照会に移る
 function lookLink(code) {
   if (!code) return "";
-  return el("button", { type: "button", class: "look-link", onclick: () => guarded(() => lookupCode(code)) }, code);
+  return el("button", { type: "button", class: "look-link", title: codeTitle(lookVersion(), code),
+    onclick: () => guarded(() => lookupCode(code)) }, code);
+}
+
+function lookVersion() {
+  return document.getElementById("look-version").value;
 }
 
 async function lookupCode(code) {
@@ -52,7 +57,7 @@ function lookBasics(x) {
     el("h3", {}, "基本"),
     el(
       "dl", { class: "kv" },
-      el("dt", {}, "品番"), el("dd", {}, x.code, x.in_bom ? null : el("span", { class: "tag warn look-only" }, "登録のみ")),
+      el("dt", {}, "品番"), el("dd", {}, codeSpan(lookVersion(), x.code), x.in_bom ? null : el("span", { class: "tag warn look-only" }, "登録のみ")),
       el("dt", {}, "名称"), el("dd", {}, x.name || "—"),
       el("dt", {}, "区分"), el("dd", {}, [x.kind, x.is_product ? "製品" : null].filter(Boolean).join("・") || "—"),
       el("dt", {}, "品目"), el("dd", {}, x.item_source_label || "—"),

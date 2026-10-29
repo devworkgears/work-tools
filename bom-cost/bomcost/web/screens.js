@@ -41,8 +41,26 @@ function scenarioOptions(select, opts = {}) {
 
 async function loadCodes(versionId) {
   if (!versionId) return;
-  const items = await api("GET", `/api/items?version=${encodeURIComponent(versionId)}`);
+  const items = await loadCodeNames(versionId);
   document.getElementById("code-list-2").replaceChildren(...items.map((i) => el("option", { value: i.code }, i.name)));
+}
+
+// 品番のホバーに出す名称（版 → 品番 → 名称）。読むたびにその版の分を入れ替える
+const codeNames = new Map();
+
+async function loadCodeNames(versionId) {
+  const items = await api("GET", `/api/items?version=${encodeURIComponent(versionId)}`);
+  codeNames.set(versionId, new Map(items.filter((i) => i.name).map((i) => [i.code, i.name])));
+  return items;
+}
+
+function codeTitle(versionId, code) {
+  return codeNames.get(versionId)?.get(code) ?? null;
+}
+
+// 品番の文字。名称が分かればホバーで出す
+function codeSpan(versionId, code) {
+  return el("span", { title: codeTitle(versionId, code) }, code);
 }
 
 async function refreshLists() {

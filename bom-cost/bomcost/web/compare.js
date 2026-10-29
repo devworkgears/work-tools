@@ -2,7 +2,8 @@
 // 差・合計は API が Decimal で出したものを使い、ここで数にするのは棒の長さと並べ替えだけ。app.js・screens.js の関数を使う。
 "use strict";
 
-const compareState = { data: null, head: "MANUFACTURING", product: null };
+// layout は グラフ（chart）か 表（table）。画面を開いている間は覚える。data・table はそれぞれの API の返事（要る時に読む）
+const compareState = { query: null, data: null, table: null, layout: "chart", head: "MANUFACTURING", product: null };
 
 async function enterCompare() {
   const version = document.getElementById("cmp-version");
@@ -25,12 +26,36 @@ async function drawCompareTable() {
   const names = [...document.querySelectorAll("#cmp-names input:checked")].map((i) => i.value);
   if (!names.length) throw new Error("検討案を選ぶ");
   const ignore = document.getElementById("cmp-ignore").checked;
-  compareState.data = await api("GET", `/api/group/compare?${qs({
+  compareState.query = {
     version, names: JSON.stringify(names), q: document.getElementById("cmp-q").value.trim(),
     ignore_amortization: ignore ? "1" : "",
-  })}`);
+  };
+  compareState.data = null;
+  compareState.table = null;
   compareState.product = null;
+  await Promise.all([loadCompareLayout(), loadCodeNames(version)]);
   drawCompareView();
+}
+
+async function loadCompareLayout() {
+  const query = qs(compareState.query);
+  if (compareState.layout === "table") {
+    compareState.table ??= await api("GET", `/api/group/compare/table?${query}`);
+  } else {
+    compareState.data ??= await api("GET", `/api/group/compare?${query}`);
+  }
+}
+
+function compareLayoutSeg() {
+  const button = (value, label) => el("button", {
+    type: "button", class: compareState.layout === value ? "on" : "",
+    onclick: () => guarded(async () => {
+      compareState.layout = value;
+      await loadCompareLayout();
+      drawCompareView();
+    }),
+  }, label);
+  return el("div", { class: "seg cmp-layout" }, button("chart", "グラフ"), button("table", "表"));
 }
 
 // 製品ごとに、元の行と検討名 → 新の行をまとめる（API の並びのまま）
@@ -56,17 +81,24 @@ function isIgnored(r, head) {
 }
 
 function drawCompareView() {
-  const r = compareState.data;
+  const isTable = compareState.layout === "table";
+  const r = isTable ? compareState.table : compareState.data;
+  const head = compareState.head;
+  const headSelect = el("select", {
+    onchange: (e) => { compareState.head = e.target.value; drawCompareView(); },
+  }, r.heads.map((h) => el("option", { value: h.id, selected: h.id === head }, h.label)));
+  const tools = el("div", { class: "cmp-tools" }, compareLayoutSeg(), el("label", {}, "費目 ", headSelect));
+  if (isTable) {
+    document.getElementById("cmp-body").replaceChildren(tools, ...compareGrid(r, head));
+    return;
+  }
+
   const products = compareProducts(r);
   const withTrial = products.filter((p) => Object.keys(p.trials).length);
-  const head = compareState.head;
   const key = (p) => Math.max(-1, ...r.names.map((n) => Math.abs(diffNumber(p.trials[n]?.differences[head]) ?? -1)));
   withTrial.sort((a, b) => key(b) - key(a));
   if (!withTrial.some((p) => p.code === compareState.product)) compareState.product = withTrial[0]?.code ?? null;
 
-  const headSelect = el("select", {
-    onchange: (e) => { compareState.head = e.target.value; drawCompareView(); },
-  }, r.heads.map((h) => el("option", { value: h.id, selected: h.id === head }, h.label)));
   const left = el("section", { class: "cmp-left" },
     el("div", { class: "cmp-left-head" },
       el("h3", {}, `製品ごとの差（${countText(r.count, products.length, r.truncated)}）`),
@@ -75,7 +107,7 @@ function drawCompareView() {
     compareBars(r, withTrial, head));
   const right = el("section", { class: "cmp-right", id: "cmp-detail" });
   document.getElementById("cmp-body").replaceChildren(
-    el("div", { class: "cmp-tools" }, el("label", {}, "費目 ", headSelect)),
+    tools,
     compareTiles(r, head),
     el("div", { class: "cmp-split" }, left, right),
   );
@@ -134,7 +166,8 @@ function compareBars(r, products, head) {
     onclick: () => selectCompareProduct(p.code),
     onkeydown: (e) => e.key === "Enter" && selectCompareProduct(p.code),
   },
-  el("div", { class: "cmp-bar-label" }, el("span", { class: "code" }, p.code), el("span", { class: "name" }, p.name)),
+  el("div", { class: "cmp-bar-label" },
+    el("span", { class: "code", title: codeTitle(r.version_id, p.code) }, p.code), el("span", { class: "name" }, p.name)),
   el("div", { class: "cmp-bar-lines" }, r.names.map((n) => {
     const trial = p.trials[n];
     const text = trial?.differences[head];
@@ -196,6 +229,71 @@ function compareChanges(r, name, changes) {
     el("h3", {}, r.names.length > 1 ? [el("i", { class: `swatch ${seriesClass(r, name)}` }), `変更（${name}）`] : "変更"),
     table(["種類", "内容", numTh("差"), "費目"],
       rows.length ? rows : [el("tr", {}, el("td", { colspan: 4, class: "muted" }, "なし"))]),
+  ];
+}
+
+// 表: 製品ごとに 現行・変更後・差・差% の行、列は6費目、一番下に計。
+// 計は API の合計で、片方でも未登録の製品はその費目の計から除く（除いた値と計に ※）
+const CMP_MARK = "※";
+
+function compareGrid(t, head) {
+  const multi = t.names.length > 1;
+  const ignored = (h) => h === "AMORTIZATION" && t.ignore_amortization;
+  const current = (h) => (h === head ? "cmp-grid-current" : "");
+  const mark = (title) => el("span", { class: "cmp-grid-mark", title }, CMP_MARK);
+  const cell = (text, h, { sign = false, percent = false, known = true, excluded = null } = {}) => {
+    if (ignored(h)) return el("td", { class: `num muted ${current(h)}` }, "—");
+    let shown;
+    if (text !== null && text !== undefined) shown = `${fmt(text, { sign })}${percent ? "%" : ""}`;
+    else shown = percent && known ? "—" : "未登録";  // 差% は現行が 0 の時も出せない
+    const cls = shown === "未登録" ? "missing" : sign ? signClass(text) : "";
+    return el("td", { class: `num ${cls} ${current(h)}` }, shown, excluded ? mark(excluded) : null);
+  };
+  const out = (p, tr, h) => p.current[h] === null || tr.after[h] === null;
+  const label = (text, name) => el("td", { class: "cmp-grid-label" }, multi && name ? `${text}（${name}）` : text);
+
+  const rows = [];
+  for (const p of t.products) {
+    const span = 1 + p.trials.length * 3;
+    rows.push(el("tr", { class: "cmp-grid-first" },
+      el("td", { rowspan: span }, codeSpan(t.version_id, p.product)),
+      el("td", { rowspan: span }, p.product_name),
+      label("現行"),
+      t.heads.map((h) => cell(p.current[h.id], h.id,
+        { excluded: p.trials.some((tr) => out(p, tr, h.id)) && "計から除く" }))));
+    for (const tr of p.trials) {
+      const ex = (h) => out(p, tr, h) && "計から除く";
+      rows.push(
+        el("tr", {}, label("変更後", tr.name), t.heads.map((h) => cell(tr.after[h.id], h.id, { excluded: ex(h.id) }))),
+        el("tr", {}, label("差", tr.name),
+          t.heads.map((h) => cell(tr.difference[h.id], h.id, { sign: true, excluded: ex(h.id) }))),
+        el("tr", {}, label("差%", tr.name), t.heads.map((h) => cell(tr.percent[h.id], h.id,
+          { sign: true, percent: true, known: tr.difference[h.id] !== null, excluded: ex(h.id) }))));
+    }
+  }
+  t.names.forEach((n, i) => {
+    const s = t.totals[n];
+    const ex = (h) => s[h].excluded > 0 && `未登録 ${s[h].excluded} 製品を除く`;
+    rows.push(
+      el("tr", { class: `cmp-grid-total ${i === 0 ? "cmp-grid-first" : ""}` },
+        el("th", { colspan: 2, rowspan: 4 }, multi ? `計（${n}）` : "計"), label("現行"),
+        t.heads.map((h) => cell(s[h.id].current, h.id, { excluded: ex(h.id) }))),
+      el("tr", { class: "cmp-grid-total" }, label("変更後"),
+        t.heads.map((h) => cell(s[h.id].after, h.id, { excluded: ex(h.id) }))),
+      el("tr", { class: "cmp-grid-total" }, label("差"),
+        t.heads.map((h) => cell(s[h.id].difference, h.id, { sign: true, excluded: ex(h.id) }))),
+      el("tr", { class: "cmp-grid-total" }, label("差%"), t.heads.map((h) => cell(s[h.id].percent, h.id,
+        { sign: true, percent: true, known: s[h.id].difference !== null, excluded: ex(h.id) }))));
+  });
+  const heads = ["品番", "名称", "", ...t.heads.map((h) => el("th", { class: `num ${current(h.id)}` }, h.label))];
+  const shown = t.products.length + t.without_trial;
+  return [
+    el("div", { class: "cmp-left-head" },
+      el("h3", {}, `製品（${countText(t.count, shown, t.truncated)}）`),
+      t.without_trial ? el("span", { class: "muted" }, `試算なし ${t.without_trial}`) : null),
+    el("div", { class: "table-scroll" }, t.products.length
+      ? table(heads, rows, "small cmp-grid")
+      : el("p", { class: "muted" }, "なし")),
   ];
 }
 

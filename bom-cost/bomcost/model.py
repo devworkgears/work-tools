@@ -215,6 +215,8 @@ class Version:
     dev_number: str = ""  # 開発番号（空なら保存のときに版 ID を入れる）
     dev_name: str = ""  # 開発番号の名称
     revision: int = 1  # 同じ開発番号の中の第何版か
+    _children_index: tuple[tuple[int, int], dict[str, tuple[BomLine, ...]]] | None = field(
+        default=None, init=False, repr=False, compare=False)
 
     def add_item(self, item: Item) -> None:
         self.items[item.code] = item
@@ -269,13 +271,24 @@ class Version:
     def children(self, parent: Code, by_balloon: bool = False) -> tuple[BomLine, ...]:
         """子の行。by_balloon=False なら同じ子品番の数量を合算し、風船番号は None にする。"""
         parent = to_code(parent)
-        own = [line for line in self._lines.values() if line.parent == parent]
+        own = self._by_parent().get(parent, ())
         if by_balloon:
             return tuple(own)
         merged: dict[str, Decimal] = {}
         for line in own:
             merged[line.child] = merged.get(line.child, Decimal(0)) + line.quantity
         return tuple(BomLine(parent, None, child, qty) for child, qty in merged.items())
+
+    def _by_parent(self) -> dict[str, tuple[BomLine, ...]]:
+        # 全行を毎回なめると足し上げ・使用数のたどりが「行の数 × 親の数」になる。行は足すだけ（overlay_manual は
+        # _lines を直接足す）なので、辞書と行の数が変わったら作り直す
+        key = (id(self._lines), len(self._lines))
+        if self._children_index is None or self._children_index[0] != key:
+            grouped: dict[str, list[BomLine]] = {}
+            for line in self._lines.values():
+                grouped.setdefault(line.parent, []).append(line)
+            self._children_index = (key, {p: tuple(lines) for p, lines in grouped.items()})
+        return self._children_index[1]
 
     def parents(self) -> tuple[str, ...]:
         return tuple(dict.fromkeys(line.parent for line in self._lines.values()))

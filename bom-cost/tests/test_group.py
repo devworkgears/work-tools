@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from urllib.parse import quote
 
-from bomcost import BomLine, Item, Version
+from bomcost import BomLine, Item, Version, overlay_manual
 from bomcost.api import Api
 from bomcost.app import static_response
 from bomcost.demo import build_demo
@@ -532,6 +532,27 @@ class BulkReplace(SampleDbCase):
         self.assert_error(self.bulk([], replacement="X-610"), 400, "items")
         self.assert_error(self.bulk([{"product": "A-100", "part": "B-200"}]), 400, "代わりの品番")
 
+    def test_products_saved_in_one_write(self) -> None:
+        # 2つ目の製品の書き込みで落ちたら、1つ目の製品の試算も残らない
+        write = self.store._write_scenario
+        calls = []
+
+        def failing(scenario):
+            calls.append(scenario.base)
+            if len(calls) == 2:
+                raise RuntimeError("書けない")
+            return write(scenario)
+
+        self.store._write_scenario = failing
+        try:
+            r = self.bulk([{"product": "A-100", "part": "B-200"}, {"product": "V-110", "part": "B-200"}],
+                          replacement="X-610")
+        finally:
+            del self.store._write_scenario
+        self.assertEqual(r.status, 500)
+        self.assertEqual(calls, ["A-100", "V-110"])
+        self.assertEqual(self.store.list_scenarios(), [])
+
 
 class Compare(SampleDbCase):
     HEADS = ["MATERIAL", "AMORTIZATION", "ADJUSTMENT", "DIRECT", "INDIRECT", "MANUFACTURING"]
@@ -620,6 +641,74 @@ class Compare(SampleDbCase):
                           400, "償却費")
 
 
+class CompareTable(SampleDbCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.change("A-100", kind="REPLACE", part="B-200", replacement="X-610", quantity="2")
+        self.ok("POST", "/api/group/changes", body={"version_id": "2026-10", "name": "別の検討", "product": "A-100",
+                                                     "kind": "ADD", "part": "F-600", "quantity": "1"})
+
+    def test_rows_per_product_with_trial_and_totals(self) -> None:
+        names = quote(json.dumps([NAME, "別の検討"]))
+        r = self.ok("GET", "/api/group/compare/table", f"version=2026-10&names={names}&ignore_amortization=1")
+        self.assertEqual([h["id"] for h in r["heads"]], Compare.HEADS)
+        # 試算がある製品だけ並べ、無い製品は数だけ
+        self.assertEqual([p["product"] for p in r["products"]], ["A-100"])
+        self.assertEqual(r["without_trial"], 2)
+        a = r["products"][0]
+        self.assertEqual((a["product_name"], a["current"]["MATERIAL"]), ("土台の製品", "200"))
+        trial, other = a["trials"]
+        self.assertEqual((trial["name"], trial["after"]["MATERIAL"], trial["difference"]["MATERIAL"],
+                          trial["percent"]["MATERIAL"]), (NAME, "-2600", "-2800", "-1400.0"))
+        self.assertEqual(other["percent"]["MATERIAL"], "125.0")
+        # 未登録は値も差%も None
+        self.assertEqual((a["current"]["DIRECT"], trial["percent"]["DIRECT"]), (None, None))
+        t = r["totals"][NAME]
+        self.assertEqual(t["MATERIAL"], {"current": "200", "after": "-2600", "difference": "-2800",
+                                         "percent": "-1400.0", "excluded": 0})
+        self.assertEqual(t["DIRECT"], {"current": None, "after": None, "difference": None, "percent": None,
+                                       "excluded": 1})
+
+    def test_totals_skip_products_with_missing_values(self) -> None:
+        products = [
+            {"current": {h.name: "100" for h in group.COMPARE_HEADS},
+             "trials": [{"name": "n", "after": {h.name: "90" for h in group.COMPARE_HEADS}}]},
+            {"current": {h.name: "300" for h in group.COMPARE_HEADS},
+             "trials": [{"name": "n", "after": {**{h.name: "330" for h in group.COMPARE_HEADS}, "DIRECT": None}}]},
+        ]
+        t = group._table_totals("n", products)
+        self.assertEqual(t["MATERIAL"], {"current": "400", "after": "420", "difference": "20", "percent": "5.0",
+                                         "excluded": 0})
+        self.assertEqual(t["DIRECT"], {"current": "100", "after": "90", "difference": "-10", "percent": "-10.0",
+                                       "excluded": 1})
+        self.assertIsNone(group._percent("5", "0"))
+        self.assertEqual(group._percent("1", "3"), "33.3")
+        self.assertEqual(group._percent("-1", "8"), "-12.5")
+
+    def test_same_errors_as_compare(self) -> None:
+        self.assert_error(self.call("GET", "/api/group/compare/table", "version=2026-10"), 400, "names")
+        self.assert_error(self.call("GET", "/api/group/compare/table", f"version=2026-10&names={quote(NAME)}"),
+                          400, "償却費")
+
+
+class ChildrenIndex(unittest.TestCase):
+    def test_children_follow_added_lines(self) -> None:
+        v = Version("t")
+        v.add_bom_lines([BomLine("P1", "1", "C1", 1), BomLine("P1", "2", "C2", 2), BomLine("P1", "3", "C1", 3)])
+        self.assertEqual([(x.child, str(x.quantity)) for x in v.children("P1")], [("C1", "4"), ("C2", "2")])
+        self.assertEqual([x.balloon for x in v.children("P1", by_balloon=True)], ["1", "2", "3"])
+        self.assertEqual(v.children("C1"), ())
+        # 一度引いた後に足した行も出る（直接 _lines に足す overlay_manual も同じ）
+        v.add_bom_lines([BomLine("P1", "4", "C3", 1), BomLine("C1", None, "C9", 5)])
+        self.assertEqual([x.child for x in v.children("P1")], ["C1", "C2", "C3"])
+        self.assertEqual([x.child for x in v.children("C1")], ["C9"])
+        layer = Version("m")
+        layer.add_bom_lines([BomLine("Q1", None, "C1", 1)])
+        merged = overlay_manual(v, layer)
+        self.assertEqual([x.child for x in merged.children("Q1")], ["C1"])
+        self.assertEqual([x.child for x in merged.children("P1")], ["C1", "C2", "C3"])
+
+
 class ProductRule(unittest.TestCase):
     def test_kind_text_and_empty_kind(self) -> None:
         v = Version("t")
@@ -654,6 +743,22 @@ class ProductRule(unittest.TestCase):
         self.assertIn('data-screen="compare"', index)
         self.assertIn("compare.js", index)
         self.assertEqual(static_response("/compare.js").status, 200)
+
+    def test_busy_hover_and_table_wiring(self) -> None:
+        app = static_response("/app.js").body.decode("utf-8")
+        css = static_response("/style.css").body.decode("utf-8")
+        screens = static_response("/screens.js").body.decode("utf-8")
+        compare = static_response("/compare.js").body.decode("utf-8")
+        # 待ちの表示は guarded の中で出して finally で戻す
+        guarded = app[app.index("async function guarded"):]
+        self.assertLess(guarded.index("setBusy(1)"), guarded.index("finally"))
+        self.assertIn("setBusy(-1)", guarded[guarded.index("finally"):])
+        for name in ("busy-bar", "busy-wait", "busy-button"):
+            self.assertIn(name, app)
+            self.assertIn(name, css)
+        self.assertIn("function codeTitle", screens)
+        self.assertIn("/api/group/compare/table", compare)
+        self.assertIn('button("table", "表")', compare)
 
 
 if __name__ == "__main__":

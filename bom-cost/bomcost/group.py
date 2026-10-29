@@ -7,7 +7,7 @@
 import json
 import unicodedata
 from collections import Counter
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import TYPE_CHECKING, Any, Callable
 
 from .api import ApiError, Response, _flag, _head, _json_response, _known_codes, _place, _require_known, _record_json, _s, _text_field, _View
@@ -127,6 +127,7 @@ class Group:
             ("GET", r"/api/group/tree", self.tree),
             ("POST", r"/api/group/scenarios", self.add_scenarios),
             ("GET", r"/api/group/compare", self.compare),
+            ("GET", r"/api/group/compare/table", self.compare_table),
         ]
 
     # 比べる ------------------------------------------------------------------
@@ -139,6 +140,54 @@ class Group:
         新の行には元との差（differences）と変更の一覧（changes・原価は今の登録値で当て直した値）を添え、summary に検討名×費目の合計の差と、
         下がった・上がった・変わらない・未登録の製品の数を置く。
         """
+        version, names, ignore, codes, limit, rows = self._compare_rows(params, with_changes=True)
+        return _json_response(
+            {
+                "version_id": version.version_id,
+                "names": names,
+                "heads": [{"id": h.name, "label": h.value} for h in COMPARE_HEADS],
+                "ignore_amortization": ignore,
+                "count": len(codes),
+                "limit": limit,
+                "truncated": len(codes) > limit,
+                "rows": rows,
+                "summary": _compare_summary(names, rows),
+            }
+        )
+
+    def compare_table(self, params: dict[str, str]) -> Response:
+        """compare と同じ問い合わせを、提出用の表の形で。試算がある製品ごとに 現行・検討名ごとの 変更後・差・差%、下に計。
+
+        差% は 差 ÷ 現行 ×100（小数1桁・四捨五入）で、現行が未登録か 0 なら None。計は検討名×費目で、
+        現行・変更後のどちらかが未登録の製品を除いた合計（除いた数を excluded に）。
+        """
+        version, names, ignore, codes, limit, rows = self._compare_rows(params, with_changes=False)
+        products: list[dict[str, Any]] = []
+        for row in rows:
+            if row["kind"] == "base":
+                products.append({"product": row["product"], "product_name": row["product_name"],
+                                 "current": row["costs"], "trials": []})
+                continue
+            percents = {h: _percent(row["differences"][h], products[-1]["current"][h]) for h in row["costs"]}
+            products[-1]["trials"].append({"name": row["name"], "scenario_id": row["scenario_id"], "after": row["costs"],
+                                           "difference": row["differences"], "percent": percents})
+        return _json_response(
+            {
+                "version_id": version.version_id,
+                "names": names,
+                "heads": [{"id": h.name, "label": h.value} for h in COMPARE_HEADS],
+                "ignore_amortization": ignore,
+                "count": len(codes),
+                "limit": limit,
+                "truncated": len(codes) > limit,
+                "products": [p for p in products if p["trials"]],
+                "without_trial": sum(1 for p in products if not p["trials"]),
+                "totals": {n: _table_totals(n, products) for n in names},
+            }
+        )
+
+    def _compare_rows(self, params: dict[str, str], with_changes: bool
+                      ) -> tuple[Version, list[str], bool, list[str], int, list[dict[str, Any]]]:
         version = self._version(params)
         names = _names(params.get("names"))
         if not names:
@@ -166,23 +215,12 @@ class Group:
                     view = _View(scenario, "diff", CostHead.MATERIAL, False, amortization=True)
                     row = self._compare_row(view, view.root, code, product_name, n, sid, ignore, failed)
                     row["differences"] = _differences(base["costs"], row["costs"])
-                    row["changes"] = [_batch_json(records) for records in replayed_batches(scenario)]
+                    if with_changes:
+                        row["changes"] = [_batch_json(records) for records in replayed_batches(scenario)]
                     rows.append(row)
         if failed:
             raise ApiError(400, "償却費を出せない（未登録あり）: " + "、".join(failed))
-        return _json_response(
-            {
-                "version_id": version.version_id,
-                "names": names,
-                "heads": [{"id": h.name, "label": h.value} for h in COMPARE_HEADS],
-                "ignore_amortization": ignore,
-                "count": len(codes),
-                "limit": limit,
-                "truncated": len(codes) > limit,
-                "rows": rows,
-                "summary": _compare_summary(names, rows),
-            }
-        )
+        return version, names, ignore, codes, limit, rows
 
     @staticmethod
     def _compare_row(view: _View, root: str, code: str, product_name: str, name: str | None, sid: int | None,
@@ -528,8 +566,7 @@ class Group:
                     "replacements": [{"code": replacement, "quantity": quantity or _s(place_qty)}],
                 })
                 count += 1
-        for scenario in touched.values():
-            self.store.save_scenario(scenario)
+        self.store.save_scenarios(touched.values())
         return _json_response({"version_id": version.version_id, "name": name, "count": count,
                                "products": sorted(touched)})
 
@@ -591,6 +628,34 @@ def _differences(base: dict[str, str | None], after: dict[str, str | None]) -> d
         head: None if base[head] is None or after[head] is None else _s(Decimal(after[head]) - Decimal(base[head]))
         for head in base
     }
+
+
+def _percent(difference: str | None, current: str | None) -> str | None:
+    """差 ÷ 現行 ×100 を小数1桁（四捨五入）で。どちらかが未登録か現行が 0 なら None。"""
+    if difference is None or current is None or Decimal(current) == 0:
+        return None
+    return _s((Decimal(difference) / Decimal(current) * 100).quantize(Decimal("0.1"), ROUND_HALF_UP))
+
+
+def _table_totals(name: str, products: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """検討名の試算がある製品の、費目ごとの 現行・変更後・差 の合計と差%。片方でも未登録の製品は除いて数える。"""
+    totals: dict[str, dict[str, Any]] = {}
+    for head in COMPARE_HEADS:
+        pairs = [(p["current"][head.name], t["after"][head.name])
+                 for p in products for t in p["trials"] if t["name"] == name]
+        known = [(Decimal(c), Decimal(a)) for c, a in pairs if c is not None and a is not None]
+        current = sum((c for c, _ in known), Decimal(0))
+        after = sum((a for _, a in known), Decimal(0))
+        found = bool(known)
+        difference = _s(after - current) if found else None
+        totals[head.name] = {
+            "current": _s(current) if found else None,
+            "after": _s(after) if found else None,
+            "difference": difference,
+            "percent": _percent(difference, _s(current) if found else None),
+            "excluded": len(pairs) - len(known),
+        }
+    return totals
 
 
 def _compare_summary(names: list[str], rows: list[dict[str, Any]]) -> dict[str, dict[str, dict[str, Any]]]:

@@ -105,12 +105,59 @@ function viewQuery(extra = {}) {
   return params.toString();
 }
 
+// 返事を待つ間: 押したボタンは押せなくして「処理中…」、上端に帯、カーソルは待ち。終われば（失敗でも）戻す。
+// ボタンの disabled は画面側が状態で決めている所（取り消し等）があるので触らず、印のクラスと押下の握りつぶしで止める
+const BUSY_TEXT = "処理中…";
+let busyCount = 0;
+
+document.addEventListener("click", (e) => {
+  if (e.target instanceof Element && e.target.closest(".busy-button")) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+}, true);
+
+// guarded はイベントの処理の中で呼ばれるので、押したボタンは今のイベントから引く（Enter・選択の変更ならボタンは無い）
+function pressedButton() {
+  const e = window.event;
+  if (!e) return null;
+  const button = e.submitter || (e.type === "click" && e.target instanceof Element ? e.target.closest("button") : null);
+  return button && !button.classList.contains("busy-button") ? button : null;
+}
+
+function setBusy(delta) {
+  busyCount += delta;
+  let bar = document.getElementById("busy-bar");
+  if (!bar) {
+    bar = el("div", { id: "busy-bar", class: "busy-bar", hidden: true });
+    document.body.append(bar);
+  }
+  bar.hidden = busyCount === 0;
+  document.documentElement.classList.toggle("busy-wait", busyCount > 0);
+}
+
 async function guarded(fn) {
+  const button = pressedButton();
+  const label = button ? [...button.childNodes] : [];
+  if (button) {
+    button.classList.add("busy-button");
+    button.setAttribute("aria-disabled", "true");
+    button.replaceChildren(BUSY_TEXT);
+  }
+  setBusy(1);
   try {
     showMessage("");
     await fn();
   } catch (err) {
     showMessage(err.message || String(err));
+  } finally {
+    setBusy(-1);
+    if (button) {
+      button.classList.remove("busy-button");
+      button.removeAttribute("aria-disabled");
+      // 処理の中で文字を決め直したボタン（実行 ⇔ 登録して置換）はそちらを残す
+      if (button.textContent === BUSY_TEXT) button.replaceChildren(...label);
+    }
   }
 }
 

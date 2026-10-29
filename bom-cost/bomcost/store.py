@@ -757,35 +757,43 @@ class Store:
         試算の版は保存済みの版（または manual）であること。
         """
         with self._conn:
-            if scenario.scenario_id is None:
-                cursor = self._conn.execute(
-                    "INSERT INTO scenario (name, note, base, product_code, head, version_id) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
-                    (scenario.name, scenario.note, scenario.base, scenario.product_code,
-                     scenario.head.name, scenario.version.version_id),
-                )
-                scenario.scenario_id = int(cursor.lastrowid)
-            else:
-                self._conn.execute(
-                    "UPDATE scenario SET name = ?, note = ?, base = ?, product_code = ?, head = ?, "
-                    "version_id = ? WHERE scenario_id = ?",
-                    (scenario.name, scenario.note, scenario.base, scenario.product_code,
-                     scenario.head.name, scenario.version.version_id, scenario.scenario_id),
-                )
-                self._conn.execute("DELETE FROM change WHERE scenario_id = ?", (scenario.scenario_id,))
-            self._conn.executemany(
-                f"INSERT INTO change ({CHANGE_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                [
-                    (
-                        scenario.scenario_id, r.sequence, r.recorded_at.isoformat(), r.change.kind.name,
-                        r.change.part, r.change.replacement, str(r.change.quantity),
-                        _text(r.cost_before), _text(r.cost_after), r.version_id, r.head.name,
-                        _text(r.volume), None if r.allocation is None else r.allocation.name,
-                        r.change.parent, r.change.balloon, r.batch,
-                    )
-                    for r in scenario.history
-                ],
+            return self._write_scenario(scenario)
+
+    def save_scenarios(self, scenarios: Iterable[Scenario]) -> list[int]:
+        """いくつもの試算を1回の書き込み（1つの transaction）で保存し、試算の ID を並びの順で返す。"""
+        with self._conn:
+            return [self._write_scenario(s) for s in scenarios]
+
+    def _write_scenario(self, scenario: Scenario) -> int:
+        if scenario.scenario_id is None:
+            cursor = self._conn.execute(
+                "INSERT INTO scenario (name, note, base, product_code, head, version_id) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (scenario.name, scenario.note, scenario.base, scenario.product_code,
+                 scenario.head.name, scenario.version.version_id),
             )
+            scenario.scenario_id = int(cursor.lastrowid)
+        else:
+            self._conn.execute(
+                "UPDATE scenario SET name = ?, note = ?, base = ?, product_code = ?, head = ?, "
+                "version_id = ? WHERE scenario_id = ?",
+                (scenario.name, scenario.note, scenario.base, scenario.product_code,
+                 scenario.head.name, scenario.version.version_id, scenario.scenario_id),
+            )
+            self._conn.execute("DELETE FROM change WHERE scenario_id = ?", (scenario.scenario_id,))
+        self._conn.executemany(
+            f"INSERT INTO change ({CHANGE_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    scenario.scenario_id, r.sequence, r.recorded_at.isoformat(), r.change.kind.name,
+                    r.change.part, r.change.replacement, str(r.change.quantity),
+                    _text(r.cost_before), _text(r.cost_after), r.version_id, r.head.name,
+                    _text(r.volume), None if r.allocation is None else r.allocation.name,
+                    r.change.parent, r.change.balloon, r.batch,
+                )
+                for r in scenario.history
+            ],
+        )
         return scenario.scenario_id
 
     def load_scenario(self, scenario_id: int, version: Version | None = None) -> Scenario:
