@@ -9,10 +9,10 @@ from collections import Counter
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Callable
 
-from .api import ApiError, Response, _flag, _head, _json_response, _known_codes, _require_known, _record_json, _s, _text_field, _View
+from .api import ApiError, Response, _flag, _head, _json_response, _known_codes, _place, _require_known, _record_json, _s, _text_field, _View
 from .model import BomLine, CostHead, Version
 from .normalize import to_code
-from .scenario import ChangeKind, Scenario
+from .scenario import ChangeKind, ChangeRecord, Scenario
 
 if TYPE_CHECKING:
     from .api import Api
@@ -197,13 +197,14 @@ class Group:
         missing = 0
         for product, sid in sorted(self._scenarios(version, name).items()):
             scenario = self.store.load_scenario(sid, version)
-            for record in scenario.history:
-                if record.difference is None:
+            for records in _batches(scenario.history):
+                row = _batch_json(records)
+                if row["difference"] is None:
                     missing += 1
                 else:
-                    total += record.difference
+                    total += Decimal(row["difference"])
                 rows.append({"product": product, "product_name": self._name(version, product),
-                             "scenario_id": sid, **_record_json(record)})
+                             "scenario_id": sid, **row})
         return _json_response(
             {
                 "version_id": version.version_id,
@@ -336,18 +337,20 @@ class Group:
         """製品の構成の code（省けば根）の行と直下の子の行。行の形は /api/scenarios/<id>/tree と同じ。
 
         検討名にその製品の試算があれば試算の構成（差分の見方・役割の印つき）、無ければ版の構成（一括の見方）。
+        by_balloon を付けると版の構成の行を風船番号ごとに分ける。
         """
         version = self._version(params)
         product = to_code(_text_field(params, "product", "製品の品番"))
         _require_known(version, product, "製品")
         head = _head(params.get("head"), CostHead.MATERIAL)
         name = (params.get("name") or "").strip()
+        by_balloon = _flag(params.get("by_balloon"))
         sid = self._scenarios(version, name).get(product) if name else None
         if sid is not None:
-            view = _View(self.store.load_scenario(sid, version), "diff", head, False)
+            view = _View(self.store.load_scenario(sid, version), "diff", head, by_balloon)
         else:
             scenario = Scenario(name, product, f"{product}#", version, head, self.store.load_scope_policy())
-            view = _View(scenario, "bulk", head, False)
+            view = _View(scenario, "bulk", head, by_balloon)
         return _json_response({"scenario_id": sid, **self.api.tree_payload(view, params.get("code"))})
 
     # 部品の検索 --------------------------------------------------------------
@@ -423,7 +426,8 @@ class Group:
         created = sid is None
         if created:
             sid = self.store.save_scenario(self._new_scenario(version, name, product, head))
-        change = {k: body[k] for k in ("kind", "part", "replacement", "quantity") if k in body}
+        change = {k: body[k] for k in ("kind", "part", "replacement", "quantity", "parent", "balloon", "replacements")
+                  if k in body}
         try:
             response = self.api.add_change(sid, {}, change)
         except Exception:
@@ -473,6 +477,32 @@ class Group:
             code = f"{product}#{name}#{n}"
             n += 1
         return code
+
+
+def _batches(history: tuple[ChangeRecord, ...]) -> list[list[ChangeRecord]]:
+    """履歴を1回の操作ごとに束ねる（batch の無い行は1行で1回）。"""
+    groups: list[list[ChangeRecord]] = []
+    for record in history:
+        if groups and record.batch is not None and groups[-1][0].batch == record.batch:
+            groups[-1].append(record)
+        else:
+            groups.append([record])
+    return groups
+
+
+def _batch_json(records: list[ChangeRecord]) -> dict[str, Any]:
+    """1回の操作を一覧の1行に。代わりの部品は replacements に並べ、原価は最初の行の前 → 最後の行の後。"""
+    row = _record_json(records[0])
+    row["replacements"] = [{"code": r.change.replacement, "quantity": _s(r.change.quantity)}
+                           for r in records if r.change.replacement is not None]
+    if len(records) > 1:
+        row["text"] = f"{_place(records[0].change)} → " + "・".join(
+            f"{x['code']} ×{x['quantity']}" for x in row["replacements"])
+        last = records[-1]
+        missing = any(r.difference is None for r in records)
+        row["cost_after"] = _s(last.cost_after)
+        row["difference"] = None if missing else _s(sum((r.difference for r in records), Decimal(0)))
+    return row
 
 
 def group_routes(api: "Api") -> list[tuple[str, str, Callable[..., Response]]]:

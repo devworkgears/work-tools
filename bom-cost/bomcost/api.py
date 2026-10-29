@@ -16,7 +16,7 @@ from .doublecount import Judgement, judge_double_counting
 from .importer import load_openpyxl
 from .model import BomLine, CostHead, Version
 from .mold import usage_per_unit
-from .normalize import to_code, to_decimal
+from .normalize import to_code, to_decimal, to_optional_code
 from .rollup import CostCalculator, Scope
 from .scenario import Change, ChangeKind, ChangeRecord, Scenario
 from .store import Store
@@ -140,9 +140,16 @@ def _change_text(change: Change) -> str:
         return f"{change.part} を {qty} 足す"
     if change.kind is ChangeKind.REMOVE:
         return f"{change.part} を {qty} 抜く"
+    if change.kind is ChangeKind.REPLACE and change.parent is not None:
+        return f"{_place(change)} → {change.replacement} ×{qty}"
     if change.kind is ChangeKind.REPLACE:
         return f"{change.part} → {change.replacement}（×{qty}）"
     return f"{change.part} の数量を {qty} にする"
+
+
+def _place(change: Change) -> str:
+    """場所つきの置換の元の部品（風船番号があれば #番号 を前に）。"""
+    return change.part if change.balloon is None else f"#{change.balloon} {change.part}"
 
 
 class _View:
@@ -475,18 +482,49 @@ class Api:
         if part == scenario.product_code:
             raise ApiError(400, "試算の製品そのものは足す・抜く・替える対象にできない")
         _require_known(scenario.version, part, "品番")
-        replacement = None
+        parent = to_optional_code(body.get("parent"), name="親品番")
+        balloon = to_optional_code(body.get("balloon"), name="風船番号")
+        if (parent is not None or body.get("replacements") is not None) and kind is not ChangeKind.REPLACE:
+            raise ApiError(400, "場所（parent・balloon）と代わりの部品の並び（replacements）は置換だけに付ける")
+        if balloon is not None and parent is None:
+            raise ApiError(400, "風船番号（balloon）には親品番（parent）が要る")
         if kind is ChangeKind.REPLACE:
-            replacement = to_code(_text_field(body, "replacement", "代わりの品番"))
-            _require_known(scenario.version, replacement, "代わりの品番")
-            if replacement == scenario.product_code:
-                raise ApiError(400, "試算の製品そのものを代わりの品番にはできない")
-        quantity = _number(body.get("quantity", "1"), "数量")
-        change = Change(kind, part, quantity, replacement)
+            pairs = self._replacements(scenario, body)
+        else:
+            pairs = [(None, _number(body.get("quantity", "1"), "数量"))]
+        if parent is not None:
+            location = (parent, balloon, part)
+            label = f"{parent} の {part}" if balloon is None else f"{parent} の #{balloon} {part}"
+            if parent != scenario.base and not usage_per_unit(scenario.version, scenario.base).get(parent):
+                raise ApiError(400, f"親 {parent} は土台 {scenario.base} の構成に無い")
+            if scenario.location_quantity(location) == 0:
+                raise ApiError(400, f"{label} は版 {scenario.version.version_id} の構成に無い")
+            if location in scenario.replaced_locations():
+                raise ApiError(400, f"{label} はもう置換した")
+        elif len(pairs) > 1:
+            raise ApiError(400, "代わりの部品を複数入れるには親品番（parent）が要る")
+        changes = [Change(kind, part, qty, code, parent, balloon) for code, qty in pairs]
         volume = scenario.version.volume(scenario.product_code)
-        scenario.apply(change, volume=None if volume is None else volume.annual)
+        scenario.apply_batch(changes, volume=None if volume is None else volume.annual)
         self.store.save_scenario(scenario)
         return _json_response(self._summary(scenario))
+
+    @staticmethod
+    def _replacements(scenario: Scenario, body: dict[str, Any]) -> list[tuple[str, Decimal]]:
+        """代わりの部品（品番・員数）の並び。replacements が無ければ replacement・quantity の1つ。"""
+        raw = body.get("replacements")
+        if raw is None:
+            raw = [{"code": body.get("replacement"), "quantity": body.get("quantity", "1")}]
+        if not isinstance(raw, list) or not raw or not all(isinstance(r, dict) for r in raw):
+            raise ApiError(400, "代わりの部品の並び（replacements）は品番・員数の組の配列にする")
+        pairs = []
+        for r in raw:
+            code = to_code(_text_field({"code": r.get("code", r.get("replacement"))}, "code", "代わりの品番"))
+            _require_known(scenario.version, code, "代わりの品番")
+            if code == scenario.product_code:
+                raise ApiError(400, "試算の製品そのものを代わりの品番にはできない")
+            pairs.append((code, _number(r.get("quantity", "1"), "数量")))
+        return pairs
 
     def undo(self, scenario_id: int, params: dict[str, str], body: dict[str, Any]) -> Response:
         scenario = self._load_scenario(scenario_id)
@@ -727,6 +765,9 @@ def _record_json(record: ChangeRecord) -> dict[str, Any]:
         "volume": _s(record.volume),
         "allocation": None if record.allocation is None else record.allocation.value,
         "recorded_at": record.recorded_at.isoformat(timespec="seconds"),
+        "parent": change.parent,
+        "balloon": change.balloon,
+        "batch": record.batch,
     }
 
 

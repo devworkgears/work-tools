@@ -69,7 +69,7 @@ function toggleTrial(path) {
 }
 
 function trialTree(t, product, code) {
-  return api("GET", `/api/group/tree?${qs({ version: t.version, head: TRIAL_HEAD, name: t.name, product, code })}`);
+  return api("GET", `/api/group/tree?${qs({ version: t.version, head: TRIAL_HEAD, name: t.name, product, code, by_balloon: "1" })}`);
 }
 
 // 試算ができると、版の構成は試算の根の直下の「土台」の行（並び順 0）の下へ1段下がる。開いていた所もそこへ移す
@@ -103,6 +103,26 @@ const replaceOp = (part, qty) => {
   return { label: "置換", text: [`${part} を `, code, " に置換　員数 ", q], inputs: [code, q], code,
     change: () => ({ kind: "REPLACE", part, replacement: code.value.trim(), quantity: q.value }) };
 };
+// 版の構成の場所（親・風船番号）の置換。代わりの部品は「+ 行を足す」で増やせ、行ごとに無い品番を登録できる
+const placeReplaceOp = (parent, balloon, part, qty) => {
+  const op = { label: "置換", entries: [], onInput: null };
+  const list = el("div", { class: "change-replacements" });
+  const addRow = (value) => {
+    const entry = { input: codeInput(), qty: qtyInput(value) };
+    entry.reg = registerPanel(entry.input);
+    entry.input.addEventListener("input", () => op.onInput?.());
+    op.entries.push(entry);
+    list.append(el("div", { class: "change-line" }, entry.input, " × ", entry.qty), entry.reg.panel);
+  };
+  const more = el("button", { type: "button", onclick: () => { addRow("1"); op.onInput?.(); } }, "+ 行を足す");
+  addRow(qty);
+  op.text = [`${balloon ? `#${balloon} の ` : ""}${part} を`, list, more];
+  Object.defineProperty(op, "inputs", { get: () => [...op.entries.flatMap((e) => [e.input, e.qty]), more] });
+  op.regs = () => op.entries;
+  op.change = () => ({ kind: "REPLACE", part, parent, balloon,
+    replacements: op.entries.filter((e) => e.input.value.trim()).map((e) => ({ code: e.input.value.trim(), quantity: e.qty.value })) });
+  return op;
+};
 const removeOp = (part, qty) => ({ label: "削除", text: [`${part} を構成から削除`], inputs: [],
   change: () => ({ kind: "REMOVE", part, quantity: qty }) });
 const quantityOp = (part, qty) => {
@@ -125,13 +145,13 @@ function unknownCode(input) {
 }
 
 // 品番が無い時に出す、部品として登録する欄（名称と費目）
-function registerPanel(op) {
+function registerPanel(codeField) {
   const name = el("input", { placeholder: "名称", size: 12 });
   const costs = state.meta.heads.map((h) => [h.id, el("input", { inputmode: "decimal", size: 8 })]);
-  const panel = el("div", { class: "change-register" },
+  const panel = el("div", { class: "change-register", hidden: true },
     el("label", {}, "名称 ", name),
     state.meta.heads.map((h, i) => el("label", {}, `${h.label} `, costs[i][1])));
-  const body = () => ({ role: "part", code: op.code.value.trim(), name: name.value,
+  const body = () => ({ role: "part", code: codeField.value.trim(), name: name.value,
     costs: Object.fromEntries(costs.map(([id, input]) => [id, input.value])) });
   return { panel, inputs: [name, ...costs.map(([, input]) => input)], body };
 }
@@ -151,28 +171,32 @@ function openChangeForm(row, product, ops) {
   const same = trialForm?.previousElementSibling === row;
   closeChangeForm();
   if (same) return;
+  // 品番の欄と登録の欄の組。場所の置換は行ごと（op.regs）、ほかは op.code の1つを行の下に出す
   const lines = ops.map((op, i) => ({ op, radio: el("input", { type: "radio", name: "trial-change-kind", checked: i === 0 }),
-    reg: op.code ? registerPanel(op) : null }));
+    fixed: op.code ? [{ input: op.code, reg: registerPanel(op.code) }] : [] }));
+  const regsOf = (line) => (line.op.regs ? line.op.regs() : line.fixed);
   const runButton = el("button", { type: "button", class: "primary" }, "実行");
-  const needsRegister = (line) => Boolean(line.reg) && unknownCode(line.op.code);
+  const toRegister = (line) => regsOf(line).filter((r) => unknownCode(r.input));
   const sync = () => {
     for (const line of lines) {
       line.op.inputs.forEach((x) => { x.disabled = !line.radio.checked; });
-      if (line.reg) line.reg.panel.hidden = !(line.radio.checked && needsRegister(line));
+      regsOf(line).forEach((r) => { r.reg.panel.hidden = !(line.radio.checked && unknownCode(r.input)); });
     }
     const active = lines.find((l) => l.radio.checked);
-    runButton.textContent = needsRegister(active) ? `登録して${active.op.label}` : "実行";
+    runButton.textContent = toRegister(active).length ? `登録して${active.op.label}` : "実行";
   };
   lines.forEach(({ op, radio }) => {
     radio.addEventListener("change", sync);
     op.code?.addEventListener("input", sync);
+    op.onInput = sync;
   });
   sync();
   // 品番が無ければ部品として登録 → 品番の候補を読み直す → 変更。変更が通らなくても登録した部品は残す
   runButton.addEventListener("click", () => guarded(async () => {
     const line = lines.find((l) => l.radio.checked);
-    if (needsRegister(line)) {
-      await api("PUT", "/api/manual/items", line.reg.body());
+    const regs = toRegister(line);
+    if (regs.length) {
+      for (const r of regs) await api("PUT", "/api/manual/items", r.reg.body());
       await loadCodes(trialOpened.version);
       sync();
     }
@@ -181,9 +205,9 @@ function openChangeForm(row, product, ops) {
   const colspan = [...row.children].reduce((n, td) => n + td.colSpan, 0);
   trialForm = el("tr", { class: "change-form" },
     el("td", { colspan },
-      lines.flatMap(({ op, radio, reg }) => [
-        el("div", { class: "change-line" }, el("label", {}, radio, " ", op.label), el("span", {}, op.text)),
-        reg?.panel]),
+      lines.flatMap(({ op, radio, fixed }) => [
+        el("div", { class: "change-line" }, el("label", {}, radio, " ", op.label), el(op.regs ? "div" : "span", {}, op.text)),
+        fixed.map((r) => r.reg.panel)]),
       el("div", { class: "change-buttons" },
         runButton,
         el("button", { type: "button", onclick: closeChangeForm }, "やめる"))));
@@ -192,9 +216,11 @@ function openChangeForm(row, product, ops) {
 
 function trialNodeRow(ctx, node, path, depth, inRoot) {
   const usage = node.usage && !String(node.usage).startsWith("-") && !/^0*(\.0*)?$/.test(node.usage) ? node.usage : "1";
-  // 数量は試算の根の直下の行だけ（「製品から」と同じ）
+  // 数量は試算の根の直下の行だけ（「製品から」と同じ）。試算の根の直下でない行は版の構成の場所なので、その場所だけを置換する
+  const atPlace = !(inRoot && ctx.scenarioId);
+  const placeQty = node.quantity && !String(node.quantity).startsWith("-") ? node.quantity : "1";
   const ops = () => [
-    replaceOp(node.code, usage),
+    atPlace ? placeReplaceOp(node.parent, node.balloon, node.code, placeQty) : replaceOp(node.code, usage),
     removeOp(node.code, usage),
     inRoot && ctx.scenarioId ? quantityOp(node.code, usage) : null,
     addOp(ctx.product, node.code),
@@ -203,7 +229,7 @@ function trialNodeRow(ctx, node, path, depth, inRoot) {
     "tr",
     { class: "group-node" },
     el("td", { style: `padding-left:${8 + depth * 18}px` },
-      twistyCell(path, node.has_children), node.code,
+      twistyCell(path, node.has_children), node.balloon ? el("span", { class: "muted" }, `#${node.balloon} `) : null, node.code,
       node.quantity === null ? null : el("span", { class: "muted" }, ` ×${fmt(node.quantity)} `), roleTag(node.role)),
     el("td", {}, node.name, " ", nodeMarks(node, TRIAL_HEAD)),
     el("td", { colspan: 4, class: `num ${node.cost === null ? "missing" : ""}` },

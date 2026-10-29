@@ -10,8 +10,8 @@ from enum import Enum
 from typing import Iterable
 
 from .model import BomLine, Code, CostHead, Version
-from .mold import Allocation
-from .normalize import NumberLike, to_code, to_decimal
+from .mold import Allocation, usage_per_unit
+from .normalize import NumberLike, to_code, to_decimal, to_optional_code
 from .rollup import CostResult, ScopePolicy, calculate_cost
 
 
@@ -24,20 +24,35 @@ class ChangeKind(Enum):
 
 @dataclass(frozen=True)
 class Change:
+    """parent を付けた置換は、その親の風船番号 balloon（空欄可）の場所だけを替える。quantity は代わりの部品の員数。"""
+
     kind: ChangeKind
     part: str
     quantity: Decimal = Decimal(1)
     replacement: str | None = None
+    parent: str | None = None
+    balloon: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "part", to_code(self.part))
         object.__setattr__(self, "quantity", to_decimal(self.quantity, name="数量"))
         if self.replacement is not None:
             object.__setattr__(self, "replacement", to_code(self.replacement, name="代わりの品番"))
+        object.__setattr__(self, "parent", to_optional_code(self.parent, name="親品番"))
+        object.__setattr__(self, "balloon", to_optional_code(self.balloon, name="風船番号"))
         if self.kind is ChangeKind.REPLACE and self.replacement is None:
             raise ValueError("替えるには代わりの品番が要る")
         if self.kind in (ChangeKind.ADD, ChangeKind.REMOVE, ChangeKind.REPLACE) and self.quantity <= 0:
             raise ValueError("足す・抜く・替える数量は正の数で渡す")
+        if self.parent is not None and self.kind is not ChangeKind.REPLACE:
+            raise ValueError("場所（親・風船番号）を付けられるのは置換だけ")
+        if self.balloon is not None and self.parent is None:
+            raise ValueError("風船番号には親品番が要る")
+
+    @property
+    def location(self) -> tuple[str, str | None, str] | None:
+        """場所つきの置換なら（親品番, 風船番号, 品番）。"""
+        return None if self.parent is None else (self.parent, self.balloon, self.part)
 
 
 @dataclass(frozen=True)
@@ -56,6 +71,7 @@ class ChangeRecord:
     recorded_at: datetime
     volume: Decimal | None = None
     allocation: Allocation | None = None
+    batch: int | None = None  # 1回の操作のまとまり（その操作の最初の行の sequence）。1行だけの操作は None
 
     @property
     def difference(self) -> Decimal | None:
@@ -131,13 +147,34 @@ class Scenario:
     def root_lines(self, changes: tuple[Change, ...] | None = None) -> tuple[BomLine, ...]:
         """土台 ×1 に変更（省けば履歴の全部）を順に当てた、仮の製品の直下の行（同じ品番は合算）。"""
         entries: list[list] = [[self.base, Decimal(1), True]]  # 品番・数量・土台か
+        removed: set[tuple[str, str | None, str]] = set()  # 1回の置換の代わりの部品が何行でも、場所の部品は1回だけ抜く
+        usage: dict[str, Decimal] | None = None
         for change in self.changes if changes is None else changes:
-            _apply(entries, change)
+            location = change.location
+            if location is None:
+                _apply(entries, change)
+                continue
+            if usage is None:
+                usage = usage_per_unit(self.version, self.base)
+            per_unit = Decimal(1) if change.parent == self.base else usage.get(change.parent, Decimal(0))
+            if location not in removed:
+                removed.add(location)
+                entries.append([change.part, -self.location_quantity(location) * per_unit, False])
+            entries.append([change.replacement, change.quantity * per_unit, False])
         merged: dict[str, Decimal] = {}
         for code, qty, _ in entries:
             merged[code] = merged.get(code, Decimal(0)) + qty
         return tuple(
             BomLine(self.product_code, None, code, qty) for code, qty in merged.items() if qty != 0
+        )
+
+    def location_quantity(self, location: tuple[str, str | None, str]) -> Decimal:
+        """版の構成の、その場所（親・風船番号・品番）の員数。場所が版に無ければ 0。"""
+        parent, balloon, part = location
+        return sum(
+            (line.quantity for line in self.version.children(parent, by_balloon=True)
+             if line.balloon == balloon and line.child == part),
+            Decimal(0),
         )
 
     def overrides(self, changes: tuple[Change, ...] | None = None) -> dict[str, tuple[BomLine, ...]]:
@@ -182,8 +219,41 @@ class Scenario:
         self._history.append(record)
         return record
 
+    def apply_batch(
+        self,
+        changes: Iterable[Change],
+        recorded_at: datetime | None = None,
+        volume: NumberLike | None = None,
+        allocation: Allocation | None = None,
+    ) -> tuple[ChangeRecord, ...]:
+        """1回の操作の変更を続けて足し、同じまとまり（batch）にする。取り消しはまとまりごと。"""
+        changes = tuple(changes)
+        if not changes:
+            raise ValueError("変更が空")
+        if len(changes) == 1:
+            return (self.apply(changes[0], recorded_at, volume, allocation),)
+        recorded_at = recorded_at or datetime.now()
+        batch = len(self._history) + 1
+        records = []
+        for change in changes:
+            record = self.apply(change, recorded_at, volume, allocation)
+            record = ChangeRecord(**{**record.__dict__, "batch": batch})
+            self._history[-1] = record
+            records.append(record)
+        return tuple(records)
+
+    def replaced_locations(self) -> set[tuple[str, str | None, str]]:
+        return {c.location for c in self.changes if c.location is not None}
+
     def undo(self) -> ChangeRecord | None:
-        return self._history.pop() if self._history else None
+        """最後の操作を取り消す（まとまりなら丸ごと）。取り消した行の最後の1行を返す。"""
+        if not self._history:
+            return None
+        last = self._history.pop()
+        if last.batch is not None:
+            while self._history and self._history[-1].batch == last.batch:
+                self._history.pop()
+        return last
 
     def clear(self) -> None:
         self._history.clear()
