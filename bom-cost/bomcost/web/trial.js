@@ -89,13 +89,74 @@ function twistyCell(path, canOpen) {
     canOpen ? (trialOpen.has(path) ? "▼" : "▶") : "");
 }
 
+// 行の「変更」ボタンと、押すとその行の下に開く欄（操作を選ぶと、その操作の欄だけが使える）。
+// 開くのは同時に1つ。表を描き直すと閉じる
+let trialForm = null;
+
+const codeInput = (value = "") => el("input", { list: "code-list-2", placeholder: "品番", value, size: 10 });
+const qtyInput = (value) => el("input", { value, inputmode: "decimal", size: 4 });
+
+// 操作: { label, text: 文の部品, inputs: 文の中の欄, change: () => API へ送る変更 }
+const replaceOp = (part, qty) => {
+  const code = codeInput();
+  const q = qtyInput(qty);
+  return { label: "替える", text: [`${part} を `, code, " に替える　数量 ", q], inputs: [code, q],
+    change: () => ({ kind: "REPLACE", part, replacement: code.value.trim(), quantity: q.value }) };
+};
+const removeOp = (part, qty) => ({ label: "抜く", text: [`${part} を構成から抜く`], inputs: [],
+  change: () => ({ kind: "REMOVE", part, quantity: qty }) });
+const quantityOp = (part, qty) => {
+  const q = qtyInput(qty);
+  return { label: "数量", text: [`${part} の数量を `, q, " にする"], inputs: [q],
+    change: () => ({ kind: "SET_QUANTITY", part, quantity: q.value }) };
+};
+// 足すは、どの行から足しても製品（試算の根）の直下へ入る（scenario.py の _apply）
+const addOp = (product, code = "") => {
+  const c = codeInput(code);
+  const q = qtyInput("1");
+  return { label: "足す", text: [`${product} の直下に `, c, " を ", q, " 個足す"], inputs: [c, q],
+    change: () => ({ kind: "ADD", part: c.value.trim(), quantity: q.value }) };
+};
+
+function closeChangeForm() {
+  trialForm?.remove();
+  trialForm = null;
+}
+
+function changeButton(product, makeOps) {
+  const button = el("button", { type: "button" }, "変更");
+  button.addEventListener("click", () => openChangeForm(button.closest("tr"), product, makeOps()));
+  return button;
+}
+
+function openChangeForm(row, product, ops) {
+  const same = trialForm?.previousElementSibling === row;
+  closeChangeForm();
+  if (same) return;
+  const lines = ops.map((op, i) => ({ op, radio: el("input", { type: "radio", name: "trial-change-kind", checked: i === 0 }) }));
+  const sync = () => lines.forEach(({ op, radio }) => op.inputs.forEach((x) => { x.disabled = !radio.checked; }));
+  lines.forEach(({ radio }) => radio.addEventListener("change", sync));
+  sync();
+  const run = () => guarded(() => trialChange(product, lines.find((l) => l.radio.checked).op.change()));
+  const colspan = [...row.children].reduce((n, td) => n + td.colSpan, 0);
+  trialForm = el("tr", { class: "change-form" },
+    el("td", { colspan },
+      lines.map(({ op, radio }) => el("div", { class: "change-line" }, el("label", {}, radio, " ", op.label), el("span", {}, op.text))),
+      el("div", { class: "change-buttons" },
+        el("button", { type: "button", class: "primary", onclick: run }, "実行"),
+        el("button", { type: "button", onclick: closeChangeForm }, "やめる"))));
+  row.after(trialForm);
+}
+
 function trialNodeRow(ctx, node, path, depth, inRoot) {
   const usage = node.usage && !String(node.usage).startsWith("-") && !/^0*(\.0*)?$/.test(node.usage) ? node.usage : "1";
-  const qty = el("input", { value: usage, inputmode: "decimal", size: 4 });
-  const repl = el("input", { list: "code-list-2", placeholder: "代わりの品番", size: 10 });
-  const addCode = el("input", { list: "code-list-2", value: node.code, size: 10 });
-  const send = (kind, extra = {}) =>
-    guarded(() => trialChange(ctx.product, { kind, part: node.code, quantity: qty.value, ...extra }));
+  // 数量は試算の根の直下の行だけ（「製品から」と同じ）
+  const ops = () => [
+    replaceOp(node.code, usage),
+    removeOp(node.code, usage),
+    inRoot && ctx.scenarioId ? quantityOp(node.code, usage) : null,
+    addOp(ctx.product, node.code),
+  ].filter(Boolean);
   return el(
     "tr",
     { class: "group-node" },
@@ -105,13 +166,7 @@ function trialNodeRow(ctx, node, path, depth, inRoot) {
     el("td", {}, node.name, " ", nodeMarks(node, TRIAL_HEAD)),
     el("td", { colspan: 4, class: `num ${node.cost === null ? "missing" : ""}` },
       `原価 ${fmt(node.cost)}・金額 ${fmt(node.amount)}`),
-    el("td", {},
-      "数量 ", qty,
-      el("button", { type: "button", onclick: () => send("REPLACE", { replacement: repl.value.trim() }) }, "替える"), repl,
-      el("button", { type: "button", onclick: () => send("REMOVE") }, "抜く"),
-      el("button", { type: "button", onclick: () => send("ADD", { part: addCode.value.trim() }) }, "足す"), addCode,
-      // 数量にするは試算の根の直下の行だけ（「製品から」と同じ）
-      inRoot && ctx.scenarioId ? el("button", { type: "button", onclick: () => send("SET_QUANTITY") }, "数量にする") : null),
+    el("td", {}, changeButton(ctx.product, ops)),
   );
 }
 
@@ -158,22 +213,16 @@ function changeListBlock(c) {
 }
 
 function partBlock(parts) {
-  const partRows = parts.rows.map((r) => {
-    const repl = el("input", { list: "code-list-2", placeholder: "代わりの品番", size: 10 });
-    const qty = el("input", { value: r.usage, inputmode: "decimal", size: 4 });
-    return el(
-      "tr",
-      {},
-      el("td", {}, `${r.product} ${r.product_name}`),
-      el("td", {}, r.part),
-      el("td", {}, r.part_name),
-      numTd(r.usage),
-      el("td", {}, r.replaced_by.length ? r.replaced_by.map((c) => el("span", { class: "tag add" }, `→ ${c}`)) : "—"),
-      el("td", {},
-        repl, qty,
-        el("button", { type: "button", onclick: () => guarded(() => trialChange(r.product, { kind: "REPLACE", part: r.part, replacement: repl.value.trim(), quantity: qty.value })) }, "替える")),
-    );
-  });
+  const partRows = parts.rows.map((r) => el(
+    "tr",
+    {},
+    el("td", {}, `${r.product} ${r.product_name}`),
+    el("td", {}, r.part),
+    el("td", {}, r.part_name),
+    numTd(r.usage),
+    el("td", {}, r.replaced_by.length ? r.replaced_by.map((c) => el("span", { class: "tag add" }, `→ ${c}`)) : "—"),
+    el("td", {}, changeButton(r.product, () => [replaceOp(r.part, r.usage)])),
+  ));
   return [
     el("h3", {}, `部品「${parts.part}」（${parts.rows.length} 件${parts.truncated ? "（上限）" : ""}）`),
     table(["製品", "部品", "名称", numTh("使用数（個/台）"), "替えた先", ""],
@@ -191,24 +240,20 @@ async function drawTrial() {
     part ? api("GET", `/api/group/parts?${qs({ ...base, part })}`) : null,
     api("GET", `/api/group/changes?${qs({ version: t.version, name: t.name })}`),
   ]);
-  const productRow = (x) => {
-    const addPart = el("input", { list: "code-list-2", placeholder: "品番", size: 10 });
-    const addQty = el("input", { value: "1", inputmode: "decimal", size: 4 });
-    return el(
-      "tr",
-      {},
-      el("td", {}, twistyCell(x.code, x.has_structure || Boolean(x.scenario_id)), x.code),
-      el("td", {}, x.name),
-      numTd(x.current),
-      numTd(x.after),
-      el("td", { class: `num ${signClass(x.difference)}` }, fmt(x.difference, { sign: true, missing: "—" })),
-      el("td", { class: "num" }, String(x.change_count)),
-      el("td", {},
-        addPart, addQty,
-        el("button", { type: "button", onclick: () => guarded(() => trialChange(x.code, { kind: "ADD", part: addPart.value.trim(), quantity: addQty.value })) }, "足す"),
-        x.change_count ? el("button", { type: "button", onclick: () => guarded(() => trialUndo(x.scenario_id)) }, "取り消す") : null),
-    );
-  };
+  trialForm = null;  // 表を描き直すと開いていた欄は消える
+  const productRow = (x) => el(
+    "tr",
+    {},
+    el("td", {}, twistyCell(x.code, x.has_structure || Boolean(x.scenario_id)), x.code),
+    el("td", {}, x.name),
+    numTd(x.current),
+    numTd(x.after),
+    el("td", { class: `num ${signClass(x.difference)}` }, fmt(x.difference, { sign: true, missing: "—" })),
+    el("td", { class: "num" }, String(x.change_count)),
+    el("td", {},
+      changeButton(x.code, () => [addOp(x.code)]),
+      x.change_count ? el("button", { type: "button", onclick: () => guarded(() => trialUndo(x.scenario_id)) }, "取り消す") : null),
+  );
   const productRows = [];
   for (const x of p.products) {
     productRows.push(productRow(x));
