@@ -68,7 +68,7 @@ class BuildDist(unittest.TestCase):
     def test_layout(self) -> None:
         names = set(self.build().namelist())
         self.assertEqual(names, {
-            "bom-cost/起動.bat",
+            "bom-cost/start.bat",
             "bom-cost/python/python.exe",
             "bom-cost/python/python312.zip",
             "bom-cost/python/python312._pth",
@@ -96,13 +96,72 @@ class BuildDist(unittest.TestCase):
         ])
 
     def test_launcher_is_ascii_crlf_and_relative(self) -> None:
-        data = self.build().read("bom-cost/起動.bat")
+        data = self.build().read("bom-cost/start.bat")
         text = data.decode("ascii")
         self.assertNotIn("\n", text.replace("\r\n", ""))
         self.assertIn('set "HERE=%~dp0"', text)
         self.assertIn('"%HERE%python\\python.exe" -E -m bomcost.app --db "%HERE%data\\bom-cost.sqlite"', text)
         self.assertIn('if not exist "%HERE%data" mkdir "%HERE%data"', text)
         self.assertNotRegex(text, r"[A-Za-z]:\\")
+        self.assertIn("\r\ntitle bom-cost\r\n", text)
+
+    def test_version_goes_into_version_file_and_title(self) -> None:
+        commit = "0123456789abcdef0123456789abcdef01234567"
+        target = build_dist.build(self.cache, self.tmp / "dist", self.app, version="bom-cost-v0.1.2", commit=commit)
+        with zipfile.ZipFile(target) as z:
+            self.assertEqual(z.read("bom-cost/VERSION.txt"), f"bom-cost-v0.1.2\r\n{commit}\r\n".encode("ascii"))
+            self.assertIn("\r\ntitle bom-cost bom-cost-v0.1.2\r\n", z.read("bom-cost/start.bat").decode("ascii"))
+
+    def test_no_version_means_no_version_file(self) -> None:
+        self.assertNotIn("bom-cost/VERSION.txt", self.build().namelist())
+
+    def test_unsafe_version_or_commit_stops(self) -> None:
+        for kwargs in ({"version": "v1&calc"}, {"version": "v 1"}, {"version": "v1", "commit": "xyz"},
+                       {"commit": "0123456789abcdef"}):
+            with self.subTest(**kwargs), self.assertRaises(ValueError):
+                build_dist.build(self.cache, self.tmp / "dist", self.app, **kwargs)
+        self.assertFalse((self.tmp / "dist").exists())
+
+    def write_sums(self, override: dict[str, str] | None = None, extra: str = "") -> Path:
+        sums = {p.name: build_dist.sha256_of(p) for p in self.cache.iterdir()}
+        sums.update(override or {})
+        path = self.tmp / "materials.sha256"
+        path.write_text("".join(f"{sha}  {name}\n" for name, sha in sums.items()) + extra, encoding="ascii")
+        return path
+
+    def test_materials_matching_the_sums_build(self) -> None:
+        build_dist.build(self.cache, self.tmp / "dist", self.app, materials_sha256=self.write_sums())
+        self.assertTrue((self.tmp / "dist" / "bom-cost-win64.zip").is_file())
+
+    def test_materials_not_matching_the_sums_stop(self) -> None:
+        cases = {
+            "wrong hash": self.write_sums({"openpyxl-3.1.5-py2.py3-none-any.whl": "0" * 64}),
+            "listed but missing": self.write_sums(extra=f"{'1' * 64}  extra-1.0-py3-none-any.whl\n"),
+            "bad line": self.write_sums(extra="not a sum line\n"),
+        }
+        for label, sums in cases.items():
+            with self.subTest(label), self.assertRaises(ValueError):
+                build_dist.build(self.cache, self.tmp / "dist", self.app, materials_sha256=sums)
+        self.assertFalse((self.tmp / "dist").exists())
+
+    def test_material_not_listed_stops(self) -> None:
+        sums = self.write_sums()
+        lines = sums.read_text(encoding="ascii").splitlines()
+        sums.write_text("\n".join(l for l in lines if "et_xmlfile" not in l) + "\n", encoding="ascii")
+        with self.assertRaises(ValueError):
+            build_dist.build(self.cache, self.tmp / "dist", self.app, materials_sha256=sums)
+
+    def test_main_passes_version_and_sums(self) -> None:
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = build_dist.main(["--cache", str(self.cache), "--out", str(self.tmp / "out"),
+                                    "--version", "bom-cost-v0.1.0", "--materials-sha256", str(self.write_sums())])
+        self.assertEqual(code, 0)
+        with zipfile.ZipFile(self.tmp / "out" / "bom-cost-win64.zip") as z:
+            self.assertEqual(z.read("bom-cost/VERSION.txt"), b"bom-cost-v0.1.0\r\n")
+        with contextlib.redirect_stderr(io.StringIO()):
+            code = build_dist.main(["--cache", str(self.cache), "--out", str(self.tmp / "out"),
+                                    "--materials-sha256", str(self.write_sums({"python-3.12.10-embed-amd64.zip": "f" * 64}))])
+        self.assertEqual(code, 1)
 
     def test_license_contents_are_copied(self) -> None:
         z = self.build()

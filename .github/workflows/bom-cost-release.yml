@@ -1,0 +1,176 @@
+name: bom-cost-release
+
+# Push a tag bom-cost-vX.Y.Z (on a commit already on main) to publish bom-cost-win64.zip as a release.
+on:
+  push:
+    tags: ['bom-cost-v*']
+
+permissions: {}
+
+concurrency:
+  group: bom-cost-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
+    env:
+      TAG: ${{ github.ref_name }}
+      PY_EMBED: python-3.12.10-embed-amd64.zip
+      PY_EMBED_URL: https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip
+      WHEELS: openpyxl==3.1.5 et_xmlfile==2.0.0
+    steps:
+      - name: Check the tag name
+        run: |
+          if [[ ! "$TAG" =~ ^bom-cost-v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::tag name does not match bom-cost-vX.Y.Z"
+            exit 1
+          fi
+
+      # No checkout action: the repository is public, so plain git needs no token.
+      - name: Fetch the tagged commit
+        run: |
+          git init -q src
+          cd src
+          # Keep LF as committed, so the zip matches a build made elsewhere from the same commit.
+          git config core.autocrlf false
+          git remote add origin "https://github.com/$GITHUB_REPOSITORY.git"
+          git fetch -q --no-tags origin "+refs/heads/main:refs/remotes/origin/main" "+refs/tags/$TAG:refs/tags/$TAG"
+          commit=$(git rev-parse "refs/tags/$TAG^{commit}")
+          if [ "$commit" != "$(git rev-parse "$GITHUB_SHA^{commit}")" ]; then
+            echo "::error::the tag no longer points at the commit that started this run"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$commit" refs/remotes/origin/main; then
+            echo "::error::the tagged commit is not on main"
+            exit 1
+          fi
+          git checkout -q --detach "$commit"
+          echo "COMMIT=$commit" >> "$GITHUB_ENV"
+          echo "commit: $commit"
+
+      - name: Download the materials
+        run: |
+          mkdir cache
+          curl -fsSL --retry 3 -o "cache/$PY_EMBED" "$PY_EMBED_URL"
+          python -m pip download --disable-pip-version-check --no-deps --only-binary=:all: -q -d cache $WHEELS
+
+      - name: Check the materials against materials.sha256
+        run: |
+          sums=src/bom-cost/materials.sha256
+          files=$(ls -A cache | wc -l)
+          listed=$(grep -c . "$sums")
+          if [ "$files" -ne 3 ] || [ "$listed" -ne 3 ]; then
+            echo "::error::expected exactly 3 materials (found $files, listed $listed)"
+            exit 1
+          fi
+          (cd cache && sha256sum --strict -c "../$sums")
+
+      # The tests run on the same Python and libraries that go into the zip.
+      - name: Prepare the test interpreter
+        run: |
+          python -m zipfile -e "cache/$PY_EMBED" testpy
+          test -f testpy/python312._pth
+          mkdir testlib
+          for wheel in cache/*.whl; do python -m zipfile -e "$wheel" testlib; done
+          printf 'python312.zip\r\n.\r\n%s\r\n%s\r\n' "$(cygpath -w "$PWD/src/bom-cost")" "$(cygpath -w "$PWD/testlib")" > testpy/python312._pth
+          testpy/python.exe -c "import sys, openpyxl; print(sys.version.split()[0], openpyxl.__version__)"
+
+      - name: Run the tests
+        working-directory: src/bom-cost
+        run: ../../testpy/python.exe -X utf8 -m unittest discover -s tests
+
+      - name: Build the zip
+        working-directory: src/bom-cost
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::the working tree changed after the tests"
+            git status --porcelain
+            exit 1
+          fi
+          ../../testpy/python.exe build_dist.py --cache ../../cache --out ../../dist \
+            --version "$TAG" --commit "$COMMIT" --materials-sha256 materials.sha256
+
+      - name: Record the contents
+        run: |
+          powershell -NoProfile -Command "Expand-Archive -LiteralPath dist/bom-cost-win64.zip -DestinationPath smoke"
+          printf '%s\r\n%s\r\n' "$TAG" "$COMMIT" | cmp - smoke/bom-cost/VERSION.txt
+          zip_sha=$(sha256sum dist/bom-cost-win64.zip | cut -d' ' -f1)
+          from_zip=$(testpy/python.exe src/bom-cost/release_manifest.py dist/bom-cost-win64.zip --out dist/bom-cost-win64.manifest.txt | tr -d '\r')
+          from_dir=$(testpy/python.exe src/bom-cost/release_manifest.py smoke | tr -d '\r')
+          if [ -z "$from_zip" ] || [ "$from_zip" != "$from_dir" ]; then
+            echo "::error::the extracted files differ from the zip"
+            exit 1
+          fi
+          echo "ZIP_SHA256=$zip_sha" >> "$GITHUB_ENV"
+          echo "CONTENT_DIGEST=$from_zip" >> "$GITHUB_ENV"
+          echo "zip sha256: $zip_sha"
+          echo "content digest: $from_zip"
+
+      - name: Start the extracted app and expect HTTP 200
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $PWD 'smoke\bom-cost'
+          $py = Join-Path $root 'python\python.exe'
+          & $py -E -c "import openpyxl, bomcost.app; print('import ok')"
+          if ($LASTEXITCODE -ne 0) { throw 'import check failed' }
+          New-Item -ItemType Directory -Force (Join-Path $root 'data') | Out-Null
+          $out = Join-Path $env:RUNNER_TEMP 'app-out.txt'
+          $err = Join-Path $env:RUNNER_TEMP 'app-err.txt'
+          # -X utf8: stdout goes to a file here, not a console, and the app prints non-ASCII text.
+          $appArgs = @('-E', '-X', 'utf8', '-m', 'bomcost.app', '--db', (Join-Path $root 'data\bom-cost.sqlite'), '--no-browser')
+          $p = Start-Process -FilePath $py -ArgumentList $appArgs -WorkingDirectory $root `
+            -RedirectStandardOutput $out -RedirectStandardError $err -NoNewWindow -PassThru
+          $ok = $false
+          $url = ''
+          try {
+            $deadline = (Get-Date).AddSeconds(30)
+            while (-not $ok -and (Get-Date) -lt $deadline -and -not $p.HasExited) {
+              Start-Sleep -Milliseconds 500
+              $m = Select-String -Path $out -Pattern 'http://127\.0\.0\.1:\d+/' -ErrorAction SilentlyContinue | Select-Object -First 1
+              if ($m) {
+                $url = $m.Matches[0].Value
+                try {
+                  $r = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 5
+                  $ok = ($r.StatusCode -eq 200)
+                } catch { }
+              }
+            }
+          } finally {
+            if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+          }
+          if (-not $ok) {
+            Get-Content $err -ErrorAction SilentlyContinue | Write-Host
+            throw 'the app did not answer HTTP 200 within 30 seconds'
+          }
+          Write-Host "HTTP 200 from $url"
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "::error::a release for this tag already exists"
+            exit 1
+          fi
+          printf '%s\n' \
+            "Tag: $TAG" \
+            "Commit: $COMMIT" \
+            "SHA-256 of bom-cost-win64.zip: $ZIP_SHA256" \
+            "Content digest: $CONTENT_DIGEST" \
+            "" \
+            "The content digest is the SHA-256 of bom-cost-win64.manifest.txt (one line \"<sha256>  <path>\" per file in the zip, sorted by path)." \
+            "" \
+            "Latest: https://github.com/$GITHUB_REPOSITORY/releases/latest/download/bom-cost-win64.zip" \
+            > notes.md
+          # Publish only after both assets are uploaded, so "latest" never points at a release without the zip.
+          gh release create "$TAG" -R "$GITHUB_REPOSITORY" --verify-tag --draft --title "$TAG" --notes-file notes.md \
+            dist/bom-cost-win64.zip dist/bom-cost-win64.manifest.txt
+          gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --draft=false
