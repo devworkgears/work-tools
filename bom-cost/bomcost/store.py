@@ -575,8 +575,11 @@ class Store:
             )
         return scenario.scenario_id
 
-    def load_scenario(self, scenario_id: int) -> Scenario:
-        """試算を読み戻す。版は manual を重ねて読み、計上範囲は保存した設定を使う。"""
+    def load_scenario(self, scenario_id: int, version: Version | None = None) -> Scenario:
+        """試算を読み戻す。版は manual を重ねて読み、計上範囲は保存した設定を使う。
+
+        version は読み済みの同じ版（manual を重ねたもの）。多くの試算を続けて読むとき、版の読み直しを省く。
+        """
         row = self._conn.execute(
             "SELECT name, note, base, product_code, head, version_id FROM scenario WHERE scenario_id = ?",
             (scenario_id,),
@@ -584,6 +587,8 @@ class Store:
         if row is None:
             raise KeyError(f"試算 {scenario_id} は無い")
         name, note, base, product_code, head, version_id = row
+        if version is not None and version.version_id != version_id:
+            raise ValueError(f"試算 {scenario_id} の版は {version_id}（渡された版は {version.version_id}）")
         history = [
             ChangeRecord(
                 sequence=seq,
@@ -606,7 +611,7 @@ class Store:
             name,
             base,
             product_code,
-            self.load_version(version_id),
+            version if version is not None else self.load_version(version_id),
             CostHead[head],
             self.load_scope_policy(),
             note,

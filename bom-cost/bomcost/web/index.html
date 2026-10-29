@@ -11,6 +11,7 @@
   <h1>BOM 原価モック</h1>
   <div class="seg" id="screen-seg" role="group" aria-label="画面">
     <button type="button" data-screen="product" class="on">製品から</button>
+    <button type="button" data-screen="group">製品群</button>
     <button type="button" data-screen="part">部品から</button>
     <button type="button" data-screen="change">モデルチェンジ</button>
     <button type="button" data-screen="manual">手入力</button>
@@ -84,6 +85,24 @@
     <div id="result"></div>
   </section>
 </main>
+
+<main class="screen" id="screen-group" hidden>
+  <section class="panel">
+    <div class="panel-head">
+      <h2>製品群</h2>
+    </div>
+    <div class="form-row">
+      <label>版 <select id="group-version"></select></label>
+      <label>費目 <select id="group-head"></select></label>
+      <label>検討名 <input id="group-name" list="group-names" placeholder="例 部品の共通化"></label>
+      <label>製品（品番・名称の一部） <input id="group-q"></label>
+      <label>部品（名称・品番の一部） <input id="group-part"></label>
+      <button type="button" class="primary" id="group-show">見る</button>
+    </div>
+    <div id="group-body" class="screen-body"></div>
+  </section>
+</main>
+<datalist id="group-names"></datalist>
 
 <main class="screen" id="screen-part" hidden>
   <section class="panel">
@@ -180,5 +199,6 @@
 <datalist id="code-list"></datalist>
 <script src="app.js"></script>
 <script src="screens.js"></script>
+<script src="group.js"></script>
 </body>
 </html>
