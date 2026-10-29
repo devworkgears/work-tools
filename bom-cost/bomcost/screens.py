@@ -259,8 +259,8 @@ class Screens:
         dev_number = _optional_text(body, "dev_number") or explicit_id
         if not dev_number:
             raise ApiError(400, "開発番号が空")
-        if is_manual_version_id(explicit_id):
-            raise ApiError(400, f"{explicit_id} は手入力の版の名前なので使えない")
+        if is_manual_version_id(explicit_id) or is_manual_version_id(dev_number):
+            raise ApiError(400, f"{explicit_id or dev_number} は手入力の版の名前なので使えない")
         if explicit_id and any(v.version_id == explicit_id for v in self.store.list_versions()):
             raise ApiError(409, f"版 {explicit_id} はもうある（別の ID にするか、先に版を消す）")
         files = body.get("files")

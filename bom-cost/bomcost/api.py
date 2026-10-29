@@ -528,6 +528,11 @@ class Api:
                 raise ApiError(400, f"{label} は版 {scenario.version.version_id} の構成に無い")
             if location in scenario.replaced_locations():
                 raise ApiError(400, f"{label} はもう置換した（員数変更も含む）")
+            # 場所の変更は元の版の使用数で倍率を取るので、親子にまたがる2つの変更は原価が誤る
+            below = lambda code: {code, *usage_per_unit(scenario.version, code)}
+            for done_parent, _, done_part in scenario.replaced_locations():
+                if parent in below(done_part) or done_parent in below(part):
+                    raise ApiError(400, f"{label} は変更済みの {done_parent} の {done_part} と親子に重なる（先に取り消す）")
         elif len(pairs) > 1:
             raise ApiError(400, "代わりの部品を複数入れるには親品番（parent）が要る")
         changes = [Change(kind, part, qty, code, parent, balloon) for code, qty in pairs]

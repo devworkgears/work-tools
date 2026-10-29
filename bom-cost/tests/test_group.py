@@ -405,6 +405,17 @@ class TrialHeadAndWords(SampleDbCase):
         k200 = self.ok("GET", "/api/group/changes", f"version=2026-10&name={NAME}&head=MANUFACTURING&product=K-200")
         self.assertEqual(k200["rows"][0]["difference"], "40")
 
+    def test_nested_place_changes_refused(self) -> None:
+        # 親の場所と、その下の場所を両方変えると元の版の使用数で倍率を取って原価が誤るので、後の方を拒む
+        self.change("V-110", kind="SET_QUANTITY", part="A-100", parent="V-110", balloon="1", quantity="2")
+        bad = self.call("POST", "/api/group/changes", body={"version_id": "2026-10", "name": NAME, "product": "V-110",
+                        "kind": "SET_QUANTITY", "part": "C-300", "parent": "A-100", "balloon": "2", "quantity": "1"})
+        self.assert_error(bad, 400, "親子に重なる")
+
+    def test_reserved_dev_number_refused(self) -> None:
+        bad = self.call("POST", "/api/import", body={"dev_number": "manual:X", "files": [{}]})
+        self.assert_error(bad, 400, "手入力の版")
+
     def test_place_quantity_change(self) -> None:
         r = self.change("A-100", kind="SET_QUANTITY", part="C-300", parent="A-100", balloon="2", quantity="1")
         self.assertEqual(r["summary"]["total"], "-800")  # 200 − 3×500 ＋ 1×500
