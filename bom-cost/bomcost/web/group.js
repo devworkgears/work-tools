@@ -70,6 +70,27 @@ function changeListBlock(c) {
   ];
 }
 
+// 試作品をその場で登録する（手入力の版に入る）。登録した品番はすぐ替える・足すの候補に出る
+function trialItemBlock() {
+  const code = el("input", { size: 10 });
+  const name = el("input", { size: 12 });
+  const costs = Object.fromEntries(state.meta.heads.map((h) => [h.id, el("input", { inputmode: "decimal", size: 7 })]));
+  const save = async () => {
+    await api("PUT", "/api/manual/items", {
+      code: code.value.trim(), name: name.value.trim(),
+      costs: Object.fromEntries(Object.entries(costs).map(([k, input]) => [k, input.value])),
+    });
+    await loadCodes(groupInputs().version);
+    showMessage(`試作品 ${code.value.trim()} を登録`, "info");
+  };
+  return el("details", {},
+    el("summary", {}, "試作品を登録"),
+    el("div", { class: "form-row" },
+      el("label", {}, "品番 ", code), el("label", {}, "名称 ", name),
+      state.meta.heads.map((h) => el("label", {}, `${h.label} `, costs[h.id])),
+      el("button", { type: "button", class: "primary", onclick: () => guarded(save) }, "登録")));
+}
+
 function countText(n, shown, truncated) {
   return truncated ? `${shown} / ${n} 件（上限）` : `${n} 件`;
 }
@@ -105,7 +126,7 @@ async function drawGroup() {
     );
   });
   const productHeads = ["品番", "名称", ...(withCost ? [numTh(`今（${p.head_label}）`), numTh("後"), numTh("差"), numTh("変更")] : []), ""];
-  const blocks = changes ? changeListBlock(changes) : [];
+  const blocks = [trialItemBlock(), ...(changes ? changeListBlock(changes) : [])];
   blocks.push(
     el("h3", {}, `製品（${countText(p.count, p.products.length, p.truncated)}・区分 ${p.kind ?? "—"}）`),
     table(productHeads, productRows.length ? productRows : [el("tr", {}, el("td", { colspan: productHeads.length, class: "muted" }, "なし"))]),
