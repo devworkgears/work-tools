@@ -15,6 +15,7 @@ SHEET = "比較"
 PREMISES = "前提"
 DASH = "—"
 MISSING_NOTE = "未登録・計から除く"
+PARTIAL_NOTE = "一部未登録（未登録の部品を除いて足した値）"
 EXCLUDED_NOTE = "計から除く"
 MONEY_FORMAT = "#,##0"
 MONEY_FRACTION_FORMAT = "#,##0.00"
@@ -48,8 +49,10 @@ def compare_workbook(table: dict[str, Any], version_text: str, query: str, now: 
         return head == "AMORTIZATION" and table["ignore_amortization"]
 
     def put(column: int, value: str | None, *, percent: bool = False, known: bool = True, note: str | None = None,
-            head: str | None = None) -> None:
+            head: str | None = None, partial: bool = False) -> None:
         cell = ws.cell(row=ws.max_row, column=column)
+        if partial and value is not None:
+            note = PARTIAL_NOTE + (f"・{note}" if note else "")
         if head is not None and ignored(head):
             cell.value = DASH
             return
@@ -81,18 +84,22 @@ def compare_workbook(table: dict[str, Any], version_text: str, query: str, now: 
     for p in table["products"]:
         out = {h: any(p["current"][h] is None or t["after"][h] is None for t in p["trials"]) for h in heads}
         line([p["product"], p["product_name"], None, "現行"],
-             [{"value": p["current"][h], "note": EXCLUDED_NOTE if out[h] else None} for h in heads])
+             [{"value": p["current"][h], "note": EXCLUDED_NOTE if out[h] else None,
+               "partial": h in p["incomplete"]} for h in heads])
         put(3, p["volume"], note="未登録")
         for t in p["trials"]:
             ex = {h: EXCLUDED_NOTE if p["current"][h] is None or t["after"][h] is None else None for h in heads}
-            line(["", "", None, label("変更後", t["name"])], [{"value": t["after"][h], "note": ex[h]} for h in heads])
-            line(["", "", None, label("差", t["name"])], [{"value": t["difference"][h], "note": ex[h]} for h in heads])
+            pa = {h: h in t["incomplete"] for h in heads}
+            line(["", "", None, label("変更後", t["name"])],
+                 [{"value": t["after"][h], "note": ex[h], "partial": pa[h]} for h in heads])
+            line(["", "", None, label("差", t["name"])],
+                 [{"value": t["difference"][h], "note": ex[h], "partial": pa[h]} for h in heads])
             line(["", "", None, label("差%", t["name"])],
                  [{"value": t["percent"][h], "percent": True, "known": t["difference"][h] is not None,
-                   "note": ex[h]} for h in heads])
+                   "note": ex[h], "partial": pa[h]} for h in heads])
             line(["", "", None, label("年間効果額", t["name"])],
-                 [{"value": t["effect"][h], "note": None if t["effect"][h] is not None else MISSING_NOTE}
-                  for h in heads])
+                 [{"value": t["effect"][h], "note": None if t["effect"][h] is not None else MISSING_NOTE,
+                   "partial": pa[h]} for h in heads])
 
     for n in table["names"]:
         s, e = table["totals"][n], table["effect_totals"][n]
@@ -123,6 +130,7 @@ def compare_workbook(table: dict[str, Any], version_text: str, query: str, now: 
         ("償却費", "無視（—）" if table["ignore_amortization"] else "含める"),
         ("年間効果額", "差 × 年間台数"),
         ("未登録", "空欄（塗りとコメント）・計から除く"),
+        ("一部未登録", "未登録の部品を除いて足した値（コメント）"),
         ("値の扱い", "参考値"),
         ("書き出した日時", now.strftime("%Y-%m-%d %H:%M")),
     ):

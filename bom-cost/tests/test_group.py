@@ -687,6 +687,12 @@ class CompareTable(SampleDbCase):
                                          "percent": "-1400.0", "excluded": 0})
         self.assertEqual(t["DIRECT"], {"current": None, "after": None, "difference": None, "percent": None,
                                        "excluded": 1})
+        # 一部未登録の費目は compare の行と同じ。差は現行と変更後のどちらかが一部未登録なら一部未登録
+        rows = self.ok("GET", "/api/group/compare", f"version=2026-10&names={names}&ignore_amortization=1")["rows"]
+        base = next(x for x in rows if x["product"] == "A-100" and x["name"] is None)
+        after = next(x for x in rows if x["product"] == "A-100" and x["name"] == NAME)
+        self.assertEqual(a["incomplete"], base["incomplete"])
+        self.assertEqual(trial["incomplete"], sorted(set(base["incomplete"]) | set(after["incomplete"])))
 
     def test_totals_skip_products_with_missing_values(self) -> None:
         products = [

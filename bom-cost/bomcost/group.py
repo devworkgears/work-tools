@@ -189,13 +189,15 @@ class Group:
                 volume = version.volume(row["product"])
                 products.append({"product": row["product"], "product_name": row["product_name"],
                                  "volume": None if volume is None else _s(volume.annual),
-                                 "current": row["costs"], "trials": []})
+                                 "current": row["costs"], "incomplete": row["incomplete"], "trials": []})
                 continue
             p = products[-1]
             percents = {h: _percent(row["differences"][h], p["current"][h]) for h in row["costs"]}
             effects = {h: _effect(row["differences"][h], p["volume"]) for h in row["costs"]}
             p["trials"].append({"name": row["name"], "scenario_id": row["scenario_id"], "after": row["costs"],
-                                "difference": row["differences"], "percent": percents, "effect": effects})
+                                "difference": row["differences"], "percent": percents, "effect": effects,
+                                # 未登録の部品を除いて足した費目（差・差%・年間効果額も一部未登録）
+                                "incomplete": sorted(set(row["incomplete"]) | set(p["incomplete"]))})
         return version, {
             "version_id": version.version_id,
             "names": names,

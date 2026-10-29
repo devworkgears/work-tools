@@ -258,13 +258,14 @@ function compareGrid(t, head) {
   const ignored = (h) => h === "AMORTIZATION" && t.ignore_amortization;
   const current = (h) => (h === head ? "cmp-grid-current" : "");
   const mark = (title) => el("span", { class: "cmp-grid-mark", title }, CMP_MARK);
-  const cell = (text, h, { sign = false, percent = false, known = true, excluded = null } = {}) => {
+  const cell = (text, h, { sign = false, percent = false, known = true, excluded = null, partial = null } = {}) => {
     if (ignored(h)) return el("td", { class: `num muted ${current(h)}` }, "—");
     let shown;
     if (text !== null && text !== undefined) shown = `${fmt(text, { sign })}${percent ? "%" : ""}`;
     else shown = percent && known ? "—" : "未登録";  // 差% は現行が 0 の時も出せない
     const cls = shown === "未登録" ? "missing" : sign ? signClass(text) : "";
-    return el("td", { class: `num ${cls} ${current(h)}` }, shown, excluded ? mark(excluded) : null);
+    const part = shown !== "未登録" && partial?.includes(h) ? el("span", { class: "tag warn", title: "一部未登録" }, "一部") : null;
+    return el("td", { class: `num ${cls} ${current(h)}` }, part, shown, excluded ? mark(excluded) : null);
   };
   const out = (p, tr, h) => p.current[h] === null || tr.after[h] === null;
   const label = (text, name) => el("td", { class: "cmp-grid-label" }, multi && name ? `${text}（${name}）` : text);
@@ -278,35 +279,38 @@ function compareGrid(t, head) {
         p.volume === null ? "年間台数 未登録" : `年間 ${fmt(p.volume)} 台`)),
       label("現行"),
       t.heads.map((h) => cell(p.current[h.id], h.id,
-        { excluded: p.trials.some((tr) => out(p, tr, h.id)) && "計から除く" }))));
+        { excluded: p.trials.some((tr) => out(p, tr, h.id)) && "計から除く", partial: p.incomplete }))));
     for (const tr of p.trials) {
       const ex = (h) => out(p, tr, h) && "計から除く";
+      const partial = tr.incomplete;
       rows.push(
-        el("tr", {}, label("変更後", tr.name), t.heads.map((h) => cell(tr.after[h.id], h.id, { excluded: ex(h.id) }))),
+        el("tr", {}, label("変更後", tr.name),
+          t.heads.map((h) => cell(tr.after[h.id], h.id, { excluded: ex(h.id), partial }))),
         el("tr", {}, label("差", tr.name),
-          t.heads.map((h) => cell(tr.difference[h.id], h.id, { sign: true, excluded: ex(h.id) }))),
+          t.heads.map((h) => cell(tr.difference[h.id], h.id, { sign: true, excluded: ex(h.id), partial }))),
         el("tr", {}, label("差%", tr.name), t.heads.map((h) => cell(tr.percent[h.id], h.id,
-          { sign: true, percent: true, known: tr.difference[h.id] !== null, excluded: ex(h.id) }))),
+          { sign: true, percent: true, known: tr.difference[h.id] !== null, excluded: ex(h.id), partial }))),
         el("tr", {}, label("年間効果額", tr.name), t.heads.map((h) => cell(tr.effect[h.id], h.id,
-          { sign: true, excluded: tr.effect[h.id] === null && "計から除く" }))));
+          { sign: true, excluded: tr.effect[h.id] === null && "計から除く", partial }))));
     }
   }
   t.names.forEach((n, i) => {
     const s = t.totals[n];
     const e = t.effect_totals[n];
     const ex = (h) => s[h].excluded > 0 && `未登録 ${s[h].excluded} 製品を除く`;
+    const partial = [...new Set(t.products.flatMap((p) => p.trials.filter((tr) => tr.name === n).flatMap((tr) => tr.incomplete)))];
     rows.push(
       el("tr", { class: `cmp-grid-total ${i === 0 ? "cmp-grid-first" : ""}` },
         el("th", { colspan: 2, rowspan: 5 }, multi ? `計（${n}）` : "計"), label("現行"),
-        t.heads.map((h) => cell(s[h.id].current, h.id, { excluded: ex(h.id) }))),
+        t.heads.map((h) => cell(s[h.id].current, h.id, { excluded: ex(h.id), partial }))),
       el("tr", { class: "cmp-grid-total" }, label("変更後"),
-        t.heads.map((h) => cell(s[h.id].after, h.id, { excluded: ex(h.id) }))),
+        t.heads.map((h) => cell(s[h.id].after, h.id, { excluded: ex(h.id), partial }))),
       el("tr", { class: "cmp-grid-total" }, label("差"),
-        t.heads.map((h) => cell(s[h.id].difference, h.id, { sign: true, excluded: ex(h.id) }))),
+        t.heads.map((h) => cell(s[h.id].difference, h.id, { sign: true, excluded: ex(h.id), partial }))),
       el("tr", { class: "cmp-grid-total" }, label("差%"), t.heads.map((h) => cell(s[h.id].percent, h.id,
-        { sign: true, percent: true, known: s[h.id].difference !== null, excluded: ex(h.id) }))),
+        { sign: true, percent: true, known: s[h.id].difference !== null, excluded: ex(h.id), partial }))),
       el("tr", { class: "cmp-grid-total" }, label("年間効果額"), t.heads.map((h) => cell(e[h.id].effect, h.id,
-        { sign: true, excluded: e[h.id].excluded > 0 && `未登録 ${e[h.id].excluded} 製品を除く` }))));
+        { sign: true, excluded: e[h.id].excluded > 0 && `未登録 ${e[h.id].excluded} 製品を除く`, partial }))));
   });
   const heads = ["品番", "名称", "", ...t.heads.map((h) => el("th", { class: `num ${current(h.id)}` }, h.label))];
   const shown = t.products.length + t.without_trial;
