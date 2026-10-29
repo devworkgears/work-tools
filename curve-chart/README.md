@@ -1,10 +1,10 @@
 # curve-chart
 
-Excel の曲線データから運転範囲の図を描く、ブラウザで動く道具。
+Draw operating-range charts from curve data in Excel, in the browser.
 
-## 使い方
+## Usage
 
 ```bash
-npm run serve   # → http://localhost:8000/index.html を開く
-npm run build   # → dist/ に単一 HTML を作る(ダブルクリックで開ける)
+npm run serve   # then open http://localhost:8000/index.html
+npm run build   # single-file HTML in dist/ (opens by double-click)
 ```
