@@ -227,6 +227,16 @@ class ImportFiles(TempDir):
         self.assertEqual([l.child for l in imp.version.lines], ["D"])
         self.assertEqual(imp.warnings[0].row, 2)
 
+    def test_self_rows_are_dropped_with_one_warning(self) -> None:
+        path = self.dir / "bom.csv"
+        write_csv(path, BOM_HEADERS, [["P", 0, "P", "", "", ""], ["P", 1, "C", 2, 1, ""], ["Q", 0, "Q", 1, "", ""]],
+                  "utf-8")
+        imp = VersionImport(Version("t"))
+        imp.add_file(path, ColumnMap("bom_line", BOM_HEADERS, BOM_MAP))
+        self.assertEqual([(l.parent, l.child) for l in imp.version.lines], [("P", "C")])
+        self.assertEqual(len(imp.warnings), 1)
+        self.assertIn("2 行外した", imp.warnings[0].message)
+
 
 class ColumnMapping(TempDir):
     def test_saved_map_applies_to_same_headers_only(self) -> None:

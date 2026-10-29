@@ -247,11 +247,18 @@ class VersionImport:
             names.append(table.name)
             self.version.source_name = ", ".join(names)
         add_row = getattr(self, f"_add_{column_map.table}")
+        self_rows = 0
         for number, record in column_map.records(table):
+            # 頂点の品目を「親＝子」の1行で出す構成表がある。構成ではないので、行ごとに警告せず数だけ残す
+            if column_map.table == "bom_line" and _is_self_row(record):
+                self_rows += 1
+                continue
             try:
                 add_row(table.name, number, record)
             except (ValueError, TypeError) as exc:
                 self._warn(table.name, number, f"行を読み飛ばした: {exc}")
+        if self_rows:
+            self._warn(table.name, None, f"親と子が同じ行（頂点の行）を {self_rows} 行外した")
 
     def _warn(self, file: str, row: int | None, message: str) -> None:
         self.warnings.append(ImportWarning(file, row, message))
@@ -292,6 +299,13 @@ class VersionImport:
         if kept is not None and kept != volume:
             self._warn(file, number, f"年間台数 {volume.product} が別の値で重複したので後の行を採った")
         self.version.add_volume(volume)
+
+
+def _is_self_row(record: Mapping[str, Any]) -> bool:
+    try:
+        return to_code(record.get("parent")) == to_code(record.get("child"))
+    except (ValueError, TypeError):
+        return False
 
 
 def _blank_to(value: Any, default: Any) -> Any:
