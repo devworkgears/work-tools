@@ -169,7 +169,8 @@ class BuildDist(unittest.TestCase):
         self.assertEqual(z.read("bom-cost/licenses/openpyxl/LICENCE.rst"), b"MIT openpyxl")
 
     def test_rebuild_replaces_the_zip(self) -> None:
-        self.build()
+        # Windows cannot replace a file that is still open.
+        self.build().close()
         self.build()
 
     def test_missing_or_duplicate_material_stops(self) -> None:
