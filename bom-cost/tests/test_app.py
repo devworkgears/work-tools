@@ -266,7 +266,7 @@ class TableMode(DemoDbCase):
         self.assertEqual(values[2][:4], ["V-110", "新しい製品", 1, 4650])
         self.assertEqual(len(values), 3)
         premises = dict(wb["前提"].iter_rows(values_only=True))
-        self.assertEqual(premises["計算に使った版"], "2026-10")
+        self.assertEqual(premises["計算に使った版"], "D-100 例のユニット（第1版）")
         self.assertEqual(premises["値の扱い"], "参考値")
 
     def test_export_rejects_unknown_column(self) -> None:

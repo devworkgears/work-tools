@@ -75,6 +75,13 @@ def error_response(status: int, message: str) -> Response:
     return _json_response({"error": message}, status)
 
 
+def version_label(version: Version) -> str:
+    """画面と同じ「D-123 名称（第2版）」の形。名称が空なら「D-123（第1版）」。"""
+    number = version.dev_number or version.version_id
+    name = f" {version.dev_name}" if version.dev_name else ""
+    return f"{number}{name}（第{version.revision}版）"
+
+
 def _s(value: Decimal | None) -> str | None:
     """指数表記にならない Decimal の文字列。未登録は None。"""
     return None if value is None else format(value, "f")
@@ -822,7 +829,7 @@ def _workbook(
         ("試算", scenario.name),
         ("モード", MODES[view.mode]),
         ("根の品番", view.root),
-        ("計算に使った版", view.version.version_id),
+        ("計算に使った版", version_label(view.version)),
         ("費目（ツリー・合計）", view.head.value),
         ("値の扱い", "参考値"),
         ("償却費", "計算から外す（型費は別枠）"),
