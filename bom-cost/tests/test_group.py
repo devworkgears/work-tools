@@ -1,9 +1,14 @@
 """製品群の API（製品の一覧・部品の検索・検討名ごとの替える・足す）。samples/ の CSV を取り込んだ DB で確かめる。ソケットは開かない。"""
 
+import tempfile
 import unittest
+from pathlib import Path
 
 from bomcost import BomLine, Item, Version
+from bomcost.api import Api
 from bomcost.app import static_response
+from bomcost.demo import build_demo
+from bomcost.store import Store
 from bomcost.group import Group, _Structure
 from test_screens import SAMPLES, EmptyDbCase, b64
 
@@ -152,14 +157,85 @@ class Changes(SampleDbCase):
                           400, "変更の種類")
         self.assertEqual([s.scenario_id for s in self.store.list_scenarios()], [sid])
 
-    def test_open_scenario_gets_or_creates(self) -> None:
-        body = {"version_id": "2026-10", "name": NAME, "product": "A-100"}
-        first = self.ok("POST", "/api/group/scenario", body=body)
-        self.assertTrue(first["created"])
-        again = self.ok("POST", "/api/group/scenario", body=body)
-        self.assertEqual((again["created"], again["scenario_id"]), (False, first["scenario_id"]))
-        # 開いた試算に、製品群からの変更が重なる
-        self.assertEqual(self.change("A-100", kind="ADD", part="F-600")["scenario_id"], first["scenario_id"])
+
+class Tree(SampleDbCase):
+    def tree(self, query: str) -> dict:
+        return self.ok("GET", "/api/group/tree", "version=2026-10" + query)
+
+    def test_version_structure_without_scenario(self) -> None:
+        r = self.tree("&product=A-100")
+        self.assertIsNone(r["scenario_id"])
+        self.assertEqual((r["view"]["mode"], r["node"]["code"]), ("bulk", "A-100"))
+        self.assertEqual([(c["code"], c["name"], c["quantity"], c["cost"], c["amount"], c["has_children"], c["role"])
+                          for c in r["children"]],
+                         [("B-200", "部品B", "2", "1600", "3200", False, ""),
+                          ("C-300", "部品C", "3", "500", "1500", False, "")])
+        # 検討名があっても試算が無ければ版の構成。見るだけで試算は作らない
+        self.assertIsNone(self.tree(f"&product=A-100&name={NAME}")["scenario_id"])
+        self.assertEqual(self.store.list_scenarios(), [])
+        # 子を持つ品目は code でさらに開ける
+        v = self.tree("&product=V-110")
+        self.assertTrue(next(c for c in v["children"] if c["code"] == "A-100")["has_children"])
+        self.assertEqual([c["code"] for c in self.tree("&product=V-110&code=A-100")["children"]], ["B-200", "C-300"])
+
+    def test_scenario_structure_matches_product_screen_tree(self) -> None:
+        sid = self.change("A-100", kind="REPLACE", part="C-300", replacement="F-600", quantity="3")["scenario_id"]
+        r = self.tree(f"&product=A-100&name={NAME}")
+        self.assertEqual((r["scenario_id"], r["view"]["mode"]), (sid, "diff"))
+        self.assertEqual([(c["code"], c["quantity"], c["role"]) for c in r["children"]],
+                         [("A-100", "1", "土台"), ("C-300", "-3", "抜く"), ("F-600", "3", "足す")])
+        same = self.ok("GET", f"/api/scenarios/{sid}/tree", "mode=diff&head=MATERIAL")
+        self.assertEqual((r["node"], r["children"]), (same["node"], same["children"]))
+        inner = self.tree(f"&product=A-100&name={NAME}&code=A-100")
+        self.assertEqual(inner["children"], self.ok("GET", f"/api/scenarios/{sid}/tree", "code=A-100")["children"])
+
+    def test_input_errors(self) -> None:
+        self.assert_error(self.call("GET", "/api/group/tree", "version=2026-10"), 400, "製品")
+        self.assert_error(self.call("GET", "/api/group/tree", "version=2026-10&product=ZZ"), 400, "ZZ")
+        self.assert_error(self.call("GET", "/api/group/tree", "version=2026-10&product=A-100&code=ZZ"), 400, "ZZ")
+
+
+class AddScenarios(SampleDbCase):
+    def add(self, **extra: str) -> dict:
+        return self.ok("POST", "/api/group/scenarios", body={"version_id": "2026-10", "name": NAME, **extra})
+
+    def test_creates_one_per_listed_product_once(self) -> None:
+        self.change("A-100", kind="ADD", part="F-600")
+        r = self.add()
+        self.assertEqual((r["created"], r["existing"], r["truncated"]), (2, 1, False))
+        self.assertEqual(sorted(s.base for s in self.store.list_scenarios()), ["A-100", "K-200", "V-110"])
+        again = self.add()
+        self.assertEqual((again["created"], again["existing"]), (0, 3))
+        # 作った試作品は製品の一覧と開いた構成に出る（変更はまだ無い）
+        rows = self.by_code()
+        self.assertEqual((rows["V-110"]["scenario_id"] is not None, rows["V-110"]["change_count"],
+                          rows["V-110"]["difference"]), (True, 0, "0"))
+        tree = self.ok("GET", "/api/group/tree", f"version=2026-10&product=V-110&name={NAME}")
+        self.assertEqual([(c["code"], c["role"]) for c in tree["children"]], [("V-110", "土台")])
+
+    def test_only_filtered_products_and_limit(self) -> None:
+        r = self.add(q="V-")
+        self.assertEqual((r["created"], [s.base for s in self.store.list_scenarios()]), (1, ["V-110"]))
+        cut = self.ok("POST", "/api/group/scenarios", body={"version_id": "2026-10", "name": "別", "limit": 2})
+        self.assertEqual((cut["created"], cut["truncated"]), (2, True))
+
+    def test_input_errors(self) -> None:
+        self.assert_error(self.call("POST", "/api/group/scenarios", body={"version_id": "2026-10"}), 400, "検討名")
+        self.assert_error(self.call("POST", "/api/group/scenarios", body={"name": NAME}), 400, "版")
+
+
+class DemoTree(unittest.TestCase):
+    def test_demo_a100_children(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "demo.sqlite"
+            build_demo(path)
+            with Store(path) as store:
+                raw = Api(store).handle("GET", "/api/group/tree", "version=2026-10&product=A-100", b"")
+                self.assertEqual(raw.status, 200, raw.body.decode("utf-8"))
+                r = raw.json()
+        self.assertEqual([(c["code"], c["quantity"], c["cost"], c["amount"], c["has_children"], c["own_missing"])
+                          for c in r["children"]],
+                         [("B-200", "2", "1600", "3200", False, False), ("C-300", "3", "500", "1500", False, False)])
 
 
 class ChangeList(SampleDbCase):

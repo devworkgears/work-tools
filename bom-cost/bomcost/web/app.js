@@ -218,6 +218,20 @@ function roleTag(role) {
   return el("span", { class: cls }, role);
 }
 
+// ツリーの行の印（一部未登録・二重計上の判定）。製品群の画面の行でも使う
+function nodeMarks(node, head) {
+  const marks = [];
+  if (node.cost !== null && node.incomplete) marks.push(el("span", { class: "tag warn" }, "一部未登録"));
+  if (node.verdict && node.verdict !== "判定できない") {
+    // 印の数は計算に効かない。比べた2つの値を並べ、何を見て推定したかを出す
+    const [own, compared] = node.verdict_values || [null, null];
+    const label = head === "MANUFACTURING" ? "4費目の合計" : "子の足し上げ";
+    marks.push(el("span", { class: "tag warn", title: "二重計上の判定（推定）" },
+      `${node.verdict}（登録 ${fmt(own)}／${label} ${fmt(compared)}）`));
+  }
+  return marks;
+}
+
 function nodeRow(node, path, depth) {
   const open = state.expanded.has(path);
   const twisty = node.has_children ? (open ? "▾" : "▸") : "";
@@ -226,15 +240,7 @@ function nodeRow(node, path, depth) {
   let costCell;
   if (node.cost === null) costCell = el("span", { class: "num missing" }, "未登録");
   else costCell = el("span", { class: "num" }, fmt(node.cost));
-  const marks = [];
-  if (node.cost !== null && node.incomplete) marks.push(el("span", { class: "tag warn" }, "一部未登録"));
-  if (node.verdict && node.verdict !== "判定できない") {
-    // 印の数は計算に効かない。比べた2つの値を並べ、何を見て推定したかを出す
-    const [own, compared] = node.verdict_values || [null, null];
-    const label = document.getElementById("head-select").value === "MANUFACTURING" ? "4費目の合計" : "子の足し上げ";
-    marks.push(el("span", { class: "tag warn", title: "二重計上の判定（推定）" },
-      `${node.verdict}（登録 ${fmt(own)}／${label} ${fmt(compared)}）`));
-  }
+  const marks = nodeMarks(node, document.getElementById("head-select").value);
   const row = el(
     "div",
     { class: "node", "data-path": path, style: `padding-left:${8 + depth * 18}px` },

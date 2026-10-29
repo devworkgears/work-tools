@@ -1,5 +1,5 @@
-// 製品群: 版の製品を並べ、部品の名前で絞った製品×部品の行を替える・製品ごとに足す。app.js・screens.js の関数を使う。
-// 製品ごとの試算は API が検討名で引く（無ければ最初の変更で作る）。原価は API の文字列をそのまま出す。
+// 製品群: 版の製品を並べ、製品の行の下に構成を開いて替える・抜く・足す、部品の名前で絞った製品×部品の行を替える。app.js・screens.js の関数を使う。
+// 製品ごとの試算（画面では試作品）は API が name で引く（「試作品を作る」でまとめて作るか、無ければ最初の変更で作る）。原価は API の文字列をそのまま出す。
 "use strict";
 
 function groupInputs() {
@@ -18,6 +18,8 @@ async function enterGroup() {
   options(document.getElementById("group-head"), state.meta.heads.map((h) => [h.id, h.label]));
   await loadGroupNames();
   await loadCodes(version.value);
+  groupOpen.clear();  // 開いたときは製品の行を全部閉じて並べる
+  groupScenario.clear();
   if (version.value) await drawGroup();
 }
 
@@ -30,53 +32,110 @@ async function loadGroupNames() {
 
 async function groupChange(product, change) {
   const g = groupInputs();
-  if (!g.name) throw new Error("検討名が空");
+  if (!g.name) throw new Error("試作品の名前が空");
   await api("POST", "/api/group/changes", { version_id: g.version, name: g.name, head: g.head, product, ...change });
   await loadLists();
   await loadGroupNames();
   await drawGroup();
-  if (layoutHome.parent) await reloadAll();
+}
+
+// 一覧に出ている製品（絞り込み後）のすべてに、その製品を土台にした試作品（試算）を作る。既にあれば作らない
+async function createTrials() {
+  const g = groupInputs();
+  if (!g.name) throw new Error("試作品の名前が空");
+  const r = await api("POST", "/api/group/scenarios", { version_id: g.version, name: g.name, head: g.head, q: g.q });
+  await loadLists();
+  await loadGroupNames();
+  await drawGroup();
+  showMessage(`試作品 作成 ${r.created} 件・既存 ${r.existing} 件${r.truncated ? "（上限）" : ""}`, "info");
 }
 
 async function groupUndo(scenarioId) {
   await api("POST", `/api/scenarios/${scenarioId}/undo`, {});
   await drawGroup();
-  if (layoutHome.parent) await reloadAll();
 }
 
-// 製品から見る画面（ツリー・選んだ品目・履歴）を、製品群の一覧の下へそのまま移して使う。画面を替えると元へ戻す
-const layoutHome = { parent: null, next: null };
+// 製品の行の下に開く構成。行の形は「製品から」のツリーと同じ（API が検討名の試算か版の構成を返す）。
+// 開いた所は道筋（製品/風船:品番#並び順/…）で持ち、表を取り直しても開いたままにする
+const groupOpen = new Set();
+const groupScenario = new Map(); // 製品 → 前に開いた時の試算の ID（無ければ null）
 
-function dockProduct(on) {
-  const layout = document.getElementById("main-layout");
-  if (on && !layoutHome.parent) {
-    layoutHome.parent = layout.parentNode;
-    layoutHome.next = layout.nextSibling;
-    document.getElementById("group-product").append(layout);
-  } else if (!on && layoutHome.parent) {
-    layoutHome.parent.insertBefore(layout, layoutHome.next);
-    layoutHome.parent = null;
+function toggleGroup(path) {
+  if (groupOpen.has(path)) groupOpen.delete(path);
+  else {
+    groupOpen.add(path);
+    // 製品の行を開いたら、試作品の「土台」の行も開いて部品まで見せる（版の構成なら当たる行が無く効かない）
+    if (!path.includes("/")) groupOpen.add(`${path}/:${path}#0`);
   }
-  layout.hidden = !on && screenState.screen !== "product";
+  guarded(drawGroup);
 }
 
-async function openGroupProduct(product) {
-  const g = groupInputs();
-  if (!g.name) throw new Error("検討名が空");
-  const r = await api("POST", "/api/group/scenario", { version_id: g.version, name: g.name, head: g.head, product });
-  await loadLists();
-  dockProduct(true);
-  await selectScenario(r.scenario_id);
-  await drawGroup();
-  document.getElementById("group-product").scrollIntoView();
+function groupTree(g, product, code) {
+  return api("GET", `/api/group/tree?${qs({ version: g.version, head: g.head, name: g.name, product, code })}`);
 }
 
-const showScreenBase = showScreen;
-showScreen = async (name) => { dockProduct(false); await showScreenBase(name); };
+// 試算ができると、版の構成は試算の根の直下の「土台」の行（並び順 0）の下へ1段下がる。開いていた所もそこへ移す
+function moveUnderBase(product) {
+  const prefix = `${product}/`;
+  const base = `${product}/:${product}#0`;
+  for (const path of [...groupOpen]) {
+    if (!path.startsWith(prefix)) continue;
+    groupOpen.delete(path);
+    groupOpen.add(`${base}/${path.slice(prefix.length)}`);
+  }
+  groupOpen.add(base);
+}
 
-// 開いたツリーで替えたら製品群の表も、製品群で替えたら開いたツリーも取り直す
-const afterChangeBase = afterChange;
-afterChange = async () => { await afterChangeBase(); if (layoutHome.parent) await drawGroup(); };
+function twistyCell(path, canOpen) {
+  return el("span", { class: "group-twisty", onclick: () => canOpen && toggleGroup(path) },
+    canOpen ? (groupOpen.has(path) ? "▼" : "▶") : "");
+}
+
+function groupNodeRow(ctx, node, path, depth, inRoot) {
+  const usage = node.usage && !String(node.usage).startsWith("-") && !/^0*(\.0*)?$/.test(node.usage) ? node.usage : "1";
+  const qty = el("input", { value: usage, inputmode: "decimal", size: 4 });
+  const repl = el("input", { list: "code-list-2", placeholder: "代わりの品番", size: 10 });
+  const addCode = el("input", { list: "code-list-2", value: node.code, size: 10 });
+  const send = (kind, extra = {}) =>
+    guarded(() => groupChange(ctx.product, { kind, part: node.code, quantity: qty.value, ...extra }));
+  const cost = el("span", { class: `num ${node.cost === null ? "missing" : ""}` },
+    `原価 ${fmt(node.cost)}・金額 ${fmt(node.amount)}`);
+  return el(
+    "tr",
+    { class: "group-node" },
+    el("td", { style: `padding-left:${8 + depth * 18}px` },
+      twistyCell(path, node.has_children), node.code,
+      node.quantity === null ? null : el("span", { class: "muted" }, ` ×${fmt(node.quantity)} `), roleTag(node.role)),
+    el("td", {}, node.name, " ", nodeMarks(node, ctx.g.head), ctx.withCost ? null : [" ", cost]),
+    ctx.withCost ? el("td", { colspan: 4, class: "num" }, cost) : null,
+    el("td", {},
+      "数量 ", qty,
+      el("button", { type: "button", onclick: () => send("REPLACE", { replacement: repl.value.trim() }) }, "替える"), repl,
+      el("button", { type: "button", onclick: () => send("REMOVE") }, "抜く"),
+      el("button", { type: "button", onclick: () => send("ADD", { part: addCode.value.trim() }) }, "足す"), addCode,
+      // 数量にするは試算の根の直下の行だけ（「製品から」と同じ）
+      inRoot && ctx.scenarioId ? el("button", { type: "button", onclick: () => send("SET_QUANTITY") }, "数量にする") : null),
+  );
+}
+
+async function addGroupChildren(rows, ctx, data, path, depth) {
+  for (const [index, child] of data.children.entries()) {
+    const childPath = `${path}/${child.balloon ?? ""}:${child.code}#${index}`;
+    rows.push(groupNodeRow(ctx, child, childPath, depth, path === ctx.product));
+    if (child.has_children && groupOpen.has(childPath)) {
+      await addGroupChildren(rows, ctx, await groupTree(ctx.g, ctx.product, child.code), childPath, depth + 1);
+    }
+  }
+}
+
+async function groupTreeRows(g, product, withCost) {
+  const root = await groupTree(g, product);
+  if (root.scenario_id !== null && groupScenario.get(product) === null) moveUnderBase(product);
+  groupScenario.set(product, root.scenario_id);
+  const rows = [];
+  await addGroupChildren(rows, { g, product, withCost, scenarioId: root.scenario_id }, root, product, 1);
+  return rows;
+}
 
 // 変えた所だけの表: 製品・変更・その変更での原価の前 → 後と差、最後に合計の差
 function changeListBlock(c) {
@@ -101,7 +160,7 @@ function changeListBlock(c) {
   ];
 }
 
-// 試作品をその場で登録する（手入力の版に入る）。登録した品番はすぐ替える・足すの候補に出る
+// 部品（試作の部品など）をその場で登録する（手入力の版に入る）。登録した品番はすぐ替える・足すの候補に出る
 function trialItemBlock() {
   const code = el("input", { size: 10 });
   const name = el("input", { size: 12 });
@@ -112,10 +171,10 @@ function trialItemBlock() {
       costs: Object.fromEntries(Object.entries(costs).map(([k, input]) => [k, input.value])),
     });
     await loadCodes(groupInputs().version);
-    showMessage(`試作品 ${code.value.trim()} を登録`, "info");
+    showMessage(`部品 ${code.value.trim()} を登録`, "info");
   };
   return el("details", {},
-    el("summary", {}, "試作品を登録"),
+    el("summary", {}, "部品を登録"),
     el("div", { class: "form-row" },
       el("label", {}, "品番 ", code), el("label", {}, "名称 ", name),
       state.meta.heads.map((h) => el("label", {}, `${h.label} `, costs[h.id])),
@@ -135,13 +194,13 @@ async function drawGroup() {
     g.name ? api("GET", `/api/group/changes?${qs({ version: g.version, name: g.name })}`) : null,
   ]);
   const withCost = Boolean(p.name);
-  const productRows = p.products.map((x) => {
+  const productRow = (x) => {
     const addPart = el("input", { list: "code-list-2", placeholder: "品番", size: 10 });
     const addQty = el("input", { value: "1", inputmode: "decimal", size: 4 });
     return el(
       "tr",
       {},
-      el("td", {}, x.code),
+      el("td", {}, twistyCell(x.code, x.has_structure || Boolean(x.scenario_id)), x.code),
       el("td", {}, x.name),
       withCost ? [
         numTd(x.current),
@@ -152,10 +211,14 @@ async function drawGroup() {
       el("td", {},
         addPart, addQty,
         el("button", { type: "button", onclick: () => guarded(() => groupChange(x.code, { kind: "ADD", part: addPart.value.trim(), quantity: addQty.value })) }, "足す"),
-        withCost && x.change_count ? el("button", { type: "button", onclick: () => guarded(() => groupUndo(x.scenario_id)) }, "取り消す") : null,
-        el("button", { type: "button", onclick: () => guarded(() => openGroupProduct(x.code)) }, "構成")),
+        withCost && x.change_count ? el("button", { type: "button", onclick: () => guarded(() => groupUndo(x.scenario_id)) }, "取り消す") : null),
     );
-  });
+  };
+  const productRows = [];
+  for (const x of p.products) {
+    productRows.push(productRow(x));
+    if (groupOpen.has(x.code)) productRows.push(...await groupTreeRows(g, x.code, withCost));
+  }
   const productHeads = ["品番", "名称", ...(withCost ? [numTh(`今（${p.head_label}）`), numTh("後"), numTh("差"), numTh("変更")] : []), ""];
   const blocks = [trialItemBlock(), ...(changes ? changeListBlock(changes) : [])];
   blocks.push(
@@ -186,13 +249,14 @@ async function drawGroup() {
     );
   }
   document.getElementById("group-body").replaceChildren(
-    el("p", { class: "premise-line" }, `前提: 版 ${p.version_id}・費目 ${p.head_label}・検討名 ${p.name || "—"}・参考値・償却費除外`),
+    el("p", { class: "premise-line" }, `前提: 版 ${p.version_id}・費目 ${p.head_label}・試作品 ${p.name || "—"}・参考値・償却費除外`),
     ...blocks,
   );
 }
 
 function wireGroup() {
   document.getElementById("group-show").addEventListener("click", () => guarded(drawGroup));
+  document.getElementById("group-create").addEventListener("click", () => guarded(createTrials));
   for (const id of ["group-name", "group-q", "group-part"]) {
     document.getElementById(id).addEventListener("keydown", (e) => e.key === "Enter" && guarded(drawGroup));
   }

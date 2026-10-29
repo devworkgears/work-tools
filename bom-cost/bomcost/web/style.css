@@ -81,6 +81,7 @@ select, input { border: 1px solid var(--line); border-radius: 4px; padding: 3px 
 .node .code { font-weight: 600; }
 .node .name { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .node .qty { color: var(--muted); white-space: nowrap; }
+.group-twisty { display: inline-block; width: 16px; text-align: center; color: var(--muted); cursor: pointer; }
 .tag { font-size: 11px; padding: 0 5px; border-radius: 3px; background: var(--accent-soft); color: var(--accent); white-space: nowrap; }
 .tag.remove { background: #e8f3ec; color: var(--good); }
 .tag.add { background: #fbe9e7; color: var(--bad); }

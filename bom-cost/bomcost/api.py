@@ -495,14 +495,17 @@ class Api:
 
     def tree(self, scenario_id: int, params: dict[str, str]) -> Response:
         """code（省けば根）の行と、その直下の子の行。ツリーは開いた所だけ取りに来る。"""
-        view = self._view(scenario_id, params)
-        code = params.get("code") or view.root
-        code = to_code(code)
+        return _json_response(self.tree_payload(self._view(scenario_id, params), params.get("code")))
+
+    @classmethod
+    def tree_payload(cls, view: _View, code: str | None) -> dict[str, Any]:
+        """見方 view での code（省けば根）の行と、その直下の子の行。"""
+        code = to_code(code or view.root)
         if code != view.root and code not in _known_codes(view.version):
             raise ApiError(400, f"品番 {code} は版 {view.version.version_id} に無い")
         node = view.node(None, None, code)
         children = [view.node(code, line) for line in view.lines(code)]
-        return _json_response({"view": self._view_info(view), "node": node, "children": children})
+        return {"view": cls._view_info(view), "node": node, "children": children}
 
     def item(self, scenario_id: int, params: dict[str, str]) -> Response:
         """選んだ品目の詳細: 費目5つ（登録値と計算値）・出どころ・二重計上の判定。"""

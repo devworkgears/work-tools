@@ -80,7 +80,8 @@ class Group:
             ("GET", r"/api/group/names", self.names),
             ("GET", r"/api/group/changes", self.changes),
             ("POST", r"/api/group/changes", self.add_change),
-            ("POST", r"/api/group/scenario", self.open_scenario),
+            ("GET", r"/api/group/tree", self.tree),
+            ("POST", r"/api/group/scenarios", self.add_scenarios),
         ]
 
     # 変更の一覧 --------------------------------------------------------------
@@ -220,6 +221,24 @@ class Group:
             }
         return result
 
+    def tree(self, params: dict[str, str]) -> Response:
+        """製品の構成の code（省けば根）の行と直下の子の行。行の形は /api/scenarios/<id>/tree と同じ。
+
+        検討名にその製品の試算があれば試算の構成（差分の見方・役割の印つき）、無ければ版の構成（一括の見方）。
+        """
+        version = self._version(params)
+        product = to_code(_text_field(params, "product", "製品の品番"))
+        _require_known(version, product, "製品")
+        head = _head(params.get("head"), CostHead.MATERIAL)
+        name = (params.get("name") or "").strip()
+        sid = self._scenarios(version, name).get(product) if name else None
+        if sid is not None:
+            view = _View(self.store.load_scenario(sid, version), "diff", head, False)
+        else:
+            scenario = Scenario(name, product, f"{product}#", version, head, self.store.load_scope_policy())
+            view = _View(scenario, "bulk", head, False)
+        return _json_response({"scenario_id": sid, **self.api.tree_payload(view, params.get("code"))})
+
     # 部品の検索 --------------------------------------------------------------
 
     def parts(self, params: dict[str, str]) -> Response:
@@ -272,30 +291,18 @@ class Group:
 
     # 替える・足す ------------------------------------------------------------
 
-    def _ensure(self, body: dict[str, Any]) -> tuple[int, bool, str]:
-        """検討名・製品・版の試算を引く。無ければ作る。返すのは (試算の ID, 作ったか, 製品の品番)。"""
+    def add_change(self, params: dict[str, str], body: dict[str, Any]) -> Response:
+        """検討名・製品の試算に変更を1件足す。試算が無ければ作り、変更が通らなければ作った試算を消す。"""
         name = _text_field(body, "name", "検討名")
         product = to_code(_text_field(body, "product", "製品の品番"))
         version = self._version(body, "version_id")
         _require_known(version, product, "製品")
         head = _head(body.get("head"), CostHead.MATERIAL)
         sid = self._scenarios(version, name).get(product)
-        if sid is not None:
-            return sid, False, product
-        scenario = Scenario(name, product, self._trial_code(version, name, product), version, head,
-                            self.store.load_scope_policy())
-        scenario.calculate()  # 構成の循環などをここで弾く
-        return self.store.save_scenario(scenario), True, product
-
-    def open_scenario(self, params: dict[str, str], body: dict[str, Any]) -> Response:
-        """製品の構成を製品群の画面で開くため、検討名・製品の試算を引く（無ければ作る）。"""
-        sid, created, product = self._ensure(body)
-        return _json_response({"scenario_id": sid, "created": created, "product": product})
-
-    def add_change(self, params: dict[str, str], body: dict[str, Any]) -> Response:
-        """検討名・製品の試算に変更を1件足す。試算が無ければ作り、変更が通らなければ作った試算を消す。"""
-        sid, created, product = self._ensure(body)
-        change ={k: body[k] for k in ("kind", "part", "replacement", "quantity") if k in body}
+        created = sid is None
+        if created:
+            sid = self.store.save_scenario(self._new_scenario(version, name, product, head))
+        change = {k: body[k] for k in ("kind", "part", "replacement", "quantity") if k in body}
         try:
             response = self.api.add_change(sid, {}, change)
         except Exception:
@@ -305,6 +312,35 @@ class Group:
         return _json_response(
             {"scenario_id": sid, "created": created, "product": product, "summary": response.json()}
         )
+
+    def add_scenarios(self, params: dict[str, str], body: dict[str, Any]) -> Response:
+        """検討名で、一覧（q・kind で絞った後・件数の上限も一覧と同じ）の製品ごとに試算をまとめて作る。既にあれば作らない。"""
+        name = _text_field(body, "name", "検討名")
+        version = self._version(body, "version_id")
+        head = _head(body.get("head"), CostHead.MATERIAL)
+        params = {k: str(body[k]) for k in ("q", "kind") if body.get(k) not in (None, "")}
+        _, _, codes = self._products(version, params)
+        limit = _limit(body.get("limit"), DEFAULT_PRODUCT_LIMIT)
+        existing = self._scenarios(version, name)
+        # 全部の計算が通ってから保存する（途中の製品で循環などが見つかったら1つも作らない）
+        new = [self._new_scenario(version, name, c, head) for c in codes[:limit] if c not in existing]
+        for scenario in new:
+            self.store.save_scenario(scenario)
+        return _json_response(
+            {
+                "version_id": version.version_id,
+                "name": name,
+                "created": len(new),
+                "existing": sum(1 for c in codes[:limit] if c in existing),
+                "truncated": len(codes) > limit,
+            }
+        )
+
+    def _new_scenario(self, version: Version, name: str, product: str, head: CostHead) -> Scenario:
+        scenario = Scenario(name, product, self._trial_code(version, name, product), version, head,
+                            self.store.load_scope_policy())
+        scenario.calculate()  # 構成の循環などをここで弾く
+        return scenario
 
     @staticmethod
     def _trial_code(version: Version, name: str, product: str) -> str:
