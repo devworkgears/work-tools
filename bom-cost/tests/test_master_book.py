@@ -44,8 +44,12 @@ class MasterBook(DemoDbCase):
         wb.save(path)
 
     def sheet_codes(self, path: Path, sheet: str) -> list:
+        # read_only は閉じるまでファイルを掴んだままで、Windows では後の上書き・削除が失敗する
         wb = load_openpyxl().load_workbook(path, read_only=True)
-        return [row[0] for row in wb[sheet].iter_rows(min_row=2, values_only=True)]
+        try:
+            return [row[0] for row in wb[sheet].iter_rows(min_row=2, values_only=True)]
+        finally:
+            wb.close()
 
     def manual(self) -> dict:
         return self.ok("GET", "/api/manual")
@@ -53,9 +57,12 @@ class MasterBook(DemoDbCase):
     def test_book_has_six_sheets_with_screen_headers_and_no_trials(self) -> None:
         path = self.write_book()
         wb = load_openpyxl().load_workbook(path, read_only=True)
-        self.assertEqual(wb.sheetnames, list(SHEETS))
-        self.assertEqual([c.value for c in next(wb["製品"].iter_rows(max_row=1))],
-                         ["品番", "名称", "材料費", "直接費", "間接費", "調整費", "製造原価"])
+        try:
+            self.assertEqual(wb.sheetnames, list(SHEETS))
+            self.assertEqual([c.value for c in next(wb["製品"].iter_rows(max_row=1))],
+                             ["品番", "名称", "材料費", "直接費", "間接費", "調整費", "製造原価"])
+        finally:
+            wb.close()
         m = self.manual()
         self.assertTrue(m["trials"])
         products = self.sheet_codes(path, "製品")
