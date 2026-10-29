@@ -413,6 +413,9 @@ class Api:
             [
                 {
                     "version_id": v.version_id,
+                    "dev_number": v.dev_number,
+                    "dev_name": v.dev_name,
+                    "revision": v.revision,
                     "imported_at": None if v.imported_at is None else v.imported_at.isoformat(),
                     "source_name": v.source_name,
                     "note": v.note,

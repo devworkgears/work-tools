@@ -16,6 +16,8 @@ M = CostHead.MATERIAL
 PRODUCT = "P"  # 区分の記号（架空）: 製品
 PART = "B"  # 部品
 DEMO_SCENARIO_NAME = "V-110 検討"
+DEMO_DEV_NUMBER = "D-100"  # 2つの版はこの開発番号の第1版・第2版
+DEMO_DEV_NAME = "例のユニット"
 
 
 def _items() -> list[Item]:
@@ -49,8 +51,9 @@ def demo_manual() -> Version:
 
 
 def demo_versions() -> list[Version]:
-    """取り込みの版 2026-10 と 2026-12（manual は重ねない）。"""
-    v10 = Version("2026-10", datetime(2026, 10, 1), "架空の例", "例の取り込み")
+    """取り込みの版 2026-10（第1版）と 2026-12（第2版）（manual は重ねない）。"""
+    v10 = Version("2026-10", datetime(2026, 10, 1), "架空の例", "例の取り込み", dev_number=DEMO_DEV_NUMBER,
+                  dev_name=DEMO_DEV_NAME, revision=1)
     v10.add_items(_items())
     v10.add_bom_lines(_bom_lines())
     v10.add_costs(
@@ -64,7 +67,8 @@ def demo_versions() -> list[Version]:
     )
     v10.add_volume(Volume("K-200", 5000))
 
-    v12 = Version("2026-12", datetime(2026, 12, 1), "架空の例", "例の取り込み")
+    v12 = Version("2026-12", datetime(2026, 12, 1), "架空の例", "例の取り込み", dev_number=DEMO_DEV_NUMBER,
+                  dev_name=DEMO_DEV_NAME, revision=2)
     v12.add_items(_items())
     v12.add_bom_lines(_bom_lines())
     v12.add_costs(

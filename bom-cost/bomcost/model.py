@@ -202,6 +202,9 @@ class Version:
     volumes: dict[str, Volume] = field(default_factory=dict)
     manual_overlaps: tuple[ManualOverlap, ...] = ()
     warnings: tuple[ImportWarning, ...] = ()  # 取り込みの検証の結果（保存と読み戻しで残す）
+    dev_number: str = ""  # 開発番号（空なら保存のときに版 ID を入れる）
+    dev_name: str = ""  # 開発番号の名称
+    revision: int = 1  # 同じ開発番号の中の第何版か
 
     def add_item(self, item: Item) -> None:
         self.items[item.code] = item
@@ -284,7 +287,8 @@ def overlay_manual(base: Version, manual: Version) -> Version:
     同じ品番は manual を採り、重なりを manual_overlaps に残す。構成は親品番の単位で差し替える
     （manual に子の行がある親は、取り込みの子の行を使わない）。manual の行の出どころは手入力になる。
     """
-    result = Version(base.version_id, base.imported_at, base.note, base.source_name)
+    result = Version(base.version_id, base.imported_at, base.note, base.source_name,
+                     dev_number=base.dev_number, dev_name=base.dev_name, revision=base.revision)
     overlaps: list[ManualOverlap] = []
 
     result.items = dict(base.items)

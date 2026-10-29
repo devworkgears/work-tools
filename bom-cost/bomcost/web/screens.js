@@ -31,11 +31,11 @@ function options(select, list, { value, blank } = {}) {
 }
 
 function versionOptions(select, opts = {}) {
-  options(select, state.versions.map((v) => [v.version_id, v.version_id]), opts);
+  options(select, state.versions.map((v) => [v.version_id, versionLabel(v)]), opts);
 }
 
 function scenarioOptions(select, opts = {}) {
-  options(select, state.scenarios.map((s) => [s.scenario_id, `${s.name}（${s.base} 土台・版 ${s.version_id}）`]), opts);
+  options(select, state.scenarios.map((s) => [s.scenario_id, `${s.name}（${s.base} 土台・${versionLabel(s.version_id)}）`]), opts);
 }
 
 async function loadCodes(versionId) {
@@ -174,7 +174,7 @@ async function drawPart() {
   const premise = el(
     "p",
     { class: "premise-line" },
-    `前提: 版 ${p.version_id}・費目 ${p.head_label}・台数 ${p.volumes.map((x) => `${x.product} ${x.kind}`).join(" / ") || "—"}・載せ方 ${p.allocation_label}`
+    `前提: ${versionLabel(p.version_id)}・費目 ${p.head_label}・台数 ${p.volumes.map((x) => `${x.product} ${x.kind}`).join(" / ") || "—"}・載せ方 ${p.allocation_label}`
       + `・構成 ${p.scenario_name ? `試算「${p.scenario_name}」` : "版"}・${p.reference}・償却費除外`,
   );
   const unknown = v.unknown_volume.length
@@ -248,7 +248,7 @@ async function drawChange() {
       ),
     ];
   };
-  const newLabel = c.scenario_name ? `試算「${c.scenario_name}」の ${c.new_product}（版 ${c.new_version}・土台＋変更）` : `${c.new_product}（版 ${c.new_version}）`;
+  const newLabel = c.scenario_name ? `試算「${c.scenario_name}」の ${c.new_product}（${versionLabel(c.new_version)}・土台＋変更）` : `${c.new_product}（${versionLabel(c.new_version)}）`;
   const oldPart = el("input", { list: "code-list-2", placeholder: "元の部品" });
   const newPart = el("input", { list: "code-list-2", placeholder: "新しい部品" });
   const oldBalloon = el("input", { placeholder: "元の風船番号（任意）", size: 10 });
@@ -277,7 +277,7 @@ async function drawChange() {
     )))
     : el("p", { class: "muted" }, "なし");
   document.getElementById("change-body").replaceChildren(
-    el("div", { class: "detail-title" }, `${c.old_product}（版 ${c.old_version}）→ ${newLabel}`),
+    el("div", { class: "detail-title" }, `${c.old_product}（${versionLabel(c.old_version)}）→ ${newLabel}`),
     el("p", { class: "muted" }, c.direct_only ? "比べ方: 直下の子" : "比べ方: 末端の部品・1台あたりの使用数"),
     ...section("1. 同じ品番", ["SAME"]),
     ...section("2. 対応表で対応", ["MAPPED"]),
@@ -342,7 +342,7 @@ async function renderManual(data) {
     ...m.items.filter((i) => i.role === "product").map((i) => el("tr", {},
       el("td", {}, i.code), el("td", {}, i.name), el("td", {}, "—"), el("td", {}, "—"), el("td", {}, "—"), ...itemCells(i))),
     ...m.trials.map((t) => el("tr", {},
-      el("td", {}, t.code), el("td", {}, t.name), el("td", {}, t.base), el("td", {}, t.trial_name), el("td", {}, t.version_id),
+      el("td", {}, t.code), el("td", {}, t.name), el("td", {}, t.base), el("td", {}, t.trial_name), el("td", {}, versionLabel(t.version_id)),
       m.heads.map(() => el("td", {}, "")), el("td", {}))),
   ];
   const productHeads = ["品番", "名称", "土台", "検討案", "版", ...m.heads.map((h) => numTh(h.label)), ""];
@@ -623,10 +623,27 @@ function drawPending() {
   ))));
 }
 
+// 開発番号の一番新しい版（無ければ undefined）
+function latestOfDevNumber(devNumber) {
+  return state.versions.filter((v) => v.dev_number === devNumber).sort((a, b) => b.revision - a.revision)[0];
+}
+
+// 既にある開発番号なら名称の欄に前の名称を入れる
+function fillDevName() {
+  const latest = latestOfDevNumber(document.getElementById("import-dev-number").value.trim());
+  const name = document.getElementById("import-dev-name");
+  if (latest) name.value = latest.dev_name || "";
+}
+
 async function runImport() {
   if (!screenState.pending.length) throw new Error("取り込む一覧が空");
+  const devNumber = document.getElementById("import-dev-number").value.trim();
+  if (!devNumber) throw new Error("開発番号が空");
+  const latest = latestOfDevNumber(devNumber);
+  if (latest && !confirm(`更新しますか？（第${latest.revision + 1}版になります）`)) return;
   const result = await api("POST", "/api/import", {
-    version_id: document.getElementById("import-version").value,
+    dev_number: devNumber,
+    dev_name: document.getElementById("import-dev-name").value,
     note: document.getElementById("import-note").value,
     files: screenState.pending.map((f) => ({ filename: f.filename, content: f.content, sheet: f.sheet, table: f.table, columns: f.columns })),
   });
@@ -635,7 +652,7 @@ async function runImport() {
   const c = result.counts;
   const box = document.getElementById("import-result");
   box.replaceChildren(
-    closableTitle(`版 ${result.version_id} を取り込みました: 品目 ${c.items}・構成行 ${c.lines}・原価 ${c.costs}・年間台数 ${c.volumes}`, () => box.replaceChildren()),
+    closableTitle(`${versionLabel(result)} を取り込みました: 品目 ${c.items}・構成行 ${c.lines}・原価 ${c.costs}・年間台数 ${c.volumes}`, () => box.replaceChildren()),
     warningList(result.warnings),
   );
   showImportTab("list");
@@ -674,7 +691,7 @@ function warningDetail() {
   if (!w || !state.versions.some((v) => v.version_id === w.version_id)) return null;
   const info = w.info;
   return el("div", {},
-    closableTitle(`版 ${info.version_id} の検証の結果`, () => { screenState.warningOpen = null; drawVersions(); }),
+    closableTitle(`${versionLabel(info)} の検証の結果`, () => { screenState.warningOpen = null; drawVersions(); }),
     info.used_by.length ? el("p", { class: "muted" }, `使っている試算: ${info.used_by.join("・")}`) : null,
     warningList(info.warnings));
 }
@@ -689,8 +706,10 @@ async function drawVersions() {
     await drawVersions();
   });
   box.replaceChildren(
-    table(["版", "取り込んだ日時", "元のファイル", "メモ", numTh("警告"), ""], state.versions.map((v) => el("tr", {},
-      el("td", {}, v.version_id),
+    table(["開発番号", "名称", "版", "取り込んだ日時", "元のファイル", "メモ", numTh("警告"), ""], state.versions.map((v) => el("tr", {},
+      el("td", {}, v.dev_number || v.version_id),
+      el("td", {}, v.dev_name || ""),
+      el("td", {}, `第${v.revision || 1}版`),
       el("td", {}, v.imported_at ? v.imported_at.replace("T", " ") : "—"),
       el("td", {}, v.source_name || "—"),
       noteCell(v),
@@ -701,11 +720,11 @@ async function drawVersions() {
           onclick: toggleWarnings(v.version_id),
         }, "警告を見る"),
         el("button", { type: "button", onclick: () => guarded(async () => {
-          if (!confirm(`版 ${v.version_id} を消しますか？（元に戻せません）`)) return;
+          if (!confirm(`${versionLabel(v)} を消しますか？（元に戻せません）`)) return;
           await api("DELETE", `/api/versions?${qs({ version: v.version_id })}`);
           await refreshLists();
           await drawVersions();
-          showMessage(`版 ${v.version_id} を消しました。`, "info");
+          showMessage(`${versionLabel(v)} を消しました。`, "info");
         }) }, "消す")),
     ))),
     warningDetail() ?? "",
@@ -735,6 +754,7 @@ function wireScreens() {
   document.getElementById("import-sheet").addEventListener("change", (e) => guarded(() => previewFile(e.target.value)));
   document.getElementById("import-table").addEventListener("change", drawMapping);
   document.getElementById("import-run").addEventListener("click", () => guarded(runImport));
+  document.getElementById("import-dev-number").addEventListener("change", fillDevName);
   document.querySelectorAll("#import-tabs button").forEach((b) => b.addEventListener("click", () => showImportTab(b.dataset.tab)));
 }
 

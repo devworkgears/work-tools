@@ -38,7 +38,10 @@ CREATE TABLE IF NOT EXISTS version (
     imported_at TEXT,
     source_name TEXT NOT NULL DEFAULT '',
     note TEXT NOT NULL DEFAULT '',
-    warnings TEXT
+    warnings TEXT,
+    dev_number TEXT,
+    dev_name TEXT NOT NULL DEFAULT '',
+    revision INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS item (
     version_id TEXT NOT NULL REFERENCES version(version_id) ON DELETE CASCADE,
@@ -152,6 +155,10 @@ CREATE TABLE IF NOT EXISTS change (
 
 # 後から change に足した列（古い DB は開いたときに足す。今ある行は NULL のまま）
 CHANGE_ADDED_COLUMNS: tuple[tuple[str, str], ...] = (("parent", "TEXT"), ("balloon", "TEXT"), ("batch", "INTEGER"))
+# 後から version に足した列。古い DB の版は開発番号＝版 ID・名称＝空・第1版にする
+VERSION_ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("dev_number", "TEXT"), ("dev_name", "TEXT NOT NULL DEFAULT ''"), ("revision", "INTEGER NOT NULL DEFAULT 1")
+)
 CHANGE_COLUMNS = (
     "scenario_id, sequence, recorded_at, kind, part, replacement, quantity, cost_before, cost_after, "
     "version_id, head, volume, allocation, parent, balloon, batch"
@@ -183,6 +190,9 @@ class VersionInfo:
     source_name: str
     note: str
     warning_count: int = 0  # 取り込みの検証の結果（警告）の件数
+    dev_number: str = ""
+    dev_name: str = ""
+    revision: int = 1
 
 
 @dataclass(frozen=True)
@@ -235,6 +245,11 @@ class Store:
         for column, sql_type in CHANGE_ADDED_COLUMNS:
             if column not in existing:
                 self._conn.execute(f"ALTER TABLE change ADD COLUMN {column} {sql_type}")
+        existing = {row[1] for row in self._conn.execute("PRAGMA table_info(version)")}
+        for column, sql_type in VERSION_ADDED_COLUMNS:
+            if column not in existing:
+                self._conn.execute(f"ALTER TABLE version ADD COLUMN {column} {sql_type}")
+        self._conn.execute("UPDATE version SET dev_number = version_id WHERE dev_number IS NULL OR dev_number = ''")
         self._conn.execute(
             "INSERT OR IGNORE INTO version (version_id, note) VALUES (?, ?)",
             (MANUAL_VERSION_ID, "手入力"),
@@ -272,19 +287,22 @@ class Store:
         ).fetchone()
         if exists and not replace:
             raise ValueError(f"版 {version.version_id} はもうある（入れ替えるなら replace=True）")
+        dev_number = version.dev_number or version.version_id
         with self._conn:
             if exists:
                 self._delete_rows(version.version_id)
                 self._conn.execute(
-                    "UPDATE version SET imported_at = ?, source_name = ?, note = ?, warnings = ? WHERE version_id = ?",
+                    "UPDATE version SET imported_at = ?, source_name = ?, note = ?, warnings = ?, "
+                    "dev_number = ?, dev_name = ?, revision = ? WHERE version_id = ?",
                     (_iso(version.imported_at), version.source_name, version.note, warnings_text,
-                     version.version_id),
+                     dev_number, version.dev_name, version.revision, version.version_id),
                 )
             else:
                 self._conn.execute(
-                    "INSERT INTO version (version_id, imported_at, source_name, note, warnings) VALUES (?, ?, ?, ?, ?)",
+                    "INSERT INTO version (version_id, imported_at, source_name, note, warnings, dev_number, dev_name, "
+                    "revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     (version.version_id, _iso(version.imported_at), version.source_name, version.note,
-                     warnings_text),
+                     warnings_text, dev_number, version.dev_name, version.revision),
                 )
             self._insert_rows(version.version_id, version)
 
@@ -307,11 +325,28 @@ class Store:
     def list_versions(self) -> list[VersionInfo]:
         """取り込みの版の一覧（manual は含めない）。取り込んだ日時の新しい順。"""
         rows = self._conn.execute(
-            "SELECT version_id, imported_at, source_name, note, warnings FROM version WHERE version_id <> ? "
-            "ORDER BY imported_at DESC, version_id DESC",
+            "SELECT version_id, imported_at, source_name, note, warnings, dev_number, dev_name, revision FROM version "
+            "WHERE version_id <> ? ORDER BY imported_at DESC, version_id DESC",
             (MANUAL_VERSION_ID,),
         ).fetchall()
-        return [VersionInfo(r[0], _time(r[1]), r[2], r[3], len(_warnings_from_json(r[4]))) for r in rows]
+        return [VersionInfo(r[0], _time(r[1]), r[2], r[3], len(_warnings_from_json(r[4])), r[5], r[6], r[7])
+                for r in rows]
+
+    def latest_revision(self, dev_number: str) -> VersionInfo | None:
+        """開発番号の一番新しい版（版の番号が最大のもの）。無ければ None。"""
+        found = [v for v in self.list_versions() if v.dev_number == dev_number]
+        return max(found, key=lambda v: v.revision) if found else None
+
+    def new_version_id(self, dev_number: str, revision: int) -> str:
+        """取り込みの版に振る版 ID（開発番号-r版の番号）。既にある ID・manual と重なれば後ろに番号を足す。"""
+        base = f"{dev_number}-r{revision}"
+        candidate, n = base, 1
+        while candidate == MANUAL_VERSION_ID or self._conn.execute(
+            "SELECT 1 FROM version WHERE version_id = ?", (candidate,)
+        ).fetchone():
+            n += 1
+            candidate = f"{base}-{n}"
+        return candidate
 
     def version_warnings(self, version_id: str) -> tuple[ImportWarning, ...]:
         """取り込みの検証の結果（保存した警告）。版が無ければ KeyError。"""
@@ -376,11 +411,14 @@ class Store:
 
     def _load_rows(self, version_id: str, source: Source) -> Version:
         head = self._conn.execute(
-            "SELECT imported_at, source_name, note, warnings FROM version WHERE version_id = ?", (version_id,)
+            "SELECT imported_at, source_name, note, warnings, dev_number, dev_name, revision FROM version "
+            "WHERE version_id = ?",
+            (version_id,),
         ).fetchone()
         if head is None:
             raise KeyError(f"版 {version_id} は無い")
-        v = Version(version_id, _time(head[0]), head[2], head[1], warnings=_warnings_from_json(head[3]))
+        v = Version(version_id, _time(head[0]), head[2], head[1], warnings=_warnings_from_json(head[3]),
+                    dev_number=head[4] or version_id, dev_name=head[5], revision=head[6])
         q = self._conn.execute
         for code, name, kind, lifecycle, has_children in q(
             "SELECT code, name, kind, lifecycle, has_children FROM item WHERE version_id = ? ORDER BY rowid",

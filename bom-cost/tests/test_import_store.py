@@ -2,6 +2,7 @@
 
 import csv
 import io
+import sqlite3
 import tempfile
 import unittest
 from datetime import datetime
@@ -493,6 +494,40 @@ class MissingColumns(unittest.TestCase):
         # 入れ替えると検証の結果も入れ替わる
         self.store.save_version(Version("2027-01", datetime(2027, 1, 6)), replace=True)
         self.assertEqual(self.store.load_version("2027-01").warnings, ())
+
+
+class DevNumberColumns(TempDir):
+    """版の表に後から足した開発番号・名称・版の番号。"""
+
+    def test_old_db_gets_columns(self) -> None:
+        path = self.dir / "old.sqlite"
+        conn = sqlite3.connect(path)
+        conn.execute("CREATE TABLE version (version_id TEXT PRIMARY KEY, imported_at TEXT, "
+                     "source_name TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '', warnings TEXT)")
+        conn.execute("INSERT INTO version (version_id, imported_at, note) VALUES ('2025-04', '2025-04-01T00:00:00', 'm')")
+        conn.commit()
+        conn.close()
+        with Store(path) as store:
+            [info] = store.list_versions()
+            self.assertEqual((info.version_id, info.dev_number, info.dev_name, info.revision, info.note),
+                             ("2025-04", "2025-04", "", 1, "m"))
+            v = store.load_version("2025-04")
+            self.assertEqual((v.dev_number, v.dev_name, v.revision), ("2025-04", "", 1))
+            self.assertEqual(store.latest_revision("2025-04").version_id, "2025-04")
+        with Store(path) as store:  # 2回目に開いても変わらない
+            self.assertEqual(store.list_versions()[0].dev_number, "2025-04")
+
+    def test_round_trip_and_new_id(self) -> None:
+        with Store(":memory:") as store:
+            store.save_version(Version("D-1-r1", datetime(2027, 1, 1), dev_number="D-1", dev_name="甲", revision=1))
+            store.save_version(Version("D-1-r2", datetime(2027, 1, 2), dev_number="D-1", dev_name="甲", revision=2))
+            store.save_version(Version("x", datetime(2027, 1, 3)))  # 開発番号を省くと版 ID
+            self.assertEqual(store.latest_revision("D-1").version_id, "D-1-r2")
+            self.assertIsNone(store.latest_revision("D-9"))
+            self.assertEqual(store.load_version("x").dev_number, "x")
+            self.assertEqual(store.load_version("D-1-r2").revision, 2)
+            self.assertEqual(store.new_version_id("D-1", 3), "D-1-r3")
+            self.assertEqual(store.new_version_id("D-1", 2), "D-1-r2-2")
 
 
 if __name__ == "__main__":

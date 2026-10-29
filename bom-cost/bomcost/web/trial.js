@@ -270,7 +270,7 @@ function changeListBlock(c) {
     el("td", {}, r.text),
     el("td", { class: "num" }, `${fmt(r.cost_before)} → ${fmt(r.cost_after)}`),
     el("td", { class: `num ${signClass(r.difference)}` }, fmt(r.difference, { sign: true, missing: "—" })),
-    el("td", { class: "muted" }, `${r.version_id}・${r.head_label}`),
+    el("td", { class: "muted" }, `${versionLabel(r.version_id)}・${r.head_label}`),
   ));
   const total = el("tr", {},
     el("th", { colspan: 4 }, `合計${c.missing_count ? `（未登録 ${c.missing_count} 件を除く）` : ""}`),
@@ -332,7 +332,7 @@ async function drawTrial() {
   }
   const heads = ["品番", "名称", numTh(`現行（${p.head_label}）`), numTh("変更後"), numTh("差"), numTh("変更"), ""];
   document.getElementById("trial-body").replaceChildren(
-    el("p", { class: "premise-line" }, `前提: 版 ${p.version_id}・検討案 ${p.name}・${p.head_label}・参考値`),
+    el("p", { class: "premise-line" }, `前提: ${versionLabel(p.version_id)}・検討案 ${p.name}・${p.head_label}・参考値`),
     el("h3", {}, `製品（${countText(p.count, p.products.length, p.truncated)}）`),
     table(heads, productRows.length ? productRows : [el("tr", {}, el("td", { colspan: heads.length, class: "muted" }, "なし"))]),
     ...(parts ? partBlock(parts) : []),

@@ -135,6 +135,34 @@ class Import(EmptyDbCase):
         self.assert_error(self.call("POST", "/api/import/preview", body={"filename": "a.csv", "content": "@@"}),
                           400, "base64")
 
+    def test_import_by_dev_number(self) -> None:
+        def run(dev_number: str, dev_name: str = "", text: str = ITEM_CSV) -> dict:
+            return self.ok("POST", "/api/import", body={
+                "dev_number": dev_number, "dev_name": dev_name,
+                "files": [csv_file("品目.csv", text, table="item", columns={"code": "品番", "name": "品名"})]})
+
+        first = run("D-123", "新型ユニット")
+        self.assertEqual((first["dev_number"], first["dev_name"], first["revision"]), ("D-123", "新型ユニット", 1))
+        # 同じ開発番号は第2版。名称が空なら前の版の名称
+        second = run("D-123", text="品番,品名,区分,登録者,備考\nR-1,製品R,P,例,\n")
+        self.assertEqual((second["dev_name"], second["revision"]), ("新型ユニット", 2))
+        self.assertNotEqual(first["version_id"], second["version_id"])
+        renamed = run("D-123", "改名ユニット")
+        self.assertEqual((renamed["dev_name"], renamed["revision"]), ("改名ユニット", 3))
+        other = run("D-200")
+        self.assertEqual((other["dev_name"], other["revision"]), ("", 1))
+
+        versions = {v["version_id"]: v for v in self.ok("GET", "/api/versions")}
+        self.assertEqual(len(versions), 4)
+        # 前の版は残り、中身もそのまま
+        self.assertEqual((versions[first["version_id"]]["revision"], versions[first["version_id"]]["dev_name"]),
+                         (1, "新型ユニット"))
+        items = {i["code"] for i in self.ok("GET", "/api/items", f"version={first['version_id']}")}
+        self.assertEqual(items, {"Q-1", "Q-2"})
+        info = self.ok("GET", "/api/versions/info", f"version={second['version_id']}")
+        self.assertEqual((info["dev_number"], info["revision"]), ("D-123", 2))
+        self.assert_error(self.call("POST", "/api/import", body={"dev_number": " ", "files": []}), 400, "開発番号が空")
+
     def test_conflict_is_a_warning(self) -> None:
         text = "親品番,風船番号,子品番,員数\nQ-1,1,Q-2,2\nQ-1,1,Q-2,3\n"
         body = {"version_id": "c1", "files": [csv_file("構成.csv", text, table="bom_line",

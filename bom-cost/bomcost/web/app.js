@@ -122,10 +122,18 @@ async function init() {
   await showScreen("group");  // 版があれば①対象製品
 }
 
+// 版の表示「D-123 新型ユニット（第2版）」。v は版 ID か版の行（開発番号・名称・版の番号を持つもの）
+function versionLabel(v) {
+  const row = v && typeof v === "object" ? v : state.versions.find((x) => x.version_id === v);
+  if (!row) return v ?? "";
+  const dev = row.dev_number || row.version_id;
+  return `${dev}${row.dev_name ? ` ${row.dev_name}` : ""}（第${row.revision || 1}版）`;
+}
+
 async function loadLists() {
   [state.versions, state.scenarios] = await Promise.all([api("GET", "/api/versions"), api("GET", "/api/scenarios")]);
   document.getElementById("version-select").replaceChildren(
-    ...state.versions.map((v) => el("option", { value: v.version_id }, v.version_id)),
+    ...state.versions.map((v) => el("option", { value: v.version_id }, versionLabel(v))),
   );
   document.getElementById("scenario-select").replaceChildren(
     ...state.scenarios.map((s) => el("option", { value: s.scenario_id }, s.name)),
@@ -188,7 +196,7 @@ async function renderTree() {
   const root = rootData.node;
   const rootPath = root.code;
   document.getElementById("left-note").textContent =
-    `${rootData.view.mode_label}・版 ${rootData.view.version_id}・${rootData.view.head_label}・参考値`;
+    `${rootData.view.mode_label}・${versionLabel(rootData.view.version_id)}・${rootData.view.head_label}・参考値`;
   if (!state.expanded.size) state.expanded.add(rootPath);
   const rows = [];
   rows.push(nodeRow(root, rootPath, 0));
@@ -375,7 +383,7 @@ async function afterChange() {
 // 履歴と結果 -------------------------------------------------------------
 
 function premiseText(r) {
-  const parts = [`版 ${r.version_id}`, r.head_label];
+  const parts = [versionLabel(r.version_id), r.head_label];
   if (r.volume !== null) parts.push(`台数 ${fmt(r.volume)}`);
   if (r.allocation) parts.push(`型費 ${r.allocation}`);
   return parts.join("・");
@@ -389,7 +397,7 @@ function renderHistory() {
       "li",
       { value: 0 },
       el("div", { class: "row" }, el("span", { class: "text" }, `土台 ${s.start.base}`), money(s.start.cost)),
-      el("div", { class: "premise" }, `前提: 版 ${s.scenario.version_id}・${s.scenario.head_label}`),
+      el("div", { class: "premise" }, `前提: ${versionLabel(s.scenario.version_id)}・${s.scenario.head_label}`),
     ),
     ...s.history.map((r) =>
       el(
@@ -425,18 +433,18 @@ function renderResult() {
       el("span", {}, el("span", { class: "label" }, "変更前"), el("span", { class: "big num" }, fmt(last.cost_before))),
       el("span", {}, el("span", { class: "label" }, "変更後"), el("span", { class: "big num" }, fmt(last.cost_after))),
       el("span", {}, el("span", { class: "label" }, "差額"), el("span", { class: `big num ${signClass(last.difference)}` }, fmt(last.difference, { sign: true }))),
-      el("span", { class: "muted" }, `前提: 版 ${last.version_id}・${last.head_label}`),
+      el("span", { class: "muted" }, `前提: ${versionLabel(last.version_id)}・${last.head_label}`),
     )
     : el("div", { class: "result-line muted" }, "変更なし");
   const now = el(
     "div",
     { class: "result-line" },
-    el("span", {}, el("span", { class: "label" }, `今の ${s.scenario.product_code}（版 ${p.version_id}）`), el("span", { class: "big num" }, fmt(s.total))),
+    el("span", {}, el("span", { class: "label" }, `今の ${s.scenario.product_code}（${versionLabel(p.version_id)}）`), el("span", { class: "big num" }, fmt(s.total))),
     s.volume ? el("span", { class: "muted" }, `年間台数 ${fmt(s.volume.annual)}（${s.volume.kind}）`) : null,
     s.missing.length ? el("span", { class: "missing" }, `未登録: ${s.missing.join("・")}`) : null,
     s.conflicts.length ? el("span", { class: "missing" }, `数量の食い違い ${s.conflicts.length} 件`) : null,
   );
-  box.replaceChildren(el("div", { class: "result-head" }, `変更の結果（${premise}・版 ${p.version_id}）`), line, now);
+  box.replaceChildren(el("div", { class: "result-head" }, `変更の結果（${premise}・${versionLabel(p.version_id)}）`), line, now);
 }
 
 // テーブル ---------------------------------------------------------------
@@ -447,7 +455,7 @@ async function renderTable() {
   }
   const t = state.table;
   document.getElementById("left-note").textContent =
-    `${t.view.mode_label}・版 ${t.view.version_id}・参考値・償却費除外`;
+    `${t.view.mode_label}・${versionLabel(t.view.version_id)}・参考値・償却費除外`;
   renderColumnChecks();
   drawGrid();
 }
@@ -584,7 +592,7 @@ async function openCompare() {
   const select = document.getElementById("compare-version");
   const current = state.summary.scenario.version_id;
   const others = state.versions.filter((v) => v.version_id !== current);
-  select.replaceChildren(...state.versions.map((v) => el("option", { value: v.version_id }, v.version_id)));
+  select.replaceChildren(...state.versions.map((v) => el("option", { value: v.version_id }, versionLabel(v))));
   select.value = (others[0] || state.versions[0]).version_id;
   dialog.showModal();
   await drawCompare();
@@ -596,7 +604,7 @@ async function drawCompare() {
   const table = el(
     "table",
     { class: "small" },
-    el("thead", {}, el("tr", {}, el("th", {}, "品目"), el("th", { class: "num" }, "数量"), el("th", { class: "num" }, `版 ${c.version_a}`), el("th", { class: "num" }, `版 ${c.version_b}`), el("th", { class: "num" }, "差"))),
+    el("thead", {}, el("tr", {}, el("th", {}, "品目"), el("th", { class: "num" }, "数量"), el("th", { class: "num" }, versionLabel(c.version_a)), el("th", { class: "num" }, versionLabel(c.version_b)), el("th", { class: "num" }, "差"))),
     el(
       "tbody",
       {},
@@ -665,7 +673,7 @@ function wire() {
   document.getElementById("version-select").addEventListener("change", (e) => guarded(async () => {
     state.summary = await api("PUT", `/api/scenarios/${state.scenarioId}`, { version_id: e.target.value });
     await reloadAll();
-    showMessage(`版 ${e.target.value} で再計算`, "info");
+    showMessage(`${versionLabel(e.target.value)} で再計算`, "info");
   }));
   document.getElementById("head-select").addEventListener("change", (e) => guarded(async () => {
     state.summary = await api("PUT", `/api/scenarios/${state.scenarioId}`, { head: e.target.value });
@@ -686,7 +694,7 @@ function wire() {
     const version = document.getElementById("version-select").value;
     const head = document.getElementById("head-select");
     document.getElementById("new-premise").textContent =
-      `版 ${version || "—"}・${head.options[head.selectedIndex]?.text || "材料費"}`;
+      `${version ? versionLabel(version) : "版 —"}・${head.options[head.selectedIndex]?.text || "材料費"}`;
     if (version) loadCodeList(version);
     dialog.showModal();
   });

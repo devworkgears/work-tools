@@ -40,7 +40,7 @@ async function drawGroup() {
     {},
     el("td", {}, t.name),
     el("td", { class: "num" }, String(t.count)),
-    el("td", {}, t.version_id),
+    el("td", {}, versionLabel(t.version_id)),
     el("td", {}, el("button", { type: "button", onclick: () => guarded(() => openTrial(t.version_id, t.name)) }, "構成変更で開く")),
   ));
   const none = (n) => [el("tr", {}, el("td", { colspan: n, class: "muted" }, "なし"))];

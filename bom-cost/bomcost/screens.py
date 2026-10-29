@@ -239,17 +239,30 @@ class Screens:
             ) from None
 
     def import_files(self, params: dict[str, str], body: dict[str, Any]) -> Response:
-        """何本かのファイルを1つの版として取り込み、使った列の対応づけを保存する。"""
-        version_id = _text_field(body, "version_id", "版の ID")
-        if version_id == MANUAL_VERSION_ID:
+        """何本かのファイルを1つの版として取り込み、使った列の対応づけを保存する。
+
+        開発番号（dev_number）と名称（dev_name）で取り込む。既にある開発番号なら版の番号を1つ上げた新しい版にし、
+        前の版は残す。名称が空なら前の版の名称を使う。版 ID は自動で振る。version_id を渡せばその ID で入れる
+        （開発番号を省けば開発番号も version_id にする）。
+        """
+        explicit_id = _optional_text(body, "version_id")
+        dev_number = _optional_text(body, "dev_number") or explicit_id
+        if not dev_number:
+            raise ApiError(400, "開発番号が空")
+        if explicit_id == MANUAL_VERSION_ID:
             raise ApiError(400, f"{MANUAL_VERSION_ID} は手入力の版の名前なので使えない")
-        if any(v.version_id == version_id for v in self.store.list_versions()):
-            raise ApiError(409, f"版 {version_id} はもうある（別の ID にするか、先に版を消す）")
+        if explicit_id and any(v.version_id == explicit_id for v in self.store.list_versions()):
+            raise ApiError(409, f"版 {explicit_id} はもうある（別の ID にするか、先に版を消す）")
         files = body.get("files")
         if not isinstance(files, list) or not files:
             raise ApiError(400, "取り込むファイル（files）が空")
+        previous = self.store.latest_revision(dev_number)
+        revision = 1 if previous is None else previous.revision + 1
+        dev_name = _optional_text(body, "dev_name") or ("" if previous is None else previous.dev_name)
+        version_id = explicit_id or self.store.new_version_id(dev_number, revision)
         imp = VersionImport(Version(version_id, imported_at=datetime.now().replace(microsecond=0),
-                                    note=_optional_text(body, "note")))
+                                    note=_optional_text(body, "note"), dev_number=dev_number, dev_name=dev_name,
+                                    revision=revision))
         maps: list[ColumnMap] = []
         used: list[dict[str, Any]] = []
         for f in files:
@@ -276,6 +289,9 @@ class Screens:
         return _json_response(
             {
                 "version_id": version_id,
+                "dev_number": dev_number,
+                "dev_name": dev_name,
+                "revision": revision,
                 "source_name": v.source_name,
                 "files": used,
                 "counts": {"items": len(v.items), "lines": len(v.lines), "costs": len(v.cost_rows),
@@ -294,6 +310,9 @@ class Screens:
         return _json_response(
             {
                 "version_id": info.version_id,
+                "dev_number": info.dev_number,
+                "dev_name": info.dev_name,
+                "revision": info.revision,
                 "imported_at": None if info.imported_at is None else info.imported_at.isoformat(),
                 "source_name": info.source_name,
                 "note": info.note,

@@ -79,6 +79,9 @@ class ListsAndTree(DemoDbCase):
     def test_versions_and_scenarios(self) -> None:
         versions = self.ok("GET", "/api/versions")
         self.assertEqual([v["version_id"] for v in versions], ["2026-12", "2026-10"])
+        # デモの2つの版は同じ開発番号の第2版・第1版
+        self.assertEqual({v["dev_number"] for v in versions}, {"D-100"})
+        self.assertEqual([v["revision"] for v in versions], [2, 1])
         scenarios = self.ok("GET", "/api/scenarios")
         self.assertEqual([(s["name"], s["base"], s["version_id"]) for s in scenarios],
                          [("V-110 検討", "A-100", "2026-10")])
