@@ -19,6 +19,8 @@ async function enterTrial() {
   versionOptions(version, { value: pending?.version || version.value || state.summary?.scenario.version_id });
   await loadTrialNames(pending?.name);
   await loadCodes(version.value);
+  trialChangedOnly.clear();
+  closeTrialLookup();
   trialOpen.clear();  // 開いたときは製品の行を全部閉じて並べる
   if (pending) await openSelectedTrial();
   else if (trialOpened && trialOpened.version === version.value) await drawTrial();
@@ -36,6 +38,8 @@ async function openSelectedTrial() {
   if (!version) throw new Error("版が空");
   if (!name) throw new Error("検討案を選ぶ");
   trialOpened = { version, name };
+  trialChangedOnly.clear();
+  closeTrialLookup();
   trialOpen.clear();
   trialChecked.clear();
   await drawTrial();
@@ -84,7 +88,78 @@ const trialChecked = new Set(); // 部品の絞り込みでチェックした「
 let trialSort = { key: null, desc: false }; // 構成の表の並べ替え（# は風船番号）
 
 const checkKey = (r) => `${r.product}\t${r.part}`;
-const trialCode = (code) => codeSpan(trialOpened?.version, code);
+const trialChangedOnly = new Map();
+let trialPartsLayout = "place";
+let trialLookupRequest = 0;
+
+const trialCode = (code) => el("button", { type: "button", class: "trial-code",
+  title: codeTitle(trialOpened?.version, code), onclick: () => guarded(() => openTrialLookup(code)) }, code);
+
+function closeTrialLookup() {
+  trialLookupRequest += 1;
+  document.getElementById("trial-lookup")?.remove();
+  document.getElementById("screen-trial").classList.remove("trial-with-lookup");
+}
+
+async function openTrialLookup(code) {
+  const request = ++trialLookupRequest;
+  const version = trialOpened.version;
+  const result = await api("GET", `/api/lookup?${qs({ version, q: code, brief: "1" })}`);
+  if (request !== trialLookupRequest) return;
+  const x = result.item;
+  if (!x) throw new Error("品番を選ぶ");
+  document.getElementById("trial-lookup")?.remove();
+  const panel = el("aside", { id: "trial-lookup", class: "trial-lookup", "aria-label": "品目の簡易照会" },
+    el("button", { type: "button", onclick: closeTrialLookup }, "閉じる"),
+    el("h3", {}, x.code), el("p", {}, x.name), el("p", {}, x.specification || "—"),
+    table(["費目", "値", "出どころ"], x.costs.map((c) => el("tr", {},
+      el("td", {}, c.label), numTd(c.value), el("td", {}, c.source_label)))),
+    el("button", { type: "button", onclick: () => guarded(async () => {
+      await showScreen("lookup");
+      document.getElementById("look-version").value = version;
+      await loadCodes(version);
+      await lookupCode(code);
+    }) }, "品目照会で開く"));
+  const screen = document.getElementById("screen-trial");
+  screen.classList.add("trial-with-lookup");
+  screen.append(panel);
+}
+
+async function trialReplaceCode(part, change) {
+  const t = trialOpened;
+  await api("POST", "/api/group/changes/by-code", {
+    version_id: t.version, name: t.name, trial: "1", head: TRIAL_HEAD, part, ...change,
+  });
+  trialChecked.clear();
+  await loadLists();
+  await drawTrial();
+}
+
+function toggleChangedOnly(product) {
+  if (trialChangedOnly.has(product)) {
+    for (const path of [...trialOpen]) if (path.startsWith(`${product}/`)) trialOpen.delete(path);
+    for (const path of trialChangedOnly.get(product)) trialOpen.add(path);
+    trialChangedOnly.delete(product);
+  } else {
+    trialChangedOnly.set(product, [...trialOpen].filter((path) => path.startsWith(`${product}/`)));
+  }
+  guarded(drawTrial);
+}
+
+async function openChangedPaths(ctx, data, path) {
+  let changed = false;
+  for (const { node, index } of sortedChildren(data.children)) {
+    const childPath = `${path}/${node.balloon ?? ""}:${node.code}#${index}`;
+    const own = rowChange(ctx.changes, node);
+    const below = node.has_children && !["REPLACE", "REMOVE"].includes(own?.kind)
+      && await openChangedPaths(ctx, await trialTree(ctx.t, ctx.product, node.code), childPath);
+    if (own || below) {
+      changed = true;
+      if (node.has_children) trialOpen.add(childPath);
+    }
+  }
+  return changed;
+}
 
 function toggleTrial(path) {
   if (trialOpen.has(path)) trialOpen.delete(path);
@@ -293,12 +368,13 @@ function trialNodeRow(ctx, node, path, depth) {
   let quantity = fmt(node.quantity, { missing: "" });
   if (change?.kind === "REPLACE") {
     code = [trialCode(node.code), "→", change.replacements.flatMap((r, i) => [i ? "・" : null, trialCode(r.code)])];
-    specification = `${specification}→${change.replacements.map((r) => change.replacement_specifications?.[r.code] || "").join("・")}`;
+    const after = change.replacements.map((r) => change.replacement_specifications?.[r.code] || "—").join("・");
+    if (specification || after.replace(/[—・]/g, "")) specification = `${specification || "—"}→${after}`;
     name = `${node.name}→${change.replacements.map((r) => r.name || r.code).join("・")}`;
   } else if (change?.kind === "SET_QUANTITY") {
     quantity = `${quantity}→${fmt(change.quantity)}`;
   } else if (change) {
-    code = [el("s", { title: codeTitle(trialOpened?.version, node.code) }, node.code), " (削除)"];
+    code = [el("s", {}, trialCode(node.code)), " (削除)"];
     name = el("s", {}, node.name);
   }
   return el(
@@ -402,6 +478,10 @@ function layoutSeg() {
 async function trialProductPanel(t, product, changes) {
   const root = await trialTree(t, product);
   const ctx = { t, product, changes };
+  if (trialChangedOnly.has(product)) {
+    for (const path of [...trialOpen]) if (path.startsWith(`${product}/`)) trialOpen.delete(path);
+    await openChangedPaths(ctx, root, product);
+  }
   const rows = [];
   const pair = trialLayout === "pair";
   await addTrialChildren(rows, ctx, root, product, 0, pair ? trialPairRows : trialNodeRow);
@@ -421,11 +501,35 @@ async function trialProductPanel(t, product, changes) {
       el("div", { class: "trial-changes-head" }, "この製品の変更"),
       el("table", { class: "small" }, el("tbody", {},
         changeRows.length ? changeRows : el("tr", {}, el("td", { colspan: 3, class: "muted" }, "なし")), addRow))),
-    layoutSeg(),
+    el("div", { class: "trial-structure-tools" }, layoutSeg(),
+      el("button", { type: "button", "aria-pressed": String(trialChangedOnly.has(product)),
+        onclick: () => toggleChangedOnly(product) }, "変更した所だけ")),
     el("div", { class: "table-scroll" }, structure)));
 }
 
+function partLayoutSeg() {
+  return el("div", { class: "seg trial-parts-layout" },
+    ...[["place", "場所ごと"], ["code", "品番ごと"]].map(([value, label]) => el("button", {
+      type: "button", class: trialPartsLayout === value ? "on" : "",
+      onclick: () => { trialPartsLayout = value; guarded(drawTrial); },
+    }, label)));
+}
+
+function partCodeBlock(parts) {
+  const rows = parts.rows.map((r) => el("tr", {},
+    el("td", {}, trialCode(r.part)), el("td", {}, r.part_name), el("td", {}, r.part_specification),
+    numTd(String(r.product_count)), numTd(String(r.place_count)),
+    el("td", {}, r.replaced_by.join("・") || "—"),
+    el("td", {}, changeButton(null, () => [bulkReplaceOp()], {
+      label: "全部の場所を置換", send: (change) => trialReplaceCode(r.part, change),
+    }))));
+  return [el("h3", {}, `部品「${parts.part}」（${parts.rows.length} 件${parts.truncated ? "（上限）" : ""}）`),
+    partLayoutSeg(), table(["品番", "名称", "記号・寸法", "製品数", "場所数", "置換先", ""],
+      rows.length ? rows : [el("tr", {}, el("td", { colspan: 7 }, "なし"))])];
+}
+
 function partBlock(parts) {
+  if (trialPartsLayout === "code") return partCodeBlock(parts);
   const all = el("input", { type: "checkbox", title: "全部",
     checked: parts.rows.length > 0 && parts.rows.every((r) => trialChecked.has(checkKey(r))) });
   const boxes = parts.rows.map((r) => {
@@ -452,6 +556,7 @@ function partBlock(parts) {
     changeButton(null, () => [bulkReplaceOp()], { label: "選んだ所を置換", send: (change) => trialBulk(parts.rows, change) })));
   return [
     el("h3", {}, `部品「${parts.part}」（${parts.rows.length} 件${parts.truncated ? "（上限）" : ""}）`),
+    partLayoutSeg(),
     table([el("th", {}, all), "製品", "部品", "名称", "記号・寸法", numTh("使用数（個/台）"), "置換先", ""],
       partRows.length ? [...partRows, bulk] : [el("tr", {}, el("td", { colspan: 8, class: "muted" }, "なし"))]),
   ];
@@ -464,7 +569,7 @@ async function drawTrial() {
   const base = { version: t.version, name: t.name, trial: "1" };
   const [p, parts, changes] = await Promise.all([
     api("GET", `/api/group/products?${qs({ ...base, head: TRIAL_HEAD })}`),
-    part ? api("GET", `/api/group/parts?${qs({ ...base, part })}`) : null,
+    part ? api("GET", `/api/group/parts${trialPartsLayout === "code" ? "/by-code" : ""}?${qs({ ...base, part })}`) : null,
     api("GET", `/api/group/changes?${qs({ version: t.version, name: t.name, head: TRIAL_HEAD })}`),
   ]);
   trialForm = null;  // 表を描き直すと開いていた欄は消える

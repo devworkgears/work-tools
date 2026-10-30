@@ -122,6 +122,8 @@ class Group:
         return [
             ("GET", r"/api/group/products", self.products),
             ("GET", r"/api/group/parts", self.parts),
+            ("GET", r"/api/group/parts/by-code", self.parts_by_code),
+            ("POST", r"/api/group/changes/by-code", self.replace_code),
             ("GET", r"/api/group/names", self.names),
             ("GET", r"/api/group/trials", self.trials),
             ("GET", r"/api/group/changes", self.changes),
@@ -522,6 +524,48 @@ class Group:
         return _json_response(
             {"version_id": version.version_id, "part": needle, "limit": limit, "truncated": truncated, "rows": rows}
         )
+
+    def parts_by_code(self, params: dict[str, str]) -> Response:
+        """部品を品番ごとに集計する。場所別の表示上限は適用しない。"""
+        version = self._version(params)
+        needle = _text_field(params, "part", "部品")
+        structure, _, products = self._products(version, params)
+        products = self._trial_only(version, params, products)
+        scenarios = self._scenarios(version, (params.get("name") or "").strip())
+        grouped: dict[str, dict[str, Any]] = {}
+        for product in products:
+            replacements: dict[str, set[str]] = {}
+            if product in scenarios:
+                for change in self.store.load_scenario(scenarios[product], version).changes:
+                    if change.kind is ChangeKind.REPLACE and change.replacement:
+                        replacements.setdefault(change.part, set()).add(change.replacement)
+            for part in structure.usage(product):
+                if part == product or not _matches((part, self._name(version, part)), needle):
+                    continue
+                row = grouped.setdefault(part, {
+                    "part": part, "part_name": self._name(version, part),
+                    "part_specification": version.items[part].specification if part in version.items else "",
+                    "product_count": 0, "place_count": 0, "replaced_by": [],
+                })
+                row["product_count"] += 1
+                row["place_count"] += len(_places(version, structure, product, part))
+                row["replaced_by"] = sorted(set(row["replaced_by"]) | replacements.get(part, set()))
+        rows = sorted(grouped.values(), key=lambda r: (not _code_starts(r["part"], needle), r["part"]))
+        limit = _limit(params.get("limit"), DEFAULT_ROW_LIMIT)
+        return _json_response({"version_id": version.version_id, "part": needle,
+                               "rows": rows[:limit], "count": len(rows), "truncated": len(rows) > limit})
+
+    def replace_code(self, params: dict[str, str], body: dict[str, Any]) -> Response:
+        """対象製品内の指定品番の全場所を、既存の一括置換で検証して保存する。"""
+        version = self._version(body, "version_id")
+        part = to_code(_text_field(body, "part", "部品"))
+        _require_known(version, part, "部品")
+        scope = {k: str(body[k]) for k in ("name", "trial", "q", "kind") if k in body}
+        structure, _, products = self._products(version, scope)
+        products = self._trial_only(version, scope, products)
+        items = [{"product": product, "part": part} for product in products
+                 if product != part and part in structure.usage(product)]
+        return self.add_changes(params, {**body, "items": items})
 
     def names(self, params: dict[str, str]) -> Response:
         """版を使う試算の検討名（重複なし・作った順）。"""

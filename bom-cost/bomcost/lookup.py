@@ -59,21 +59,23 @@ class Lookup:
                 })
             code = hits[0]
         return _json_response({"version_id": version_id, "q": needle, "candidates": [], "truncated": False,
-                               "item": self.item(version, code)})
+                               "item": self.item(version, code, brief=params.get("brief") == "1")})
 
-    def item(self, version: Version, code: str) -> dict[str, Any]:
+    def item(self, version: Version, code: str, brief: bool = False) -> dict[str, Any]:
         """照会の中身（基本・原価・使われ方・構成・履歴）。version はマスタ登録を敷いた版。"""
         raw = self.store.load_version(version.version_id, with_manual=False)
         layers = (("bom", raw), ("dev", self.store.load_manual(version.dev_number)), ("common", self.store.load_manual()))
+        basics = {"code": code, "name": _name(version, code),
+                  "specification": _specification(version, code), "costs": _costs(code, layers)}
+        if brief:
+            return basics
         structure = _Structure(version)
         item = version.items.get(code)
         item_source = next((key for key, layer in layers if code in layer.items), None)
         entries = self.store.bom_entries([code])
         product_kind = Group.product_kind(version, structure)
         return {
-            "code": code,
-            "name": _name(version, code),
-            "specification": _specification(version, code),
+            **basics,
             "kind": "" if item is None else item.kind,
             "lifecycle": "" if item is None else item.lifecycle,
             "is_product": code in Group.product_codes(version, structure, product_kind),
@@ -81,7 +83,6 @@ class Lookup:
             "item_source": item_source,
             "item_source_label": None if item_source is None else SOURCES[item_source],
             "entries": [{"dev_number": d, "revision": r} for d, r in entries.get(code, [])],
-            "costs": _costs(code, layers),
             "used_in": _used_in(version, structure, code, product_kind),
             "structure": _tree(version, code),
             "revisions": self._revisions(version, code),

@@ -290,3 +290,12 @@ table.cmp-grid tr.cmp-grid-total th { font-weight: 600; color: var(--text); }
 .look-src-bom { color: var(--text); }
 .look-src-dev, .look-src-common { color: var(--accent); }
 tr.look-current td { background: var(--accent-soft); }
+
+/* 照会を開いても変更欄を覆わず、入力中の DOM を維持する。 */
+#screen-trial.trial-with-lookup:not([hidden]) { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 12px; align-items: start; }
+#screen-trial > .panel { min-width: 0; }
+.trial-lookup { position: sticky; top: 12px; max-height: calc(100vh - 24px); overflow: auto; padding: 12px; background: var(--panel, white); border: 1px solid #ccc; border-radius: 6px; }
+.trial-code { border: 0; background: transparent; color: inherit; padding: 0; text-decoration: underline; cursor: pointer; font: inherit; }
+.trial-structure-tools { display: flex; align-items: center; gap: 12px; }
+.trial-structure-tools button[aria-pressed="true"] { background: #dceafa; }
+.trial-parts-layout { margin-bottom: 8px; }
