@@ -1,6 +1,7 @@
 """記号・寸法の移行・取込・登録・照会。データはすべて架空。"""
 
 import io
+from contextlib import closing
 import sqlite3
 import tempfile
 import unittest
@@ -25,7 +26,7 @@ class ItemMigration(unittest.TestCase):
     def test_old_database_adds_empty_column_and_preserves_other_tables(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "old.sqlite"
-            with sqlite3.connect(path) as db:
+            with closing(sqlite3.connect(path)) as db, db:
                 db.executescript(SCHEMA.replace("    specification TEXT NOT NULL DEFAULT '',\n", ""))
                 db.execute("INSERT INTO version (version_id, dev_number) VALUES ('v1', 'D-1')")
                 db.execute("INSERT INTO item VALUES ('v1', 'P-1', '部品', 'B', '', 0)")
@@ -37,7 +38,7 @@ class ItemMigration(unittest.TestCase):
                     version.add_item(Item("P-2", "部品", specification="M6 × 20"))
                     store.save_version(version, replace=True)
                     self.assertEqual(store.load_version("v1").items["P-2"].specification, "M6 × 20")
-            with sqlite3.connect(path) as db:
+            with closing(sqlite3.connect(path)) as db, db:
                 self.assertEqual(dict(db.execute("SELECT name, sql FROM sqlite_master WHERE type='table' AND name != 'item'")), before)
                 columns = {r[1]: r for r in db.execute("PRAGMA table_info(item)")}
                 self.assertEqual(len(columns), 7)
