@@ -292,6 +292,7 @@ class _View:
         return {
             "code": code,
             "name": self.name(code),
+            "specification": self.version.items[code].specification if code in self.version.items else "",
             "kind": "" if item is None else item.kind,
             "parent": parent,
             "balloon": None if line is None else line.balloon,
@@ -320,6 +321,7 @@ class _View:
                 "balloon": "" if line is None or line.balloon is None else line.balloon,
                 "code": code,
                 "name": self.name(code),
+                "specification": self.version.items[code].specification if code in self.version.items else "",
                 "quantity": _s(Decimal(1) if line is None else line.quantity),
                 "usage": _s(usage),
                 "role": self.role(parent, line),

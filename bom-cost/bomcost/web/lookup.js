@@ -36,7 +36,7 @@ async function drawLookup() {
   if (!r.item) {
     body.replaceChildren(
       el("h3", {}, `候補（${r.candidates.length}${r.truncated ? "+" : ""} 件）`),
-      table(["品番", "名称"], r.candidates.map((c) => el("tr", {}, el("td", {}, lookLink(c.code)), el("td", {}, c.name)))),
+      table(["品番", "名称", "記号・寸法", numTh("材料費"), numTh("製造原価")], r.candidates.map((c) => el("tr", {}, el("td", {}, lookLink(c.code)), el("td", {}, c.name), el("td", {}, c.specification), numTd(c.material), numTd(c.manufacturing)))),
     );
     return;
   }
@@ -59,6 +59,7 @@ function lookBasics(x) {
       "dl", { class: "kv" },
       el("dt", {}, "品番"), el("dd", {}, codeSpan(lookVersion(), x.code), x.in_bom ? null : el("span", { class: "tag warn look-only" }, "登録のみ")),
       el("dt", {}, "名称"), el("dd", {}, x.name || "—"),
+      el("dt", {}, "記号・寸法"), el("dd", {}, x.specification || "—"),
       el("dt", {}, "区分"), el("dd", {}, [x.kind, x.is_product ? "製品" : null].filter(Boolean).join("・") || "—"),
       el("dt", {}, "品目"), el("dd", {}, x.item_source_label || "—"),
       el("dt", {}, "BOM 初出"), el("dd", {}, entries),
@@ -86,14 +87,14 @@ function lookUsedIn(x) {
   const rows = x.used_in.map((u) => el(
     "tr", {},
     el("td", {}, lookLink(u.product)),
-    el("td", {}, u.product_name),
+    el("td", {}, u.product_name), el("td", {}, u.specification),
     numTd(u.quantity_per_unit),
     el("td", {}, u.parents.map((p) => el("span", { class: "look-parent" }, lookLink(p.code), ` ×${fmt(p.quantity)}`))),
   ));
   return el(
     "section", { class: "look-section" },
     el("h3", {}, `使われ方（${x.used_in.length} 製品）`),
-    table(["製品", "名称", numTh("個/台"), "直の親"], rows.length ? rows : noneRow(4)),
+    table(["製品", "名称", "記号・寸法", numTh("個/台"), "直の親"], rows.length ? rows : noneRow(5)),
   );
 }
 
@@ -102,14 +103,14 @@ function lookStructure(x) {
   const rows = x.structure.map((s) => el(
     "tr", {},
     el("td", { class: "look-indent", style: `padding-left:${6 + (s.level - 1) * 18}px` }, lookLink(s.code)),
-    el("td", {}, s.name),
+    el("td", {}, s.name), el("td", {}, s.specification),
     numTd(s.quantity),
     numTd(s.usage),
   ));
   return el(
     "section", { class: "look-section" },
     el("h3", {}, "構成"),
-    table(["品番", "名称", numTh("員数"), numTh(`個/${x.code}`)], rows),
+    table(["品番", "名称", "記号・寸法", numTh("員数"), numTh(`個/${x.code}`)], rows),
   );
 }
 

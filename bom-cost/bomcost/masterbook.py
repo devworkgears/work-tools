@@ -27,8 +27,8 @@ PART_MAP = "部品の対応表"
 
 HEAD_LABELS = tuple(h.value for h in HEADS)
 SHEETS: dict[str, tuple[str, ...]] = {
-    PRODUCT: ("品番", "名称", *HEAD_LABELS),
-    PART: ("品番", "名称", "区分", *HEAD_LABELS),
+    PRODUCT: ("品番", "名称", *HEAD_LABELS, "記号・寸法"),
+    PART: ("品番", "名称", "区分", *HEAD_LABELS, "記号・寸法"),
     VOLUME: ("製品の品番", "年間台数"),
     MOLD: ("部品の品番", "型費（円）", "償却年数"),
     REUSE: ("部品", "流用先の製品", "使用数（個/台）", "置き換わる古い部品"),
@@ -115,11 +115,12 @@ def book_bytes(store: Store, product_kind: str, dev_number: str = "") -> bytes:
         item = manual.items.get(code)
         name = "" if item is None else item.name
         kind = "" if item is None else item.kind
+        specification = "" if item is None else item.specification
         costs = [manual.cost_value(code, h) for h in HEADS]
         if kind == product_kind:
-            products.append([code, name, *costs])
+            products.append([code, name, *costs, specification])
         else:
-            parts.append([code, name, kind, *costs])
+            parts.append([code, name, kind, *costs, specification])
     rows: dict[str, list[list[Any]]] = {
         PRODUCT: products,
         PART: parts,
@@ -276,10 +277,11 @@ def _plan_row(
         new_cost = (CostRow(code, values, mbom_code=None if old_cost is None else old_cost.mbom_code)
                     if any(x is not None for x in values.values()) else None)
         item = Item(code, name, kind, "" if kept is None else kept.lifecycle,
-                    False if kept is None else kept.has_children)
+                    False if kept is None else kept.has_children, specification=_text(v.get("記号・寸法")))
         if kept is None and old_cost is None:
             status = "added"
         elif (kept is not None and kept.name == name and kept.kind == kind
+              and kept.specification == item.specification
               and all(manual.cost_value(code, h) == heads[h] for h in HEADS)):
             status = "unchanged"
         else:

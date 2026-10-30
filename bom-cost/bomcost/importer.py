@@ -30,6 +30,7 @@ TABLE_FIELDS: dict[str, tuple[FieldSpec, ...]] = {
     "item": (
         FieldSpec("code", "品番", True),
         FieldSpec("name", "名称", True),
+        FieldSpec("specification", "記号・寸法", False),
         FieldSpec("kind", "区分", False),
         FieldSpec("lifecycle", "状態", False),
         FieldSpec("has_children", "子部品の有無", False),
@@ -267,6 +268,7 @@ class VersionImport:
         item = Item(
             r["code"],
             r.get("name"),
+            specification=r.get("specification"),
             kind=r.get("kind"),
             lifecycle=r.get("lifecycle"),
             has_children=_blank_to(r.get("has_children"), 0),

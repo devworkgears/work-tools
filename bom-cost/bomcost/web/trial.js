@@ -289,9 +289,11 @@ function trialNodeRow(ctx, node, path, depth) {
   const change = rowChange(ctx.changes, node);
   let code = trialCode(node.code);
   let name = node.name;
+  let specification = node.specification || "";
   let quantity = fmt(node.quantity, { missing: "" });
   if (change?.kind === "REPLACE") {
     code = [trialCode(node.code), "→", change.replacements.flatMap((r, i) => [i ? "・" : null, trialCode(r.code)])];
+    specification = `${specification}→${change.replacements.map((r) => change.replacement_specifications?.[r.code] || "").join("・")}`;
     name = `${node.name}→${change.replacements.map((r) => r.name || r.code).join("・")}`;
   } else if (change?.kind === "SET_QUANTITY") {
     quantity = `${quantity}→${fmt(change.quantity)}`;
@@ -304,7 +306,7 @@ function trialNodeRow(ctx, node, path, depth) {
     { class: `group-node ${change ? `trial-changed ${CHANGE_CLASS[change.kind]}` : ""}` },
     el("td", { class: "num" }, node.balloon ?? ""),
     el("td", { style: `padding-left:${6 + depth * 18}px` }, twistyCell(path, node.has_children), code),
-    el("td", {}, name),
+    el("td", {}, name), el("td", {}, specification),
     el("td", { class: "num" }, quantity),
     el("td", {}, node.kind || ""),
     el("td", {}, rowButton(ctx, node, change)),
@@ -334,7 +336,7 @@ function addedRows(changes) {
     { class: `group-node trial-changed ${CHANGE_CLASS[c.kind]}` },
     el("td", {}, ""),
     el("td", {}, el("span", { class: "trial-plus" }, c.kind === "ADD" ? "＋ " : "員数 "), trialCode(c.part)),
-    el("td", {}, c.part_name ?? ""),
+    el("td", {}, c.part_name ?? ""), el("td", {}, c.part_specification || ""),
     el("td", { class: "num" }, fmt(c.quantity)),
     el("td", {}, c.part_kind ?? ""),
     el("td", {}, undoButton(c)),
@@ -342,14 +344,14 @@ function addedRows(changes) {
 }
 
 // 左右: 左に現行、右に変更後。片側にしか無い行は反対側を空ける
-const PAIR_COLS = 5;
+const PAIR_COLS = 6;
 const emptyCells = () => Array.from({ length: PAIR_COLS }, (_, i) => el("td", { class: i === 0 ? "pair-split" : "" }, ""));
 
 function pairCells(node, depth, twisty, first) {
   return [
     el("td", { class: `num ${first ? "pair-split" : ""}` }, node.balloon ?? ""),
     el("td", { style: `padding-left:${6 + depth * 18}px` }, twisty, trialCode(node.code)),
-    el("td", {}, node.name ?? ""),
+    el("td", {}, node.name ?? ""), el("td", {}, node.specification || ""),
     el("td", { class: "num" }, fmt(node.quantity, { missing: "" })),
     el("td", {}, node.kind || ""),
   ];
@@ -369,14 +371,14 @@ function trialPairRows(ctx, node, path, depth, gone) {
   // 置換は代わりの部品ごとに右へ1行（2つ目からは左を空ける）
   return change.replacements.map((r, i) => el("tr", { class: cls },
     i === 0 ? left : Array.from({ length: PAIR_COLS }, () => el("td", {}, "")),
-    pairCells({ balloon: node.balloon, code: r.code, name: r.name, quantity: r.quantity, kind: r.kind }, depth, null, true),
+    pairCells({ balloon: node.balloon, code: r.code, name: r.name, specification: change.replacement_specifications?.[r.code], quantity: r.quantity, kind: r.kind }, depth, null, true),
     i === 0 ? button : el("td", {}, "")));
 }
 
 function addedPairRows(changes) {
   return rootExtras(changes).map((c) => el("tr", { class: `group-node ${CHANGE_CLASS[c.kind]}` },
     Array.from({ length: PAIR_COLS }, () => el("td", {}, "")),
-    pairCells({ balloon: null, code: c.part, name: c.part_name, quantity: c.quantity, kind: c.part_kind }, 0, null, true),
+    pairCells({ balloon: null, code: c.part, name: c.part_name, specification: c.part_specification, quantity: c.quantity, kind: c.part_kind }, 0, null, true),
     el("td", {}, undoButton(c))));
 }
 
@@ -385,7 +387,7 @@ function sortTh(key, label, num, cls = "") {
   return el("th", { class: `sortable ${num ? "num" : ""} ${cls}`, onclick: () => sortTrial(key) }, `${label}${mark}`);
 }
 
-const structureHeads = (cls = "") => [sortTh("balloon", "#", true, cls), sortTh("code", "品番"), sortTh("name", "名称"),
+const structureHeads = (cls = "") => [sortTh("balloon", "#", true, cls), sortTh("code", "品番"), sortTh("name", "名称"), "記号・寸法",
   sortTh("quantity", "員数", true), "区分"];
 
 let trialLayout = "list"; // 開いた製品の構成の見せ方（list＝一覧・pair＝左右）。画面を開いている間は製品をまたいで覚える
@@ -441,17 +443,17 @@ function partBlock(parts) {
     el("td", {}, boxes[i]),
     el("td", {}, trialCode(r.product), ` ${r.product_name}`),
     el("td", {}, trialCode(r.part)),
-    el("td", {}, r.part_name),
+    el("td", {}, r.part_name), el("td", {}, r.part_specification),
     numTd(r.usage),
     el("td", {}, r.replaced_by.length ? r.replaced_by.map((c) => el("span", { class: "tag add" }, `→ ${c}`)) : "—"),
     el("td", {}, changeButton(r.product, () => [replaceOp(r.part, r.usage)])),
   ));
-  const bulk = el("tr", {}, el("td", { colspan: 7 },
+  const bulk = el("tr", {}, el("td", { colspan: 8 },
     changeButton(null, () => [bulkReplaceOp()], { label: "選んだ所を置換", send: (change) => trialBulk(parts.rows, change) })));
   return [
     el("h3", {}, `部品「${parts.part}」（${parts.rows.length} 件${parts.truncated ? "（上限）" : ""}）`),
-    table([el("th", {}, all), "製品", "部品", "名称", numTh("使用数（個/台）"), "置換先", ""],
-      partRows.length ? [...partRows, bulk] : [el("tr", {}, el("td", { colspan: 7, class: "muted" }, "なし"))]),
+    table([el("th", {}, all), "製品", "部品", "名称", "記号・寸法", numTh("使用数（個/台）"), "置換先", ""],
+      partRows.length ? [...partRows, bulk] : [el("tr", {}, el("td", { colspan: 8, class: "muted" }, "なし"))]),
   ];
 }
 

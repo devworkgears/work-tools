@@ -187,7 +187,7 @@ class Group:
         for row in rows:
             if row["kind"] == "base":
                 volume = version.volume(row["product"])
-                products.append({"product": row["product"], "product_name": row["product_name"],
+                products.append({"product": row["product"], "product_name": row["product_name"], "specification": row["specification"],
                                  "volume": None if volume is None else _s(volume.annual),
                                  "current": row["costs"], "incomplete": row["incomplete"], "trials": []})
                 continue
@@ -232,6 +232,7 @@ class Group:
             for code in shown:
                 product_name = self._name(version, code)
                 base = self._compare_row(bulk, code, code, product_name, None, None, ignore, failed)
+                base["specification"] = version.items[code].specification if code in version.items else ""
                 rows.append(base)
                 for n in names:
                     sid = scenario_ids[n].get(code)
@@ -299,7 +300,12 @@ class Group:
                 row = _batch_json(records)
                 row["sequence"], row["batch"] = recorded[0].sequence, recorded[0].batch
                 row["part_name"] = self._name(version, row["part"])
+                row["part_specification"] = version.items[row["part"]].specification if row["part"] in version.items else ""
                 row["part_kind"] = self._kind(version, row["part"])
+                row["replacement_specifications"] = {
+                    r["code"]: version.items[r["code"]].specification if r["code"] in version.items else ""
+                    for r in row["replacements"]
+                }
                 for r in row["replacements"]:
                     r["name"] = self._name(version, r["code"])
                     r["kind"] = self._kind(version, r["code"])
@@ -398,7 +404,8 @@ class Group:
         name = (params.get("name") or "").strip()
         head = _head(params.get("head"), CostHead.MATERIAL)
         rows = [
-            {"code": c, "name": self._name(version, c), "has_structure": c in structure.children}
+            {"code": c, "name": self._name(version, c),
+             "specification": version.items[c].specification if c in version.items else "", "has_structure": c in structure.children}
             for c in shown
         ]
         totals: dict[str, Any] = {}
@@ -504,6 +511,7 @@ class Group:
                         "product_name": self._name(version, product),
                         "part": part,
                         "part_name": self._name(version, part),
+                        "part_specification": version.items[part].specification if part in version.items else "",
                         "usage": _s(usage),
                         "replaced_by": changed.get(part, []),
                         "scenario_id": scenario_ids.get(product),

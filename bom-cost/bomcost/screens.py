@@ -490,6 +490,7 @@ class Screens:
                 {
                     "code": code,
                     "name": "" if item is None else item.name,
+                    "specification": "" if item is None else item.specification,
                     "kind": kind,
                     "role": "product" if kind == product_kind else "part",
                     "costs": {h.name: _s(manual.cost_value(code, h)) for h in HEADS},
@@ -554,7 +555,8 @@ class Screens:
         result = _manual_copy(manual, drop_item=code)
         result.add_item(Item(code, name, kind,
                              "" if kept is None else kept.lifecycle,
-                             False if kept is None else kept.has_children))
+                             False if kept is None else kept.has_children,
+                             specification=_optional_text(body, "specification")))
         if any(v is not None for v in values.values()):
             result.add_cost(CostRow(code, values))
         self.store.save_manual(result, dev)

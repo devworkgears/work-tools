@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS item (
     version_id TEXT NOT NULL REFERENCES version(version_id) ON DELETE CASCADE,
     code TEXT NOT NULL,
     name TEXT NOT NULL,
+    specification TEXT NOT NULL DEFAULT '',
     kind TEXT NOT NULL,
     lifecycle TEXT NOT NULL,
     has_children INTEGER NOT NULL,
@@ -257,6 +258,8 @@ class Store:
             if column not in existing:
                 self._conn.execute(f"ALTER TABLE version ADD COLUMN {column} {sql_type}")
         self._conn.execute("UPDATE version SET dev_number = version_id WHERE dev_number IS NULL OR dev_number = ''")
+        if "specification" not in {row[1] for row in self._conn.execute("PRAGMA table_info(item)")}:
+            self._conn.execute("ALTER TABLE item ADD COLUMN specification TEXT NOT NULL DEFAULT ''")
         self._migrate_master_tables()
         self._conn.execute(
             "INSERT OR IGNORE INTO version (version_id, note) VALUES (?, ?)",
@@ -430,8 +433,8 @@ class Store:
     def _insert_rows(self, version_id: str, version: Version) -> None:
         c = self._conn
         c.executemany(
-            "INSERT INTO item VALUES (?, ?, ?, ?, ?, ?)",
-            [(version_id, i.code, i.name, i.kind, i.lifecycle, int(i.has_children))
+            "INSERT INTO item (version_id, code, name, kind, lifecycle, has_children, specification) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [(version_id, i.code, i.name, i.kind, i.lifecycle, int(i.has_children), i.specification)
              for i in version.items.values()],
         )
         c.executemany(
@@ -463,11 +466,11 @@ class Store:
         v = Version(version_id, _time(head[0]), head[2], head[1], warnings=_warnings_from_json(head[3]),
                     dev_number=head[4] or version_id, dev_name=head[5], revision=head[6])
         q = self._conn.execute
-        for code, name, kind, lifecycle, has_children in q(
-            "SELECT code, name, kind, lifecycle, has_children FROM item WHERE version_id = ? ORDER BY rowid",
+        for code, name, kind, lifecycle, has_children, specification in q(
+            "SELECT code, name, kind, lifecycle, has_children, specification FROM item WHERE version_id = ? ORDER BY rowid",
             (version_id,),
         ):
-            v.add_item(Item(code, name, kind, lifecycle, bool(has_children), source))
+            v.add_item(Item(code, name, kind, lifecycle, bool(has_children), source, specification))
         v.add_bom_lines(
             BomLine(p, b, ch, Decimal(qty))
             for p, b, ch, qty in q(

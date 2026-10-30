@@ -277,6 +277,7 @@ function compareGrid(t, head) {
       el("td", { rowspan: span }, codeSpan(t.version_id, p.product)),
       el("td", { rowspan: span }, p.product_name, el("div", { class: `cmp-grid-volume ${p.volume === null ? "missing" : ""}` },
         p.volume === null ? "年間台数 未登録" : `年間 ${fmt(p.volume)} 台`)),
+      el("td", { rowspan: span }, p.specification),
       label("現行"),
       t.heads.map((h) => cell(p.current[h.id], h.id,
         { excluded: p.trials.some((tr) => out(p, tr, h.id)) && "計から除く", partial: p.incomplete }))));
@@ -301,7 +302,7 @@ function compareGrid(t, head) {
     const partial = [...new Set(t.products.flatMap((p) => p.trials.filter((tr) => tr.name === n).flatMap((tr) => tr.incomplete)))];
     rows.push(
       el("tr", { class: `cmp-grid-total ${i === 0 ? "cmp-grid-first" : ""}` },
-        el("th", { colspan: 2, rowspan: 5 }, multi ? `計（${n}）` : "計"), label("現行"),
+        el("th", { colspan: 3, rowspan: 5 }, multi ? `計（${n}）` : "計"), label("現行"),
         t.heads.map((h) => cell(s[h.id].current, h.id, { excluded: ex(h.id), partial }))),
       el("tr", { class: "cmp-grid-total" }, label("変更後"),
         t.heads.map((h) => cell(s[h.id].after, h.id, { excluded: ex(h.id), partial }))),
@@ -312,7 +313,7 @@ function compareGrid(t, head) {
       el("tr", { class: "cmp-grid-total" }, label("年間効果額"), t.heads.map((h) => cell(e[h.id].effect, h.id,
         { sign: true, excluded: e[h.id].excluded > 0 && `未登録 ${e[h.id].excluded} 製品を除く`, partial }))));
   });
-  const heads = ["品番", "名称", "", ...t.heads.map((h) => el("th", { class: `num ${current(h.id)}` }, h.label))];
+  const heads = ["品番", "名称", "記号・寸法", "", ...t.heads.map((h) => el("th", { class: `num ${current(h.id)}` }, h.label))];
   const shown = t.products.length + t.without_trial;
   return [
     el("div", { class: "cmp-left-head" },

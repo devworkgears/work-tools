@@ -50,7 +50,11 @@ class Lookup:
             if len(hits) > 1:
                 return _json_response({
                     "version_id": version_id, "q": needle, "item": None,
-                    "candidates": [{"code": c, "name": _name(version, c)} for c in hits[:MAX_CANDIDATES]],
+                    "candidates": [{"code": c, "name": _name(version, c),
+                                    "specification": _specification(version, c),
+                                    "material": _s(version.cost_value(c, CostHead.MATERIAL)),
+                                    "manufacturing": _s(version.cost_value(c, CostHead.MANUFACTURING))}
+                                   for c in hits[:MAX_CANDIDATES]],
                     "truncated": len(hits) > MAX_CANDIDATES,
                 })
             code = hits[0]
@@ -69,6 +73,7 @@ class Lookup:
         return {
             "code": code,
             "name": _name(version, code),
+            "specification": _specification(version, code),
             "kind": "" if item is None else item.kind,
             "lifecycle": "" if item is None else item.lifecycle,
             "is_product": code in Group.product_codes(version, structure, product_kind),
@@ -134,6 +139,11 @@ class Lookup:
         return rows
 
 
+def _specification(version: Version, code: str) -> str:
+    item = version.items.get(code)
+    return "" if item is None else item.specification
+
+
 def _name(version: Version, code: str) -> str:
     item = version.items.get(code)
     return "" if item is None else item.name
@@ -175,7 +185,7 @@ def _used_in(version: Version, structure: _Structure, code: str, product_kind: s
             for line in structure.children.get(parent, ())
             if line.child == code
         ]
-        rows.append({"product": product, "product_name": _name(version, product),
+        rows.append({"product": product, "product_name": _name(version, product), "specification": _specification(version, product),
                      "quantity_per_unit": _s(usage[code]), "parents": parents})
     return rows
 
@@ -190,6 +200,7 @@ def _tree(version: Version, code: str) -> list[dict[str, Any]]:
         for line in version.children(parent):
             usage = multiplier * line.quantity
             rows.append({"level": level, "parent": parent, "code": line.child, "name": _name(version, line.child),
+                         "specification": _specification(version, line.child),
                          "quantity": _s(line.quantity), "usage": _s(usage),
                          "has_children": bool(version.children(line.child))})
             walk(line.child, level + 1, usage, path | {parent})

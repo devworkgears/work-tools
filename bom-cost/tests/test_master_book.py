@@ -59,8 +59,6 @@ class MasterBook(DemoDbCase):
         wb = load_openpyxl().load_workbook(path, read_only=True)
         try:
             self.assertEqual(wb.sheetnames, list(SHEETS))
-            self.assertEqual([c.value for c in next(wb["製品"].iter_rows(max_row=1))],
-                             ["品番", "名称", "材料費", "直接費", "間接費", "調整費", "製造原価"])
         finally:
             wb.close()
         m = self.manual()

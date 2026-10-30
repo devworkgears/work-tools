@@ -97,10 +97,12 @@ class Item:
     lifecycle: str = ""
     has_children: bool = False
     source: Source = Source.IMPORTED
+    specification: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "code", to_code(self.code))
         object.__setattr__(self, "name", "" if self.name is None else str(self.name).strip())
+        object.__setattr__(self, "specification", "" if self.specification is None else str(self.specification).strip())
         object.__setattr__(self, "kind", to_symbol(self.kind, name="区分"))
         object.__setattr__(self, "lifecycle", to_symbol(self.lifecycle, name="状態"))
         object.__setattr__(self, "has_children", to_flag(self.has_children, name="子部品の有無"))

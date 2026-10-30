@@ -98,7 +98,19 @@ function numTd(text, opts) {
 
 const SCREENS = { product: "main-layout", group: "screen-group", trial: "screen-trial", compare: "screen-compare", part: "screen-part", change: "screen-change", manual: "screen-manual", lookup: "screen-lookup", import: "screen-import" };
 
+function manualDefaultDev() {
+  const ids = { group: "group-version", trial: "trial-version", compare: "cmp-version", lookup: "look-version",
+    part: "part-version", change: "change-new-version", product: "version-select" };
+  const version = document.getElementById(ids[screenState.screen])?.value || state.summary?.scenario.version_id;
+  return state.versions.find((v) => v.version_id === version)?.dev_number || "";
+}
+
 async function showScreen(name) {
+  if (name === "manual" && screenState.screen !== "manual") {
+    screenState.manualDev = manualDefaultDev();
+    screenState.editing = {};
+    screenState.masterCheck = null;
+  }
   screenState.screen = name;
   setSeg("screen-seg", "screen", name);
   const more = document.getElementById("screen-more");
@@ -323,6 +335,7 @@ async function renderManual(data) {
   screenState.manual = m;
   screenState.allocations = m.allocations;
   const dev = m.dev_number;
+  const saveLabel = `${dev || "共通"}に保存`;
   const send = (method, path, body) => guarded(async () => {
     const result = await api(method, path, body && { ...body, dev_number: dev });
     screenState.editing = {};
@@ -357,33 +370,34 @@ async function renderManual(data) {
   const itemCells = (i) => [
     m.heads.map((h) => numTd(i.costs[h.id])),
     el("td", {},
-      el("button", { type: "button", onclick: edit(i.role, { code: i.code, name: i.name, kind: i.kind, ...i.costs }) }, "直す"),
+      el("button", { type: "button", onclick: edit(i.role, { code: i.code, name: i.name, specification: i.specification, kind: i.kind, ...i.costs }) }, "直す"),
       el("button", { type: "button", onclick: del(`/api/manual/items?${qs({ code: i.code })}`) }, "消す")),
   ];
   const itemForm = (role) => {
     const code = el("input", { value: val(role, "code"), placeholder: "例 X-610" });
     const name = el("input", { value: val(role, "name"), placeholder: role === "product" ? "例 新製品" : "例 試作品" });
+    const specification = el("input", { value: val(role, "specification") });
     const kind = el("input", { value: val(role, "kind"), size: 4 });
     const costs = Object.fromEntries(m.heads.map((h) => [h.id, el("input", { value: val(role, h.id), inputmode: "decimal", size: 9 })]));
     return el("div", { class: "form-row" },
-      field("品番", code), field("名称", name), role === "part" ? field("区分", kind) : null,
+      field("品番", code), field("名称", name), field("記号・寸法", specification), role === "part" ? field("区分", kind) : null,
       m.heads.map((h) => field(h.label, costs[h.id])),
       el("button", { type: "button", class: "primary", onclick: () => send("PUT", "/api/manual/items", {
-        role, code: code.value, name: name.value, kind: role === "part" ? kind.value : "",
+        role, code: code.value, name: name.value, specification: specification.value, kind: role === "part" ? kind.value : "",
         costs: Object.fromEntries(m.heads.map((h) => [h.id, costs[h.id].value])),
-      }) }, "保存"));
+      }) }, saveLabel));
   };
   const productRows = [
     ...m.items.filter((i) => i.role === "product").map((i) => el("tr", {},
-      el("td", {}, i.code, " ", inBom(i.code)), el("td", {}, i.name), el("td", {}, "—"), el("td", {}, "—"), el("td", {}, "—"), ...itemCells(i))),
+      el("td", {}, i.code, " ", inBom(i.code)), el("td", {}, i.name), el("td", {}, i.specification), el("td", {}, "—"), el("td", {}, "—"), el("td", {}, "—"), ...itemCells(i))),
     ...m.trials.map((t) => el("tr", {},
-      el("td", {}, t.code), el("td", {}, t.name), el("td", {}, t.base), el("td", {}, t.trial_name), el("td", {}, versionLabel(t.version_id)),
+      el("td", {}, t.code), el("td", {}, t.name), el("td", {}, ""), el("td", {}, t.base), el("td", {}, t.trial_name), el("td", {}, versionLabel(t.version_id)),
       m.heads.map(() => el("td", {}, "")), el("td", {}))),
   ];
-  const productHeads = ["品番", "名称", "土台", "検討案", "版", ...m.heads.map((h) => numTh(h.label)), ""];
-  const partHeads = ["品番", "名称", "区分", ...m.heads.map((h) => numTh(h.label)), ""];
+  const productHeads = ["品番", "名称", "記号・寸法", "土台", "検討案", "版", ...m.heads.map((h) => numTh(h.label)), ""];
+  const partHeads = ["品番", "名称", "記号・寸法", "区分", ...m.heads.map((h) => numTh(h.label)), ""];
   const partRows = m.items.filter((i) => i.role !== "product").map((i) => el("tr", {},
-    el("td", {}, i.code, " ", inBom(i.code)), el("td", {}, i.name), el("td", {}, i.kind), ...itemCells(i)));
+    el("td", {}, i.code, " ", inBom(i.code)), el("td", {}, i.name), el("td", {}, i.specification), el("td", {}, i.kind), ...itemCells(i)));
   const products = el("div", {},
     el("h3", {}, `区分 ${m.product_kind}`),
     table(productHeads, productRows.length ? productRows : empty(productHeads.length)),
@@ -405,7 +419,7 @@ async function renderManual(data) {
         el("button", { type: "button", onclick: del(`/api/manual/volumes?${qs({ product: v.product })}`) }, "消す")),
     ))),
     el("div", { class: "form-row" }, field("製品の品番", volProduct), field("年間台数", volAnnual),
-      el("button", { type: "button", class: "primary", onclick: () => send("PUT", "/api/manual/volumes", { product: volProduct.value, annual: volAnnual.value }) }, "保存")),
+      el("button", { type: "button", class: "primary", onclick: () => send("PUT", "/api/manual/volumes", { product: volProduct.value, annual: volAnnual.value }) }, saveLabel)),
   );
 
   // 型費
@@ -420,7 +434,7 @@ async function renderManual(data) {
         el("button", { type: "button", onclick: del(`/api/molds?${qs({ part: x.part })}`) }, "消す")),
     ))),
     el("div", { class: "form-row" }, field("部品の品番", moldPart), field("型費（円）", moldAmount), field("償却年数", moldYears),
-      el("button", { type: "button", class: "primary", onclick: () => send("PUT", "/api/molds", { part: moldPart.value, amount: moldAmount.value, years: moldYears.value }) }, "保存")),
+      el("button", { type: "button", class: "primary", onclick: () => send("PUT", "/api/molds", { part: moldPart.value, amount: moldAmount.value, years: moldYears.value }) }, saveLabel)),
   );
 
   // 流用先
@@ -439,7 +453,7 @@ async function renderManual(data) {
       el("button", { type: "button", class: "primary", onclick: () => send("PUT", "/api/reuse", {
         part: reusePart.value, product: reuseProduct.value, quantity: reuseQty.value, replaced_part: reuseOld.value,
         original: screenState.editing.reuse?.original,
-      }) }, "保存")),
+      }) }, saveLabel)),
   );
 
   // 部品の対応表
@@ -462,7 +476,7 @@ async function renderManual(data) {
       field("新しい部品", mapInputs.new_part), field("新しい風船番号", mapInputs.new_balloon),
       el("button", { type: "button", class: "primary", onclick: () => (original
         ? send("PUT", "/api/partmaps", { ...mapBody(), original })
-        : send("POST", "/api/partmaps", mapBody())) }, original ? "直して保存" : "足す")),
+        : send("POST", "/api/partmaps", mapBody())) }, saveLabel)),
   );
 
   // タブで1つずつ出す（選んだタブだけ）
@@ -514,7 +528,7 @@ function masterBookBar(dev) {
   });
   return el("div", { class: "form-row" },
     el("button", { type: "button", onclick: open }, "Excel で開く"),
-    el("button", { type: "button", class: "primary", onclick: check }, "取り込む"),
+    el("button", { type: "button", class: "primary", onclick: check }, `${dev || "共通"}に取り込む`),
     field("ファイル", screenState.masterFile));
 }
 
@@ -541,7 +555,7 @@ function masterCheckPanel() {
         el("td", {}, e.sheet), el("td", { class: "num" }, e.row ?? ""), el("td", {}, e.message)))),
     ] : null,
     el("div", { class: "form-row" },
-      el("button", { type: "button", class: "primary", disabled: r.errors.length > 0 || r.added + r.changed === 0, onclick: apply }, "決定"),
+      el("button", { type: "button", class: "primary", disabled: r.errors.length > 0 || r.added + r.changed === 0, onclick: apply }, `${c.body.dev_number || "共通"}に保存`),
       el("button", { type: "button", onclick: close }, "やめる")),
   ]);
 }
