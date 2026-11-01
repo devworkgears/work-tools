@@ -500,6 +500,43 @@ class ServerLimits(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    def test_other_host_or_origin_is_403(self) -> None:
+        import http.client
+        import threading
+
+        from bomcost.app import bind, make_handler
+
+        seen: list[str] = []
+
+        def call(method: str, path: str, query: str, body: bytes) -> Response:
+            seen.append(method)
+            return Response(200, b"{}")
+
+        server = bind(0, make_handler(call))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = server.server_address[1]
+            cases = [
+                ({}, 200),
+                ({"Host": f"localhost:{port}", "Origin": f"http://localhost:{port}"}, 200),
+                ({"Origin": f"http://127.0.0.1:{port}"}, 200),
+                ({"Host": f"evil.example:{port}"}, 403),
+                ({"Origin": "http://evil.example"}, 403),
+                ({"Origin": "null"}, 403),
+                ({"Origin": f"http://127.0.0.1:{port + 1}"}, 403),
+            ]
+            for headers, status in cases:
+                with self.subTest(headers=headers):
+                    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                    conn.request("POST", "/api/scenarios", body=b"{}", headers=headers)
+                    self.assertEqual(conn.getresponse().status, status)
+                    conn.close()
+            self.assertEqual(seen, ["POST"] * 3)
+        finally:
+            server.shutdown()
+            server.server_close()
+
 
 if __name__ == "__main__":
     unittest.main()

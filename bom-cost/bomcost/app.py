@@ -68,13 +68,22 @@ def make_handler(call: Call) -> type[BaseHTTPRequestHandler]:
         def do_DELETE(self) -> None:
             self._serve("DELETE")
 
+        def _own_origin(self) -> bool:
+            # 他のサイトからの送信（CSRF）と、名前を 127.0.0.1 に向け直す読み取り（DNS rebinding）を拒む
+            hosts = {f"{name}:{self.server.server_address[1]}" for name in (HOST, "localhost")}
+            origin = self.headers.get("Origin")
+            return self.headers.get("Host") in hosts and (origin is None or origin in {f"http://{h}" for h in hosts})
+
         def _serve(self, method: str) -> None:
             parts = urlsplit(self.path)
             try:
                 length = int(self.headers.get("Content-Length") or 0)
             except ValueError:
                 length = -1
-            if length < 0:
+            if not self._own_origin():
+                self.close_connection = True
+                response = error_response(403, "このページ以外からは使えない")
+            elif length < 0:
                 response = error_response(400, "Content-Length が数でない")
             elif length > MAX_BODY_BYTES:
                 # 読まずに返すので、残りを受けないよう接続を閉じる
