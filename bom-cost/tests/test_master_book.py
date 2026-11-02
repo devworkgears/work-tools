@@ -71,6 +71,23 @@ class MasterBook(DemoDbCase):
         check = self.ok("POST", "/api/master/check")
         self.assertEqual((check["added"], check["changed"], check["errors"]), (0, 0, []))
 
+    def test_master_heads_are_formula_inputs(self) -> None:
+        self.assertEqual([h["label"] for h in self.manual()["heads"]], ["材料費", "償却費", "直接費"])
+        self.assertEqual(SHEETS["製品"], ("品番", "名称", "材料費", "償却費", "直接費", "記号・寸法"))
+        self.assertEqual(SHEETS["部品"], ("品番", "名称", "区分", "材料費", "償却費", "直接費", "記号・寸法"))
+        self.ok("PUT", "/api/manual/items", body={"role": "part", "code": "MQ-4", "name": "部品4",
+                                                  "costs": {"MATERIAL": "10", "AMORTIZATION": "3", "DIRECT": "2"}})
+        items = {i["code"]: i for i in self.manual()["items"]}
+        self.assertEqual({k: items["MQ-4"]["costs"][k] for k in ("MATERIAL", "AMORTIZATION", "DIRECT")},
+                         {"MATERIAL": "10", "AMORTIZATION": "3", "DIRECT": "2"})
+        path = self.write_book()
+        wb = load_openpyxl().load_workbook(path, read_only=True)
+        try:
+            row = next(r for r in wb["部品"].iter_rows(min_row=2, values_only=True) if r[0] == "MQ-4")
+        finally:
+            wb.close()
+        self.assertEqual(row[3:6], (10, 3, 2))
+
     def test_round_trip_each_sheet(self) -> None:
         path = self.write_book()
         before = self.manual()

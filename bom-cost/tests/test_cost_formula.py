@@ -189,6 +189,49 @@ class SampleApi(SampleDbCase):
                                                             "quantity": "1"})
         self.assert_error(bad, 400, "A-100")
 
+    def set_heads(self, items: list) -> object:
+        return self.call("POST", "/api/group/heads/bulk",
+                         body={"version_id": "2026-10", "name": NAME, "head": "MANUFACTURING", "items": items})
+
+    def test_set_heads_in_bulk_per_product_batch(self) -> None:
+        self.change("A-100", kind="SET_HEAD", part="A-100", target_head="DIRECT", quantity="10")
+        r = self.set_heads([{"product": "A-100", "values": {"PROCESSING": "30", "AMORTIZATION": "", "DIRECT": "50"}},
+                            {"product": "V-110", "values": {"AMORTIZATION": "5"}},
+                            {"product": "K-200", "values": {"DIRECT": " "}}])  # 打っていない製品は入れない
+        self.assertEqual(r.status, 200, r.body)
+        self.assertEqual((r.json()["count"], r.json()["products"]), (3, ["A-100", "V-110"]))
+        rows = self.ok("GET", "/api/group/changes", f"version=2026-10&name={NAME}&head=MANUFACTURING")["rows"]
+        self.assertEqual([(x["product"], x["text"], x["batch"]) for x in rows], [
+            ("A-100", "費目変更 直接費 → 10", None),
+            ("A-100", "費目変更 社内加工費 → 30・直接費 → 50", 2),
+            ("V-110", "費目変更 償却費 → 5", None)])
+        self.assertEqual([(h["id"], h["value"]) for h in rows[1]["heads"]], [("PROCESSING", "30"), ("DIRECT", "50")])
+        # 1回の操作の差は、まとめて入れた費目の差の合計
+        self.assertEqual(D(rows[1]["difference"]), D(30) * D("1.03") * D("1.11") + 40)
+        table = self.ok("GET", "/api/group/heads/all", f"version=2026-10&name={NAME}")
+        self.assertEqual([h["id"] for h in table["heads"]], ["PROCESSING", "AMORTIZATION", "DIRECT"])
+        after = {x["product"]: x["after"] for x in table["rows"]}
+        self.assertEqual(after["A-100"], {"PROCESSING": "30", "AMORTIZATION": None, "DIRECT": "50"})
+        self.assertEqual(after["V-110"]["AMORTIZATION"], "5")
+        self.assertNotIn("K-200", after)
+        # 取り消しは製品ごとの1回の操作で、まとめて入れた費目が一緒に抜ける
+        self.ok("POST", "/api/group/changes/undo", body={"scenario_id": rows[1]["scenario_id"], "sequence": 2})
+        a = self.ok("GET", "/api/group/heads", f"version=2026-10&name={NAME}&product=A-100")["after"]
+        self.assertEqual((a["PROCESSING"], a["DIRECT"]), ("0", "10"))
+
+    def test_set_heads_rejects_all_on_one_bad_value(self) -> None:
+        before = self.ok("GET", "/api/group/changes", f"version=2026-10&name={NAME}")["rows"]
+        for items, message in (
+                ([{"product": "A-100", "values": {"DIRECT": "50"}}, {"product": "V-110", "values": {"DIRECT": "-1"}}], "0 以上"),
+                ([{"product": "A-100", "values": {"DIRECT": "50"}}, {"product": "V-110", "values": {"DIRECT": "abc"}}], "値"),
+                ([{"product": "A-100", "values": {"INDIRECT": "1"}}], "target_head"),
+                ([{"product": "A-100", "values": {"DIRECT": "1"}}, {"product": "A-100", "values": {"DIRECT": "2"}}], "2回"),
+                ([{"product": "A-100", "values": {"DIRECT": ""}}], "変える値が無い")):
+            with self.subTest(items=items):
+                self.assert_error(self.set_heads(items), 400, message)
+        self.assertEqual(self.ok("GET", "/api/group/changes", f"version=2026-10&name={NAME}")["rows"], before)
+        self.assertEqual(self.ok("GET", "/api/group/trials", "version=2026-10"), [])
+
     def test_lookup_calculated_next_to_imported(self) -> None:
         item = self.ok("GET", "/api/lookup", "version=2026-10&q=A-100")["item"]
         calc = {c["head"]: (c["value"], c["incomplete"]) for c in item["calculated"]}

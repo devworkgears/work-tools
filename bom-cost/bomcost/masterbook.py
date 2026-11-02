@@ -11,7 +11,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable
 
-from .api import HEADS
+from .api import MASTER_HEADS
 from .group import is_product_kind, part_kind
 from .importer import load_openpyxl
 from .model import MANUAL_VERSION_ID, CostHead, CostRow, Item, Version, Volume
@@ -26,7 +26,7 @@ MOLD = "型費"
 REUSE = "流用先"
 PART_MAP = "部品の対応表"
 
-HEAD_LABELS = tuple(h.value for h in HEADS)
+HEAD_LABELS = tuple(h.value for h in MASTER_HEADS)
 SHEETS: dict[str, tuple[str, ...]] = {
     PRODUCT: ("品番", "名称", *HEAD_LABELS, "記号・寸法"),
     PART: ("品番", "名称", "区分", *HEAD_LABELS, "記号・寸法"),
@@ -117,7 +117,7 @@ def book_bytes(store: Store, product_kind: str, dev_number: str = "") -> bytes:
         name = "" if item is None else item.name
         kind = "" if item is None else item.kind
         specification = "" if item is None else item.specification
-        costs = [manual.cost_value(code, h) for h in HEADS]
+        costs = [manual.cost_value(code, h) for h in MASTER_HEADS]
         if kind == product_kind:
             products.append([code, name, *costs, specification])
         else:
@@ -266,7 +266,7 @@ def _plan_row(
             if is_product_kind(product_kind, kind):
                 raise _RowError(f"部品の区分に製品の記号 {kind} は使えない")
             kind = part_kind(product_kind, kind)
-        heads = {h: _decimal(v[h.value], h.value, False) for h in HEADS}
+        heads = {h: _decimal(v[h.value], h.value, False) for h in MASTER_HEADS}
         if code in item_rows and item_rows[code][0] != sheet:
             other, row = item_rows[code]
             raise _RowError(f"品番 {code} は{other}のシートの {row} 行目にもある")
@@ -284,7 +284,7 @@ def _plan_row(
             status = "added"
         elif (kept is not None and kept.name == name and kept.kind == kind
               and kept.specification == item.specification
-              and all(manual.cost_value(code, h) == heads[h] for h in HEADS)):
+              and all(manual.cost_value(code, h) == heads[h] for h in MASTER_HEADS)):
             status = "unchanged"
         else:
             status = "changed"

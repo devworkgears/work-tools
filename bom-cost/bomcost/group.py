@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from urllib.parse import quote
 
 from .api import (XLSX_TYPE, ApiError, Response, _flag, _head, _json_response, _known_codes, _place, _require_known,
-                  _record_json, _s, _text_field, _View, version_label)
+                  _record_json, _s, _text_field, _View, scenario_annual, version_label)
 from .comparebook import compare_file_name, compare_workbook
 from .formula import EDITABLE_HEADS, Head
 from .model import BomLine, CostHead, Version
@@ -142,6 +142,8 @@ class Group:
             ("POST", r"/api/group/changes/undo", self.undo_change),
             ("GET", r"/api/group/tree", self.tree),
             ("GET", r"/api/group/heads", self.heads),
+            ("GET", r"/api/group/heads/all", self.trial_heads),
+            ("POST", r"/api/group/heads/bulk", self.set_heads),
             ("POST", r"/api/group/scenarios", self.add_scenarios),
             ("GET", r"/api/group/compare", self.compare),
             ("GET", r"/api/group/compare/table", self.compare_table),
@@ -536,12 +538,7 @@ class Group:
         _require_known(version, product, "製品")
         name = (params.get("name") or "").strip()
         sid = self._scenarios(version, name).get(product) if name else None
-        scenario = Scenario(name, product, f"{product}#", version, CostHead.MATERIAL, self.store.load_scope_policy())
-        current = _View(scenario, "bulk", CostHead.MATERIAL, False).breakdown(product)
-        after = current
-        if sid is not None:
-            view = _View(self.store.load_scenario(sid, version), "diff", CostHead.MATERIAL, False)
-            after = view.breakdown(view.root)
+        current, after = self._head_values(version, name, product, sid, COMPARE_HEADS)
         return _json_response({
             "product": product, "scenario_id": sid,
             "heads": [{"id": h.name, "label": h.value} for h in COMPARE_HEADS],
@@ -550,6 +547,69 @@ class Group:
             "after": {h.name: _s(after.value(h)) for h in COMPARE_HEADS},
             "incomplete": sorted(h.name for h in current.incomplete | after.incomplete),
         })
+
+    def _head_values(self, version: Version, name: str, product: str, sid: int | None,
+                     heads: tuple[Head, ...]) -> tuple[Any, Any]:
+        """製品の費目の内訳を現行（版の構成）と変更後（試算 sid・無ければ現行と同じ）で。"""
+        scenario = Scenario(name, product, f"{product}#", version, CostHead.MATERIAL, self.store.load_scope_policy())
+        current = _View(scenario, "bulk", CostHead.MATERIAL, False).breakdown(product)
+        if sid is None:
+            return current, current
+        view = _View(self.store.load_scenario(sid, version), "diff", CostHead.MATERIAL, False)
+        return current, view.breakdown(view.root)
+
+    def trial_heads(self, params: dict[str, str]) -> Response:
+        """検討名の試算がある製品ごとに、費目変更で書き換えられる費目（EDITABLE_HEADS）の現行・変更後。"""
+        version = self._version(params)
+        name = _text_field(params, "name", "検討名")
+        sids = self._scenarios(version, name)
+        rows = []
+        for product in sorted(sids):
+            current, after = self._head_values(version, name, product, sids[product], EDITABLE_HEADS)
+            rows.append({"product": product, "product_name": self._name(version, product), "scenario_id": sids[product],
+                         "current": {h.name: _s(current.value(h)) for h in EDITABLE_HEADS},
+                         "after": {h.name: _s(after.value(h)) for h in EDITABLE_HEADS}})
+        return _json_response({"version_id": version.version_id, "name": name,
+                               "heads": [{"id": h.name, "label": h.value} for h in EDITABLE_HEADS], "rows": rows})
+
+    def set_heads(self, params: dict[str, str], body: dict[str, Any]) -> Response:
+        """検討名で、製品ごとの費目（items: [{product, values: {費目: 値}}]）をまとめて費目変更にする。
+
+        空の値は飛ばす。製品ごとに1回の操作（batch）で、取り消しも製品ごと。全部が通ってから保存し、1つでも通らなければ何も残さない。
+        """
+        name = _text_field(body, "name", "検討名")
+        version = self._version(body, "version_id")
+        head = _head(body.get("head"), CostHead.MATERIAL)
+        items = body.get("items")
+        if not isinstance(items, list) or not all(isinstance(x, dict) for x in items):
+            raise ApiError(400, "変える所（items）は製品・費目の値の組の配列にする")
+        existing = self._scenarios(version, name)
+        touched: dict[str, Scenario] = {}
+        recorded_at = datetime.now()
+        count = 0
+        for item in items:
+            product = to_code(_text_field(item, "product", "製品の品番"))
+            _require_known(version, product, "製品")
+            if product in touched:
+                raise ApiError(400, f"製品 {product} が2回ある")
+            values = item.get("values")
+            if not isinstance(values, dict):
+                raise ApiError(400, f"{product} の費目の値（values）は 費目 → 値 のオブジェクトにする")
+            given = {k: v for k, v in values.items() if str(v if v is not None else "").strip() != ""}
+            if not given:
+                continue
+            sid = existing.get(product)
+            scenario = self._new_scenario(version, name, product, head) if sid is None else self.store.load_scenario(sid, version)
+            changes = [self.api.head_change(scenario, {"target_head": k, "part": product, "quantity": str(v).strip()})
+                       for k, v in given.items()]
+            scenario.apply_batch(changes, recorded_at, scenario_annual(scenario))
+            touched[product] = scenario
+            count += len(changes)
+        if not count:
+            raise ApiError(400, "変える値が無い")
+        self.store.save_scenarios(touched.values())
+        return _json_response({"version_id": version.version_id, "name": name, "count": count,
+                               "products": sorted(touched)})
 
     # 部品の検索 --------------------------------------------------------------
 
@@ -1013,9 +1073,13 @@ def _batch_json(records: list[ChangeRecord]) -> dict[str, Any]:
     row = _record_json(records[0])
     row["replacements"] = [{"code": r.change.replacement, "quantity": _s(r.change.quantity)}
                            for r in records if r.change.replacement is not None]
+    # 費目変更の操作で書き換えた費目と値（まとめて変えた時は何費目か）
+    row["heads"] = [{"id": r.change.target_head, "label": Head[r.change.target_head].value, "value": _s(r.change.quantity)}
+                    for r in records if r.change.target_head is not None]
     if len(records) > 1:
-        row["text"] = f"{_place(records[0].change)} → " + "・".join(
-            f"{x['code']} ×{x['quantity']}" for x in row["replacements"])
+        row["text"] = ("費目変更 " + "・".join(f"{x['label']} → {x['value']}" for x in row["heads"]) if row["heads"]
+                       else f"{_place(records[0].change)} → " + "・".join(
+                           f"{x['code']} ×{x['quantity']}" for x in row["replacements"]))
         last = records[-1]
         missing = any(r.difference is None for r in records)
         row["cost_after"] = _s(last.cost_after)

@@ -334,3 +334,8 @@ tr.look-current td { background: var(--accent-soft); }
 .trial-parts-layout { margin-bottom: 8px; }
 .trial-view { margin: 6px 0 2px; }
 table.trial-all th, table.trial-all td { white-space: nowrap; }
+table.trial-bulk th, table.trial-bulk td { white-space: nowrap; }
+table.trial-bulk th.trial-bulk-group { text-align: center; border-left: 1px solid var(--line); }
+table.trial-bulk td.trial-bulk-changed { background: var(--chg-head); }
+.trial-bulk-input { width: 7em; text-align: right; }
+.trial-bulk-foot { display: flex; justify-content: flex-end; padding: 8px 0; }

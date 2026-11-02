@@ -12,7 +12,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
-from .api import (HEADS, ApiError, Response, _flag, _head, _json_response, _known_codes, _s, _text_field, _View,
+from .api import (HEADS, MASTER_HEADS, ApiError, Response, _flag, _head, _json_response, _known_codes, _s, _text_field, _View,
                   version_label)
 from .importer import (
     TABLE_FIELDS,
@@ -503,7 +503,7 @@ class Screens:
                     "specification": "" if item is None else item.specification,
                     "kind": kind,
                     "role": "product" if kind == product_kind else "part",
-                    "costs": {h.name: _s(manual.cost_value(code, h)) for h in HEADS},
+                    "costs": {h.name: _s(manual.cost_value(code, h)) for h in dict.fromkeys(HEADS + MASTER_HEADS)},
                 }
             )
         in_bom = self.store.bom_entries([*codes, *manual.parents(), *manual.volumes], dev)
@@ -513,7 +513,7 @@ class Screens:
             {
                 "dev_number": dev,
                 "dev_numbers": dev_numbers,
-                "heads": [{"id": h.name, "label": h.value} for h in HEADS],
+                "heads": [{"id": h.name, "label": h.value} for h in MASTER_HEADS],
                 "items": items,
                 "product_kind": product_kind,
                 "trials": self._trials(versions, dev),

@@ -370,7 +370,7 @@ async function renderManual(data) {
   };
   const val = (key, name, fallback = "") => (screenState.editing[key]?.[name] ?? fallback) ?? "";
 
-  // 品目と原価（製品と部品で表も登録の欄も分ける。製品には試算＝新製品も並べる）
+  // 品目と原価（製品と部品で表も登録の欄も分ける）
   const empty = (n) => [el("tr", {}, el("td", { colspan: n, class: "muted" }, "なし"))];
   const itemCells = (i) => [
     m.heads.map((h) => numTd(i.costs[h.id], { yen: true })),
@@ -392,14 +392,9 @@ async function renderManual(data) {
         costs: Object.fromEntries(m.heads.map((h) => [h.id, costs[h.id].value])),
       }) }, saveLabel));
   };
-  const productRows = [
-    ...m.items.filter((i) => i.role === "product").map((i) => el("tr", {},
-      el("td", {}, i.code, " ", inBom(i.code)), el("td", {}, i.name), el("td", {}, i.specification), el("td", {}, "—"), el("td", {}, "—"), el("td", {}, "—"), ...itemCells(i))),
-    ...m.trials.map((t) => el("tr", {},
-      el("td", {}, t.code), el("td", {}, t.name), el("td", {}, ""), el("td", {}, t.base), el("td", {}, t.trial_name), el("td", {}, versionLabel(t.version_id)),
-      m.heads.map(() => el("td", {}, "")), el("td", {}))),
-  ];
-  const productHeads = ["品番", "名称", "記号・寸法", "土台", "検討案", "版", ...m.heads.map((h) => numTh(h.label)), ""];
+  const productRows = m.items.filter((i) => i.role === "product").map((i) => el("tr", {},
+    el("td", {}, i.code, " ", inBom(i.code)), el("td", {}, i.name), el("td", {}, i.specification), ...itemCells(i)));
+  const productHeads = ["品番", "名称", "記号・寸法", ...m.heads.map((h) => numTh(h.label)), ""];
   const partHeads = ["品番", "名称", "記号・寸法", "区分", ...m.heads.map((h) => numTh(h.label)), ""];
   const partRows = m.items.filter((i) => i.role !== "product").map((i) => el("tr", {},
     el("td", {}, i.code, " ", inBom(i.code)), el("td", {}, i.name), el("td", {}, i.specification), el("td", {}, i.kind), ...itemCells(i)));

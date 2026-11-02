@@ -31,6 +31,8 @@ HEADS: tuple[CostHead, ...] = (
     CostHead.ADJUSTMENT,
     CostHead.MANUFACTURING,
 )
+# マスタ登録で入れる費目（式の入力のうち登録値を使うもの）。調整費・間接費・製造原価は式で出すので入れない
+MASTER_HEADS: tuple[CostHead, ...] = (CostHead.MATERIAL, CostHead.AMORTIZATION, CostHead.DIRECT)
 MODES = {"diff": "差分", "bulk": "一括"}
 JSON_TYPE = "application/json; charset=utf-8"
 XLSX_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -156,6 +158,12 @@ def _change_text(change: Change) -> str:
     if change.kind is ChangeKind.SET_HEAD and change.target_head is not None:
         return f"費目変更 {Head[change.target_head].value} → {qty}"
     return f"員数変更 {_place(change)} → {qty}"
+
+
+def scenario_annual(scenario: Scenario) -> Decimal | None:
+    """変更の記録に残す試算の製品の年間台数（未登録は None）。"""
+    volume = scenario.version.volume(scenario.product_code)
+    return None if volume is None else volume.annual
 
 
 def _place(change: Change) -> str:
@@ -534,19 +542,9 @@ class Api:
         except KeyError:
             raise ApiError(400, f"変更の種類が分からない: {kind_name}（"
                            + "・".join(k.name for k in ChangeKind) + "）") from None
-        volume = scenario.version.volume(scenario.product_code)
-        annual = None if volume is None else volume.annual
+        annual = scenario_annual(scenario)
         if kind is ChangeKind.SET_HEAD:
-            target = str(body.get("target_head") or "").strip()
-            if target not in {h.name for h in EDITABLE_HEADS}:
-                raise ApiError(400, f"書き換える費目（target_head）が分からない: {target}（"
-                               + "・".join(h.name for h in EDITABLE_HEADS) + "）")
-            # 費目変更は製品自身の値なので、品番は土台の製品（省けば土台）
-            part = to_code(body.get("part") or scenario.base)
-            if part != scenario.base:
-                raise ApiError(400, f"費目変更の品番は製品 {scenario.base} にする: {part}")
-            change = Change(kind, part, _number(body.get("quantity"), "値"), target_head=target)
-            scenario.apply_batch([change], volume=annual)
+            scenario.apply_batch([self.head_change(scenario, body)], volume=annual)
             return
         part = to_code(_text_field(body, "part", "品番"))
         if part == scenario.product_code:
@@ -582,6 +580,19 @@ class Api:
             raise ApiError(400, "代わりの部品を複数入れるには親品番（parent）が要る")
         changes = [Change(kind, part, qty, code, parent, balloon) for code, qty in pairs]
         scenario.apply_batch(changes, volume=annual)
+
+    @staticmethod
+    def head_change(scenario: Scenario, body: dict[str, Any]) -> Change:
+        """body（target_head・quantity・part）の費目変更1件を確かめて Change にする（試算には当てない）。"""
+        target = str(body.get("target_head") or "").strip()
+        if target not in {h.name for h in EDITABLE_HEADS}:
+            raise ApiError(400, f"書き換える費目（target_head）が分からない: {target}（"
+                           + "・".join(h.name for h in EDITABLE_HEADS) + "）")
+        # 費目変更は製品自身の値なので、品番は土台の製品（省けば土台）
+        part = to_code(body.get("part") or scenario.base)
+        if part != scenario.base:
+            raise ApiError(400, f"費目変更の品番は製品 {scenario.base} にする: {part}")
+        return Change(ChangeKind.SET_HEAD, part, _number(body.get("quantity"), "値"), target_head=target)
 
     @staticmethod
     def _replacements(scenario: Scenario, body: dict[str, Any]) -> list[tuple[str, Decimal]]:
