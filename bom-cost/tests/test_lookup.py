@@ -1,8 +1,12 @@
 """品目照会の API（/api/lookup）。samples/ の CSV を取り込んだ DB で確かめる。ソケットは開かない。"""
 
 import unittest
+from decimal import Decimal
 
 from bomcost.app import static_response
+from bomcost.group import Group, _Structure
+from bomcost.lookup import Lookup, _used_in
+from bomcost.model import BomLine, Item, Version
 from test_group import NAME, SampleDbCase
 from test_screens import csv_file
 
@@ -94,6 +98,65 @@ class UsedIn(LookupCase):
             (1, "C-300", "-1", "-1", False),
         ])
         self.assertEqual(self.item("B-200")["structure"], [])
+
+
+class Summary(LookupCase):
+    """②の簡易照会の枠の追加分（brief=1&summary=1）。"""
+
+    def summary(self, code: str) -> dict:
+        found = self.look(f"{code}&brief=1&summary=1")
+        return found["item"]["summary"]
+
+    def test_part_parents_and_counts(self) -> None:
+        s = self.summary("C-300")
+        self.assertEqual([(p["code"], p["name"], p["quantity"]) for p in s["parents"]],
+                         [("A-100", "土台の製品", "3"), ("V-110", "新しい製品", "-1")])
+        self.assertEqual((s["product_count"], s["child_count"], s["is_product"], s["annual_volume"]), (2, 0, False, None))
+        self.assertEqual(s["calculated"], self.item("C-300")["calculated"])
+        self.assertEqual(len(s["calculated"]), 8)
+        self.assertEqual(s["imported"], {"value": None, "difference": None})
+
+    def test_product_children_and_volume(self) -> None:
+        a = self.summary("A-100")
+        self.assertEqual([(p["code"], p["quantity"]) for p in a["parents"]], [("V-110", "1")])
+        self.assertEqual((a["product_count"], a["child_count"], a["is_product"], a["annual_volume"]), (1, 2, True, None))
+        k = self.summary("K-200")
+        self.assertEqual((k["parents"], k["product_count"], k["child_count"], k["annual_volume"]), ([], 0, 0, "5000"))
+
+    def test_imported_manufacturing_and_difference(self) -> None:
+        self.ok("PUT", "/api/manual/items", body={"code": "B-200", "name": "部品B", "costs": {"MANUFACTURING": "1700"}})
+        s = self.summary("B-200")
+        computed = next(c["value"] for c in s["calculated"] if c["head"] == "MANUFACTURING")
+        self.assertEqual(s["imported"]["value"], "1700")
+        self.assertEqual(Decimal(s["imported"]["difference"]), Decimal(computed) - 1700)
+
+    def test_brief_without_summary_is_unchanged(self) -> None:
+        self.assertNotIn("summary", self.look("B-200&brief=1")["item"])
+        self.assertNotIn("summary", self.item("B-200"))
+
+    def test_product_count_matches_used_in_on_samples(self) -> None:
+        for code in ("A-100", "V-110", "K-200", "B-200", "C-300", "F-600", "X-610"):
+            with self.subTest(code=code):
+                self.assertEqual(self.summary(code)["product_count"], len(self.item(code)["used_in"]))
+
+    def test_product_count_matches_used_in_on_deeper_structure(self) -> None:
+        # 組立品の共有・製品の下の製品・区分が製品でない一番上・区分が空の一番上を混ぜる
+        v = Version("t")
+        v.add_items([Item("P1", "", "P"), Item("P2", "", "P"), Item("P3", "", "P"), Item("T1", "", "Z"),
+                     Item("S1", "", "B"), Item("S2", "", "B"), Item("L1", "", "B")])
+        v.add_bom_lines([BomLine("P1", "1", "S1", 2), BomLine("P1", "2", "S2", 1), BomLine("S1", "1", "L1", 3),
+                     BomLine("S2", "1", "S1", 1), BomLine("P2", "1", "P1", 1), BomLine("P3", "1", "S2", 4),
+                     BomLine("T1", "1", "L1", 1), BomLine("E1", "1", "S2", 1)])
+        look = Lookup(self.api)
+        structure = _Structure(v)
+        kind = Group.product_kind(v, structure)
+        costs = [{"head": "MANUFACTURING", "value": None}]
+        counts = {}
+        for code in ("P1", "P2", "P3", "T1", "E1", "S1", "S2", "L1"):
+            counts[code] = look.summary(v, code, costs)["product_count"]
+            with self.subTest(code=code):
+                self.assertEqual(counts[code], len(_used_in(v, structure, code, kind)))
+        self.assertEqual(counts["L1"], 4)  # P1・P2・P3・E1（T1 は区分が製品でない）
 
 
 class History(LookupCase):

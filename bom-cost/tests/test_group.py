@@ -4,6 +4,7 @@ import io
 import json
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 
@@ -765,6 +766,32 @@ class CompareTable(SampleDbCase):
         self.assert_error(self.call("GET", "/api/group/compare/table", "version=2026-10"), 400, "names")
         self.assert_error(self.call("GET", "/api/group/compare/table", f"version=2026-10&names={quote(NAME)}"),
                           400, "償却費")
+
+
+@unittest.skipUnless(HAS_OPENPYXL, "openpyxl が無い")
+class CompareBookFormat(unittest.TestCase):
+    def test_money_shown_whole_but_value_kept(self) -> None:
+        def cell(value: str) -> dict[str, str]:
+            return {"MATERIAL": value}
+
+        table = {
+            "heads": [{"id": "MATERIAL", "label": "材料費小計"}], "names": ["n"], "ignore_amortization": False,
+            "products": [{"product": "P", "product_name": "", "volume": "12.5", "incomplete": [],
+                          "current": cell("100.4"), "trials": [{"name": "n", "incomplete": [], "after": cell("265.825"),
+                                                                "difference": cell("165.425"), "percent": cell("164.8"),
+                                                                "effect": cell("2067.8125")}]}],
+            "totals": {"n": {"MATERIAL": {"current": "100.4", "after": "265.825", "difference": "165.425",
+                                          "percent": "164.8", "excluded": 0}}},
+            "effect_totals": {"n": {"MATERIAL": {"effect": "2067.8125", "excluded": 0}}},
+            "without_trial": 0, "count": 1, "truncated": False,
+        }
+        body = comparebook.compare_workbook(table, "v", "", datetime(2026, 1, 1))
+        ws = load_openpyxl().load_workbook(io.BytesIO(body))["比較"]
+        material = [r[4] for r in ws.iter_rows(min_row=2)]
+        self.assertEqual([c.value for c in material[:5]], [100.4, 265.825, 165.425, 1.648, 2067.8125])
+        self.assertEqual([c.number_format for c in material[:5]], ["#,##0", "#,##0", "#,##0", "0.0%", "#,##0"])
+        # 年間台数は金額でないので小数を落とさない
+        self.assertEqual(ws.cell(row=2, column=3).number_format, "#,##0.00")
 
 
 class ChildrenIndex(unittest.TestCase):

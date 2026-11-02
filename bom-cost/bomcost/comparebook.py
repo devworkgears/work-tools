@@ -1,6 +1,6 @@
 """③原価比較の表（compare/table の返事）を .xlsx に。並びは画面の表と同じで、前提のシートを付ける。
 
-数は数値のセルで入れ、未登録は空のセルに印（塗りとコメント）を付ける。償却費を無視した列と、現行が 0 で出せない差% は「—」。
+数は数値のセルで入れ（金額は値を丸めず、表示の書式だけ円単位）、未登録は空のセルに印（塗りとコメント）を付ける。償却費を無視した列と、現行が 0 で出せない差% は「—」。
 """
 
 import io
@@ -49,7 +49,7 @@ def compare_workbook(table: dict[str, Any], version_text: str, query: str, now: 
         return head == "AMORTIZATION" and table["ignore_amortization"]
 
     def put(column: int, value: str | None, *, percent: bool = False, known: bool = True, note: str | None = None,
-            head: str | None = None, partial: bool = False) -> None:
+            head: str | None = None, partial: bool = False, money: bool = True) -> None:
         cell = ws.cell(row=ws.max_row, column=column)
         if partial and value is not None:
             note = PARTIAL_NOTE + (f"・{note}" if note else "")
@@ -69,7 +69,8 @@ def compare_workbook(table: dict[str, Any], version_text: str, query: str, now: 
             cell.number_format = PERCENT_FORMAT
         else:
             cell.value = number
-            cell.number_format = MONEY_FORMAT if number == number.to_integral_value() else MONEY_FRACTION_FORMAT
+            whole = money or number == number.to_integral_value()
+            cell.number_format = MONEY_FORMAT if whole else MONEY_FRACTION_FORMAT
         if note:
             cell.comment = Comment(note, "bom-cost")
 
@@ -86,7 +87,7 @@ def compare_workbook(table: dict[str, Any], version_text: str, query: str, now: 
         line([p["product"], p["product_name"], None, "現行"],
              [{"value": p["current"][h], "note": EXCLUDED_NOTE if out[h] else None,
                "partial": h in p["incomplete"]} for h in heads])
-        put(3, p["volume"], note="未登録")
+        put(3, p["volume"], note="未登録", money=False)
         for t in p["trials"]:
             ex = {h: EXCLUDED_NOTE if p["current"][h] is None or t["after"][h] is None else None for h in heads}
             pa = {h: h in t["incomplete"] for h in heads}

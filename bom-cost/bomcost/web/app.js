@@ -46,10 +46,21 @@ function el(tag, attrs = {}, ...children) {
   return node;
 }
 
-// Decimal の文字列に桁区切りを入れる（数としては扱わない）
-function fmt(text, { sign = false, missing = "未登録" } = {}) {
-  if (text === null || text === undefined) return missing;
+// 金額の表示用に円未満を四捨五入（0 から遠い側へ）。浮動小数の誤差を避けて文字列のまま丸める
+function roundYen(text) {
   let s = String(text);
+  const neg = s.startsWith("-");
+  if (neg) s = s.slice(1);
+  const [intPart, frac = ""] = s.split(".");
+  let n = BigInt(intPart || "0");
+  if (frac[0] >= "5") n += 1n;
+  return `${neg && n !== 0n ? "-" : ""}${n}`;
+}
+
+// Decimal の文字列に桁区切りを入れる（数としては扱わない）。yen は金額で、円未満を四捨五入して出す
+function fmt(text, { sign = false, missing = "未登録", yen = false } = {}) {
+  if (text === null || text === undefined) return missing;
+  let s = yen ? roundYen(text) : String(text);
   let neg = false;
   if (s.startsWith("-")) { neg = true; s = s.slice(1); }
   const [intPart, frac] = s.split(".");
@@ -68,7 +79,7 @@ function signClass(text) {
 }
 
 function money(text, opts) {
-  return el("span", { class: `num ${text === null || text === undefined ? "missing" : ""}` }, fmt(text, opts));
+  return el("span", { class: `num ${text === null || text === undefined ? "missing" : ""}` }, fmt(text, { yen: true, ...opts }));
 }
 
 function showMessage(text, kind = "error") {
@@ -292,7 +303,7 @@ function nodeMarks(node, head) {
     const [own, compared] = node.verdict_values || [null, null];
     const label = head === "MANUFACTURING" ? "4費目の合計" : "子の足し上げ";
     marks.push(el("span", { class: "tag warn", title: "二重計上の判定（推定）" },
-      `${node.verdict}（登録 ${fmt(own)}／${label} ${fmt(compared)}）`));
+      `${node.verdict}（登録 ${fmt(own, { yen: true })}／${label} ${fmt(compared, { yen: true })}）`));
   }
   return marks;
 }
@@ -304,7 +315,7 @@ function nodeRow(node, path, depth) {
   const balloon = node.balloon ? `(${node.balloon})` : null;
   let costCell;
   if (node.cost === null) costCell = el("span", { class: "num missing" }, "未登録");
-  else costCell = el("span", { class: "num" }, fmt(node.cost));
+  else costCell = el("span", { class: "num" }, fmt(node.cost, { yen: true }));
   const marks = nodeMarks(node, document.getElementById("head-select").value);
   const row = el(
     "div",
@@ -366,7 +377,7 @@ async function renderDetail() {
     el("dt", {}, "区分・状態"), el("dd", {}, [d.kind, d.lifecycle].filter(Boolean).join("・") || "—"),
     el("dt", {}, "出どころ"), el("dd", {}, `${sources} ・ ${d.has_children ? "子部品あり" : "子部品なし"}`),
     el("dt", {}, "1台あたり"), el("dd", {}, d.usage === null ? "—" : `${fmt(d.usage)} 個`),
-    el("dt", {}, "償却費"), el("dd", {}, fmt(d.amortization)),
+    el("dt", {}, "償却費"), el("dd", {}, fmt(d.amortization, { yen: true })),
   );
   const heads = el(
     "table",
@@ -382,7 +393,7 @@ async function renderDetail() {
           el("td", {}, h.label),
           el("td", {}, money(h.registered)),
           el("td", {}, money(h.calculated), h.calculated !== null && h.incomplete ? el("span", { class: "tag warn" }, "一部未登録") : null),
-          el("td", {}, h.verdict ? `${h.verdict}${h.compared !== null ? `（比べた値 ${fmt(h.compared)}）` : ""}` : "—"),
+          el("td", {}, h.verdict ? `${h.verdict}${h.compared !== null ? `（比べた値 ${fmt(h.compared, { yen: true })}）` : ""}` : "—"),
         ),
       ),
     ),
@@ -462,8 +473,8 @@ function renderHistory() {
           "div",
           { class: "row" },
           el("span", { class: "text" }, r.text),
-          el("span", { class: "num muted" }, `${fmt(r.cost_before)} → ${fmt(r.cost_after)}`),
-          el("span", { class: `num ${signClass(r.difference)}` }, fmt(r.difference, { sign: true })),
+          el("span", { class: "num muted" }, `${fmt(r.cost_before, { yen: true })} → ${fmt(r.cost_after, { yen: true })}`),
+          el("span", { class: `num ${signClass(r.difference)}` }, fmt(r.difference, { sign: true, yen: true })),
         ),
         el("div", { class: "premise" }, `前提: ${premiseText(r)}・${r.recorded_at.replace("T", " ")}`),
       ),
@@ -485,16 +496,16 @@ function renderResult() {
       "div",
       { class: "result-line" },
       el("span", {}, el("span", { class: "label" }, "最後の変更"), last.text),
-      el("span", {}, el("span", { class: "label" }, "変更前"), el("span", { class: "big num" }, fmt(last.cost_before))),
-      el("span", {}, el("span", { class: "label" }, "変更後"), el("span", { class: "big num" }, fmt(last.cost_after))),
-      el("span", {}, el("span", { class: "label" }, "差額"), el("span", { class: `big num ${signClass(last.difference)}` }, fmt(last.difference, { sign: true }))),
+      el("span", {}, el("span", { class: "label" }, "変更前"), el("span", { class: "big num" }, fmt(last.cost_before, { yen: true }))),
+      el("span", {}, el("span", { class: "label" }, "変更後"), el("span", { class: "big num" }, fmt(last.cost_after, { yen: true }))),
+      el("span", {}, el("span", { class: "label" }, "差額"), el("span", { class: `big num ${signClass(last.difference)}` }, fmt(last.difference, { sign: true, yen: true }))),
       el("span", { class: "muted" }, `前提: ${versionLabel(last.version_id)}・${last.head_label}`),
     )
     : el("div", { class: "result-line muted" }, "変更なし");
   const now = el(
     "div",
     { class: "result-line" },
-    el("span", {}, el("span", { class: "label" }, `今の ${s.scenario.product_code}（${versionLabel(p.version_id)}）`), el("span", { class: "big num" }, fmt(s.total))),
+    el("span", {}, el("span", { class: "label" }, `今の ${s.scenario.product_code}（${versionLabel(p.version_id)}）`), el("span", { class: "big num" }, fmt(s.total, { yen: true }))),
     s.volume ? el("span", { class: "muted" }, `年間台数 ${fmt(s.volume.annual)}（${s.volume.kind}）`) : null,
     s.missing.length ? el("span", { class: "missing" }, `未登録: ${s.missing.join("・")}`) : null,
     s.conflicts.length ? el("span", { class: "missing" }, `数量の食い違い ${s.conflicts.length} 件`) : null,
@@ -537,7 +548,7 @@ function visibleColumns() {
 
 function cellText(row, col) {
   const value = row[col.key];
-  if (col.type === "money" || col.type === "number") return fmt(value);
+  if (col.type === "money" || col.type === "number") return fmt(value, { yen: col.type === "money" });
   return value === null || value === undefined ? "" : String(value);
 }
 
@@ -671,7 +682,7 @@ async function drawCompare() {
           el("td", { class: "num" }, fmt(l.quantity)),
           el("td", {}, money(l.amount_a)),
           el("td", {}, money(l.amount_b)),
-          el("td", { class: `num ${signClass(l.difference)}` }, fmt(l.difference, { sign: true, missing: "—" })),
+          el("td", { class: `num ${signClass(l.difference)}` }, fmt(l.difference, { sign: true, missing: "—", yen: true })),
         ),
       ),
       el(
@@ -681,7 +692,7 @@ async function drawCompare() {
         el("td", {}),
         el("th", {}, money(c.total_a)),
         el("th", {}, money(c.total_b)),
-        el("th", { class: `num ${signClass(c.difference)}` }, fmt(c.difference, { sign: true, missing: "—" })),
+        el("th", { class: `num ${signClass(c.difference)}` }, fmt(c.difference, { sign: true, missing: "—", yen: true })),
       ),
     ),
   );

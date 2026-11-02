@@ -147,7 +147,7 @@ function compareTiles(r, head) {
     const allMissing = s.down + s.up + s.same === 0 && s.missing > 0;
     const total = ignored ? el("span", { class: "muted" }, "—")
       : allMissing ? el("span", { class: "missing" }, "未登録")
-        : el("span", { class: signClass(s.difference) }, fmt(s.difference, { sign: true }));
+        : el("span", { class: signClass(s.difference) }, fmt(s.difference, { sign: true, yen: true }));
     return el("div", { class: "tile-row" },
       r.names.length > 1 ? el("div", { class: "tile-name" }, el("i", { class: `swatch ${seriesClass(r, n)}` }), n) : null,
       tile("合計の差", total),
@@ -194,7 +194,7 @@ function compareBars(r, products, head) {
     const text = trial?.differences[head];
     const value = !trial ? el("span", { class: "muted" }, "なし")
       : ignored ? el("span", { class: "muted" }, "—")
-        : el("span", { class: signClass(text) }, fmt(text, { sign: true }));
+        : el("span", { class: signClass(text) }, fmt(text, { sign: true, yen: true }));
     return el("div", { class: "cmp-bar-line" }, diffBar(trial ? text : null, max, seriesClass(r, n)),
       el("span", { class: "num" }, value));
   })))));
@@ -219,7 +219,7 @@ function drawCompareDetail() {
   const names = r.names.filter((n) => p.trials[n]);
   const multi = r.names.length > 1;
   const max = Math.max(...names.flatMap((n) => r.heads.map((h) => Math.abs(diffNumber(p.trials[n].differences[h.id]) ?? 0))), 0) || 1;
-  const cell = (text, head, opts) => (isIgnored(r, head) ? el("td", { class: "num muted" }, "—") : numTd(text, opts));
+  const cell = (text, head, opts) => (isIgnored(r, head) ? el("td", { class: "num muted" }, "—") : numTd(text, { yen: true, ...opts }));
   const rows = r.heads.map((h) => el("tr", { class: `${cmpHeadClass(h.id)} ${h.id === compareState.head ? "cmp-current-head" : ""}` },
     el("td", {}, h.label),
     cell(p.base.costs[h.id], h.id),
@@ -244,7 +244,7 @@ function compareChanges(r, name, changes) {
   const rows = changes.map((c) => el("tr", {},
     el("td", {}, el("span", { class: "tag" }, c.kind_label)),
     el("td", {}, c.text),
-    el("td", { class: `num ${signClass(c.difference)}` }, fmt(c.difference, { sign: true })),
+    el("td", { class: `num ${signClass(c.difference)}` }, fmt(c.difference, { sign: true, yen: true })),
     el("td", { class: "muted" }, c.head_label)));
   return [
     el("h3", {}, r.names.length > 1 ? [el("i", { class: `swatch ${seriesClass(r, name)}` }), `変更（${name}）`] : "変更"),
@@ -265,7 +265,7 @@ function compareGrid(t, head) {
   const cell = (text, h, { sign = false, percent = false, known = true, excluded = null, partial = null } = {}) => {
     if (ignored(h)) return el("td", { class: `num muted ${current(h)}` }, "—");
     let shown;
-    if (text !== null && text !== undefined) shown = `${fmt(text, { sign })}${percent ? "%" : ""}`;
+    if (text !== null && text !== undefined) shown = `${fmt(text, { sign, yen: !percent })}${percent ? "%" : ""}`;
     else shown = percent && known ? "—" : "未登録";  // 差% は現行が 0 の時も出せない
     const cls = shown === "未登録" ? "missing" : sign ? signClass(text) : "";
     const part = shown !== "未登録" && partial?.includes(h) ? el("span", { class: "tag warn", title: "一部未登録" }, "一部") : null;

@@ -169,7 +169,7 @@ async function drawPart() {
     allocation: screenState.allocation,
   })}`);
   const p = v.premises;
-  const mold = v.mold ? `型費 ${fmt(v.mold.amount)} 円・${fmt(v.mold.years)}年` : "型費 未登録";
+  const mold = v.mold ? `型費 ${fmt(v.mold.amount, { yen: true })} 円・${fmt(v.mold.years)}年` : "型費 未登録";
   const title = el("div", { class: "detail-title" }, `型費配賦: ${v.part}（${[v.name, mold].filter(Boolean).join("・")}）`);
   const headLabel = p.head_label;
   const rows = v.rows.map((r) =>
@@ -181,11 +181,11 @@ async function drawPart() {
       numTd(r.annual),
       numTd(r.quantity_per_unit),
       numTd(r.annual_count),
-      numTd(r.mold_per_unit, { missing: "—" }),
-      el("td", { class: "num" }, r.part_difference === null ? "—" : `${fmt(r.part_difference, { sign: true })}（${r.replaced_part || "古い部品なし"} → ${v.part}）`),
-      el("td", { class: "num" }, `${fmt(r.current, { missing: "—" })} → ${fmt(r.after, { missing: "—" })}`),
-      el("td", { class: `num ${signClass(r.difference)}` }, fmt(r.difference, { sign: true, missing: "—" })),
-      el("td", { class: `num ${signClass(r.difference_with_amortization)}` }, fmt(r.difference_with_amortization, { sign: true, missing: "—" })),
+      numTd(r.mold_per_unit, { missing: "—", yen: true }),
+      el("td", { class: "num" }, r.part_difference === null ? "—" : `${fmt(r.part_difference, { sign: true, yen: true })}（${r.replaced_part || "古い部品なし"} → ${v.part}）`),
+      el("td", { class: "num" }, `${fmt(r.current, { missing: "—", yen: true })} → ${fmt(r.after, { missing: "—", yen: true })}`),
+      el("td", { class: `num ${signClass(r.difference)}` }, fmt(r.difference, { sign: true, missing: "—", yen: true })),
+      el("td", { class: `num ${signClass(r.difference_with_amortization)}` }, fmt(r.difference_with_amortization, { sign: true, missing: "—", yen: true })),
     ),
   );
   const main = table(
@@ -197,12 +197,12 @@ async function drawPart() {
     "div",
     { class: "result-line" },
     el("span", {}, el("span", { class: "label" }, "部品の年間の数"), el("span", { class: "big num" }, fmt(v.annual_count)), " 個"),
-    el("span", {}, el("span", { class: "label" }, "1個あたり型費"), el("span", { class: "big num" }, fmt(v.per_part, { missing: "—" })), " 円"),
+    el("span", {}, el("span", { class: "label" }, "1個あたり型費"), el("span", { class: "big num" }, fmt(v.per_part, { missing: "—", yen: true })), " 円"),
     el("span", {}, el("span", { class: "label" }, "載せ方"), v.allocation_label),
   );
   const breakdown = v.rows
     .filter((r) => r.part_difference !== null && r.mold_per_unit !== null && r.difference_with_amortization !== null)
-    .map((r) => el("p", { class: "muted" }, `${r.product} の差の内訳: 部品の置き換え（${headLabel}） ${fmt(r.part_difference, { sign: true })} ＋ 償却費（型費） ${fmt(r.mold_per_unit, { sign: true })} ＝ ${fmt(r.difference_with_amortization, { sign: true })}`));
+    .map((r) => el("p", { class: "muted" }, `${r.product} の差の内訳: 部品の置き換え（${headLabel}） ${fmt(r.part_difference, { sign: true, yen: true })} ＋ 償却費（型費） ${fmt(r.mold_per_unit, { sign: true, yen: true })} ＝ ${fmt(r.difference_with_amortization, { sign: true, yen: true })}`));
   const premise = el(
     "p",
     { class: "premise-line" },
@@ -216,11 +216,11 @@ async function drawPart() {
   const allHeads = table(
     ["使う製品", ...heads.map((h) => numTh(`${h.label} 今 → 後`))],
     [
-      el("tr", {}, el("td", {}, `部品 ${v.part} の原価`), heads.map((h) => numTd(v.part_costs[h.id]))),
+      el("tr", {}, el("td", {}, `部品 ${v.part} の原価`), heads.map((h) => numTd(v.part_costs[h.id], { yen: true }))),
       ...v.rows.map((r) =>
         el("tr", {}, el("td", {}, r.product), heads.map((h) => {
           const x = r.heads[h.id];
-          return el("td", { class: "num" }, `${fmt(x.current, { missing: "—" })} → ${fmt(x.after, { missing: "—" })}`);
+          return el("td", { class: "num" }, `${fmt(x.current, { missing: "—", yen: true })} → ${fmt(x.after, { missing: "—", yen: true })}`);
         })),
       ),
     ],
@@ -368,7 +368,7 @@ async function renderManual(data) {
   // 品目と原価（製品と部品で表も登録の欄も分ける。製品には試算＝新製品も並べる）
   const empty = (n) => [el("tr", {}, el("td", { colspan: n, class: "muted" }, "なし"))];
   const itemCells = (i) => [
-    m.heads.map((h) => numTd(i.costs[h.id])),
+    m.heads.map((h) => numTd(i.costs[h.id], { yen: true })),
     el("td", {},
       el("button", { type: "button", onclick: edit(i.role, { code: i.code, name: i.name, specification: i.specification, kind: i.kind, ...i.costs }) }, "直す"),
       el("button", { type: "button", onclick: del(`/api/manual/items?${qs({ code: i.code })}`) }, "消す")),
@@ -428,7 +428,7 @@ async function renderManual(data) {
   const moldYears = el("input", { value: val("mold", "years", "2"), inputmode: "decimal", size: 4 });
   const molds = el("div", {},
     table(["部品の品番", numTh("型費（円）"), numTh("償却年数"), numTh("1年あたり（円）"), ""], m.molds.map((x) => el("tr", {},
-      el("td", {}, x.part), numTd(x.amount), numTd(x.years), numTd(x.annual_amount),
+      el("td", {}, x.part), numTd(x.amount, { yen: true }), numTd(x.years), numTd(x.annual_amount, { yen: true }),
       el("td", {},
         el("button", { type: "button", onclick: edit("mold", x) }, "直す"),
         el("button", { type: "button", onclick: del(`/api/molds?${qs({ part: x.part })}`) }, "消す")),

@@ -104,16 +104,34 @@ function closeTrialLookup() {
 async function openTrialLookup(code) {
   const request = ++trialLookupRequest;
   const version = trialOpened.version;
-  const result = await api("GET", `/api/lookup?${qs({ version, q: code, brief: "1" })}`);
+  const result = await api("GET", `/api/lookup?${qs({ version, q: code, brief: "1", summary: "1" })}`);
   if (request !== trialLookupRequest) return;
   const x = result.item;
   if (!x) throw new Error("品番を選ぶ");
+  const s = x.summary;
   document.getElementById("trial-lookup")?.remove();
   const panel = el("aside", { id: "trial-lookup", class: "trial-lookup", "aria-label": "品目の簡易照会", "data-code": x.code },
     el("button", { type: "button", onclick: closeTrialLookup }, "閉じる"),
     el("h3", {}, x.code), el("p", {}, x.name), el("p", {}, x.specification || "—"),
     table(["費目", "値", "出どころ"], x.costs.map((c) => el("tr", {},
-      el("td", {}, c.label), numTd(c.value), el("td", {}, c.source_label)))),
+      el("td", {}, c.label), numTd(c.value, { yen: true }), el("td", {}, c.source_label)))),
+    el("h4", { class: "trial-lookup-head" }, "計算値"),
+    table(["費目", numTh("値")], s.calculated.map((k) => el("tr", {}, el("td", {}, k.label,
+      k.incomplete && k.value !== null ? el("span", { class: "tag warn", title: "一部未登録" }, "一部") : null),
+    numTd(k.value, { yen: true })))),
+    el("dl", { class: "kv trial-lookup-kv" },
+      el("dt", {}, "取込の製造原価"), el("dd", { class: "num" }, fmt(s.imported.value, { yen: true })),
+      el("dt", {}, "差（計算−取込）"), el("dd", { class: `num ${signClass(s.imported.difference)}` },
+        fmt(s.imported.difference, { sign: true, missing: "—", yen: true })),
+      el("dt", {}, "使う製品"), el("dd", {}, `${s.product_count}`),
+      el("dt", {}, "子"), el("dd", {}, `${s.child_count}`),
+      s.is_product ? el("dt", {}, "年間台数") : null,
+      s.is_product ? el("dd", { class: "num" }, fmt(s.annual_volume)) : null),
+    el("h4", { class: "trial-lookup-head" }, `直の親（${s.parents.length}）`),
+    s.parents.length
+      ? table(["品番", "名称", numTh("員数")], s.parents.map((p) => el("tr", {},
+        el("td", {}, trialCode(p.code)), el("td", {}, p.name), numTd(p.quantity))))
+      : el("p", { class: "muted" }, "なし"),
     el("button", { type: "button", onclick: () => guarded(async () => {
       await showScreen("lookup");
       document.getElementById("look-version").value = version;
@@ -352,7 +370,7 @@ function changeText(c) {
   if (c.kind === "REMOVE") return ["削除 ", trialCode(c.part)];
   if (c.kind === "ADD") return ["追加 ", trialCode(c.part), ` ×${fmt(c.quantity)}`];
   if (c.kind === "SET_QUANTITY") return ["員数変更 ", at, trialCode(c.part), ` → ${fmt(c.quantity)}`];
-  if (c.kind === "SET_HEAD") return [`費目変更 ${c.target_head_label} → ${fmt(c.quantity)}`];
+  if (c.kind === "SET_HEAD") return [`費目変更 ${c.target_head_label} → ${fmt(c.quantity, { yen: true })}`];
   return [at, trialCode(c.part), " → ", joinReplacements(c, (r) => [trialCode(r.code), ` ×${fmt(r.quantity)}`])];
 }
 
@@ -497,7 +515,7 @@ async function trialHeadsBlock(t, product) {
     const input = el("input", { inputmode: "decimal", size: 8, value: h.after[id] ?? "", placeholder: "未登録" });
     const send = () => guarded(() => trialChange(product, { kind: "SET_HEAD", part: product, target_head: id, quantity: input.value.trim() }));
     input.addEventListener("keydown", (e) => e.key === "Enter" && send());
-    return el("tr", {}, el("td", {}, labels.get(id)), numTd(h.current[id]), numTd(h.after[id]),
+    return el("tr", {}, el("td", {}, labels.get(id)), numTd(h.current[id], { yen: true }), numTd(h.after[id], { yen: true }),
       el("td", {}, input, " ", el("button", { type: "button", onclick: send }, "変える")));
   });
   return el("div", { class: "trial-heads" },
@@ -519,7 +537,7 @@ async function trialProductPanel(t, product, changes) {
   rows.push(...(pair ? addedPairRows(changes) : addedRows(changes)));
   const changeRows = changes.map((c) => el("tr", { class: CHANGE_CLASS[c.kind] },
     el("td", {}, changeText(c)),
-    el("td", { class: `num ${signClass(c.difference)}` }, fmt(c.difference, { sign: true, missing: "—" })),
+    el("td", { class: `num ${signClass(c.difference)}` }, fmt(c.difference, { sign: true, missing: "—", yen: true })),
     el("td", {}, undoButton(c))));
   const addRow = el("tr", {}, el("td", { colspan: 3 }, changeButton(product, () => [addOp(product)], { label: "追加" })));
   const heads = pair ? [...structureHeads(), ...structureHeads("pair-split"), ""] : [...structureHeads(), ""];
@@ -610,15 +628,15 @@ function allChangesBlock(p, changes) {
     el("td", {}, joinReplacements(c, (r) => trialCode(r.code))),
     el("td", {}, joinReplacements(c, (r) => r.name || "—")),
     el("td", {}, joinReplacements(c, (r) => c.replacement_specifications?.[r.code] || "—")),
-    el("td", { class: "num" }, c.kind === "REPLACE" ? joinReplacements(c, (r) => fmt(r.quantity)) : fmt(c.quantity)),
-    el("td", { class: `num ${signClass(c.difference)}` }, fmt(c.difference, { sign: true, missing: "—" })),
+    el("td", { class: "num" }, c.kind === "REPLACE" ? joinReplacements(c, (r) => fmt(r.quantity)) : fmt(c.quantity, { yen: c.kind === "SET_HEAD" })),
+    el("td", { class: `num ${signClass(c.difference)}` }, fmt(c.difference, { sign: true, missing: "—", yen: true })),
     el("td", {}, undoButton(c))));
   const heads = ["製品", "操作", "部品", "名称", "記号・寸法", "置換先", "置換先の名称", "置換先の記号・寸法",
     numTh("員数"), numTh(`差（${p.head_label}）`), ""];
   const sum = changes.missing_count < changes.count ? changes.difference : null; // 全部未登録なら合計は出せない
   const total = el("tr", { class: "trial-total" },
     el("th", { colspan: heads.length - 2 }, `合計${changes.missing_count ? `（未登録 ${changes.missing_count} 件を除く）` : ""}`),
-    el("th", { class: `num ${signClass(sum)}` }, fmt(sum, { sign: true, missing: "—" })),
+    el("th", { class: `num ${signClass(sum)}` }, fmt(sum, { sign: true, missing: "—", yen: true })),
     el("th", {}, ""));
   return [el("h3", {}, `全製品の変更（${changes.count} 件）`),
     el("div", { class: "table-scroll" }, table(heads, rows.length ? [...rows, total]
@@ -658,15 +676,15 @@ async function drawTrial() {
       el("td", {}, x.name),
       el("td", { class: "num" }, String(own.length)),
       el("td", { class: `num ${signClass(x.difference)}`,
-        title: own.map((c) => `${c.text}　${fmt(c.difference, { sign: true, missing: "—" })}`).join("\n") },
-        fmt(x.difference, { sign: true, missing: "—" })),
+        title: own.map((c) => `${c.text}　${fmt(c.difference, { sign: true, missing: "—", yen: true })}`).join("\n") },
+        fmt(x.difference, { sign: true, missing: "—", yen: true })),
     ));
     if (trialOpen.has(x.code)) productRows.push(await trialProductPanel(t, x.code, own));
   }
   const total = el("tr", { class: "trial-total" },
     el("th", { colspan: 2 }, `合計${p.missing_count ? `（未登録 ${p.missing_count} 製品を除く）` : ""}`),
     el("th", { class: "num" }, String(count)),
-    el("th", { class: `num ${signClass(p.difference)}` }, fmt(p.difference, { sign: true, missing: "—" })));
+    el("th", { class: `num ${signClass(p.difference)}` }, fmt(p.difference, { sign: true, missing: "—", yen: true })));
   const heads = ["製品", "名称", numTh("変更"), numTh(`差（${p.head_label}）`)];
   document.getElementById("trial-body").replaceChildren(
     premise, trialViewSeg(),

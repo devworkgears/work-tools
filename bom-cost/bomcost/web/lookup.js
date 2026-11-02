@@ -36,7 +36,7 @@ async function drawLookup() {
   if (!r.item) {
     body.replaceChildren(
       el("h3", {}, `候補（${r.candidates.length}${r.truncated ? "+" : ""} 件）`),
-      table(["品番", "名称", "記号・寸法", numTh("材料費小計"), numTh("製造原価")], r.candidates.map((c) => el("tr", {}, el("td", {}, lookLink(c.code)), el("td", {}, c.name), el("td", {}, c.specification), numTd(c.material), numTd(c.manufacturing)))),
+      table(["品番", "名称", "記号・寸法", numTh("材料費小計"), numTh("製造原価")], r.candidates.map((c) => el("tr", {}, el("td", {}, lookLink(c.code)), el("td", {}, c.name), el("td", {}, c.specification), numTd(c.material, { yen: true }), numTd(c.manufacturing, { yen: true })))),
     );
     return;
   }
@@ -81,8 +81,8 @@ function lookCosts(x) {
           "tr", {},
           el("td", {}, k.label),
           el("td", { class: `num ${k.value === null ? "missing" : ""}` },
-            k.incomplete && k.value !== null ? el("span", { class: "tag warn", title: "一部未登録" }, "一部") : null, fmt(k.value)),
-          c ? numTd(c.value) : el("td", { class: "num muted" }, "—"),
+            k.incomplete && k.value !== null ? el("span", { class: "tag warn", title: "一部未登録" }, "一部") : null, fmt(k.value, { yen: true })),
+          c ? numTd(c.value, { yen: true }) : el("td", { class: "num muted" }, "—"),
           el("td", {}, c ? el("span", { class: `look-src ${LOOK_SOURCE_CLASS[c.source] || "missing"}` }, c.source_label) : ""),
         );
       }),
@@ -126,7 +126,7 @@ function lookHistory(x) {
   const revRows = x.revisions.map((v) => el(
     "tr", { class: v.version_id === document.getElementById("look-version").value ? "look-current" : "" },
     el("td", {}, versionLabel(v.version_id), v.found ? null : el("span", { class: "muted" }, " 無し")),
-    heads.map(([id]) => numTd(v.costs[id], { missing: "—" })),
+    heads.map(([id]) => numTd(v.costs[id], { missing: "—", yen: true })),
   ));
   const changeRows = x.changes.map((c) => el(
     "tr", {},

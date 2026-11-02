@@ -307,6 +307,8 @@ tr.look-current td { background: var(--accent-soft); }
 #screen-trial.trial-with-lookup:not([hidden]) { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 12px; align-items: start; }
 #screen-trial > .panel { min-width: 0; }
 .trial-lookup { position: sticky; top: 12px; max-height: calc(100vh - 24px); overflow: auto; padding: 12px; background: var(--panel, white); border: 1px solid #ccc; border-radius: 6px; }
+.trial-lookup-head { margin: 10px 0 4px; font-size: 13px; color: var(--muted); }
+.trial-lookup-kv dd.num { text-align: left; }
 .trial-code { border: 0; background: transparent; color: inherit; padding: 0; text-decoration: underline; cursor: pointer; font: inherit; }
 .trial-structure-tools { display: flex; align-items: center; gap: 12px; }
 .trial-structure-tools button[aria-pressed="true"] { background: #dceafa; }

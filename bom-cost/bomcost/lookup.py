@@ -60,8 +60,12 @@ class Lookup:
                     "truncated": len(hits) > MAX_CANDIDATES,
                 })
             code = hits[0]
+        brief = params.get("brief") == "1"
+        item = self.item(version, code, brief=brief)
+        if brief and params.get("summary") == "1":
+            item["summary"] = self.summary(version, code, item["costs"])
         return _json_response({"version_id": version_id, "q": needle, "candidates": [], "truncated": False,
-                               "item": self.item(version, code, brief=params.get("brief") == "1")})
+                               "item": item})
 
     def item(self, version: Version, code: str, brief: bool = False) -> dict[str, Any]:
         """照会の中身（基本・原価・使われ方・構成・履歴）。version はマスタ登録を敷いた版。"""
@@ -76,12 +80,10 @@ class Lookup:
         item_source = next((key for key, layer in layers if code in layer.items), None)
         entries = self.store.bom_entries([code])
         product_kind = Group.product_kind(version, structure)
-        calculated = self._view(version, code).breakdown(code)
         return {
             **basics,
             # この品を計算の一番上にして式で出した値（costs の取込値と並べる）
-            "calculated": [{"head": h.name, "label": h.value, "value": _s(calculated.value(h)),
-                            "incomplete": calculated.is_incomplete(h)} for h in Head],
+            "calculated": self._calculated(version, code),
             "kind": "" if item is None else item.kind,
             "lifecycle": "" if item is None else item.lifecycle,
             "is_product": code in Group.product_codes(version, structure, product_kind),
@@ -94,6 +96,40 @@ class Lookup:
             "revisions": self._revisions(version, code),
             "changes": self._changes(version, code),
         }
+
+    def summary(self, version: Version, code: str, costs: list[dict[str, Any]]) -> dict[str, Any]:
+        """簡易照会の枠の追加分: 計算した8費目・取り込んだ製造原価と計算値との差・直の親・使う製品の数・直の子の数・年間台数。
+
+        枠は品番を押すたびに開くので、全製品を展開せず親を上へたどる（数は _used_in の製品の数と同じ）。
+        年間台数は製品のときだけ（製品でなければ null）。costs は item() の costs。
+        """
+        structure = _Structure(version)
+        products = set(Group.product_codes(version, structure, Group.product_kind(version, structure)))
+        parents_of: dict[str, list[tuple[str, Decimal]]] = {}
+        for parent, lines in structure.children.items():
+            for line in lines:
+                parents_of.setdefault(line.child, []).append((parent, line.quantity))
+        calculated = self._calculated(version, code)
+        computed = next(c["value"] for c in calculated if c["head"] == Head.MANUFACTURING.name)
+        imported = next(c["value"] for c in costs if c["head"] == CostHead.MANUFACTURING.name)
+        difference = None if computed is None or imported is None else _s(Decimal(computed) - Decimal(imported))
+        is_product = code in products
+        volume = version.volume(code) if is_product else None
+        return {
+            "calculated": calculated,
+            "imported": {"value": imported, "difference": difference},  # difference は 計算値 − 取込値
+            "parents": [{"code": p, "name": _name(version, p), "quantity": _s(q)}
+                        for p, q in sorted(parents_of.get(code, ()))],
+            "product_count": len((_ancestors(parents_of, code) & products) - {code}),
+            "child_count": len(structure.children.get(code, ())),
+            "is_product": is_product,
+            "annual_volume": None if volume is None else _s(volume.annual),
+        }
+
+    def _calculated(self, version: Version, code: str) -> list[dict[str, Any]]:
+        calculated = self._view(version, code).breakdown(code)
+        return [{"head": h.name, "label": h.value, "value": _s(calculated.value(h)),
+                 "incomplete": calculated.is_incomplete(h)} for h in Head]
 
     def _view(self, version: Version, code: str) -> _View:
         """版の構成のまま（一括の見方）で原価を出す見方。"""
@@ -200,6 +236,18 @@ def _used_in(version: Version, structure: _Structure, code: str, product_kind: s
         rows.append({"product": product, "product_name": _name(version, product), "specification": _specification(version, product),
                      "quantity_per_unit": _s(usage[code]), "parents": parents})
     return rows
+
+
+def _ancestors(parents_of: dict[str, list[tuple[str, Decimal]]], code: str) -> set[str]:
+    """code の上にある品番の全部（直の親から一番上まで）。循環していても止まる。"""
+    found: set[str] = set()
+    stack = [code]
+    while stack:
+        for parent, _ in parents_of.get(stack.pop(), ()):
+            if parent not in found:
+                found.add(parent)
+                stack.append(parent)
+    return found
 
 
 def _tree(version: Version, code: str) -> list[dict[str, Any]]:
