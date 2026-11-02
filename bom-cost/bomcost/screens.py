@@ -32,7 +32,7 @@ from .model import (
     Volume,
     is_manual_version_id,
 )
-from .group import PRODUCT_KIND_TEXT, Group, _Structure, _batches
+from .group import PRODUCT_KIND_CODE, Group, _Structure, _batches, is_product_kind, part_kind
 from .masterbook import MasterPlan, apply_plan, book_bytes, plan_book, plan_json, save_book
 from .modelchange import compare_structures
 from .mold import Allocation, MoldCost, ReuseTarget, allocate_mold_cost, part_users, reuse_impact
@@ -426,7 +426,7 @@ class Screens:
         return _optional_text(data, "dev_number")
 
     def _product_kind(self, versions: dict[str, Version | None], dev_number: str = "") -> str:
-        """手入力の製品に付ける区分の記号。一番新しい版（マスタ登録を敷く）で製品とみなす記号、版が無ければ「製品」。
+        """手入力の製品に付ける区分の記号。一番新しい版（マスタ登録を敷く）で製品とみなす記号、版が無い・決まらなければ PRODUCT_KIND_CODE。
 
         開発番号を渡せば、その開発番号の一番新しい版（無ければ全体の一番新しい版）で見る。
         製品群は版ごとに記号を選ぶので、版の記号に合わせないと手入力の製品が製品の一覧から外れる。
@@ -437,8 +437,8 @@ class Screens:
             latest = [own]
         version = self._cached_version(versions, latest[0].version_id) if latest else None
         if version is None:
-            return PRODUCT_KIND_TEXT
-        return Group.product_kind(version, _Structure(version)) or PRODUCT_KIND_TEXT
+            return PRODUCT_KIND_CODE
+        return Group.product_kind(version, _Structure(version)) or PRODUCT_KIND_CODE
 
     def _cached_version(self, versions: dict[str, Version | None], version_id: str) -> Version | None:
         if version_id not in versions:
@@ -524,7 +524,8 @@ class Screens:
         """試作品の品目と原価を足す・直す（同じ品番は入れ替え）。マスタ登録に入る。
 
         dev_number（空は共通）か version（その版の開発番号）の登録に入る。
-        role（product・part）を送ると区分はそれで決まる: product は製品とみなす記号、part は kind（製品の記号は不可）。
+        role（product・part）を送ると区分はそれで決まる: product は製品とみなす記号、part は kind（製品の記号は不可・
+        空なら part_kind）。
         role が無ければ kind をそのまま区分にする。
         """
         dev = self._dev_number(params, body)
@@ -548,8 +549,10 @@ class Screens:
                 kind = product_kind
             elif role != "part":
                 raise ApiError(400, f"role が分からない: {role}（product・part）")
-            elif kind == product_kind:
+            elif is_product_kind(product_kind, kind):
                 raise ApiError(400, f"部品の区分に製品の記号 {kind} は使えない")
+            else:
+                kind = part_kind(product_kind, kind)
         manual = self.store.load_manual(dev)
         kept = manual.items.get(code)
         result = _manual_copy(manual, drop_item=code)

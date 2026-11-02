@@ -1,4 +1,4 @@
-"""画面を試すための架空の例の DB。中身はテストの tests/example_data.py と同じ（すべて材料費・円）。
+"""画面を試すための架空の例の DB。中身はテストの tests/example_data.py と同じ（すべて材料費・円）。区分の記号だけ製品 2・部品 1。
 
 品番・名称・数値・区分の記号はすべて架空。
 """
@@ -6,6 +6,7 @@
 from datetime import datetime
 from pathlib import Path
 
+from .group import PART_KIND_CODE, PRODUCT_KIND_CODE
 from .model import MANUAL_VERSION_ID, BomLine, CostHead, CostRow, Item, Version, Volume
 from .mold import MoldCost, ReuseTarget
 from .rollup import Scope, ScopePolicy
@@ -13,8 +14,8 @@ from .scenario import Change, ChangeKind, Scenario
 from .store import Store
 
 M = CostHead.MATERIAL
-PRODUCT = "P"  # 区分の記号（架空）: 製品
-PART = "B"  # 部品
+PRODUCT = PRODUCT_KIND_CODE  # 区分の記号: 製品
+PART = PART_KIND_CODE  # 部品
 DEMO_SCENARIO_NAME = "V-110 検討"
 DEMO_DEV_NUMBER = "D-100"  # 2つの版はこの開発番号の第1版・第2版
 DEMO_DEV_NAME = "例のユニット"

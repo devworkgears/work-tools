@@ -21,6 +21,9 @@
   --chg-remove: #fbe3e1;
   --chg-add: #e2f2e7;
   --chg-qty: #e4ecfa;
+  /* ③の表の目立たせる費目の地と、ほかの費目の文字の濃さ（地と文字の色に混ぜるので明暗どちらでも読める） */
+  --cmp-key: color-mix(in srgb, var(--accent) 9%, transparent);
+  --cmp-minor-ink: 70%;
   font-family: "Yu Gothic UI", "Meiryo UI", "Segoe UI", sans-serif;
   font-size: 14px;
 }
@@ -275,6 +278,12 @@ table.cmp-grid tr.cmp-grid-total th { font-weight: 600; color: var(--text); }
 .cmp-grid-label { color: var(--muted); white-space: nowrap; }
 .cmp-grid-volume { color: var(--muted); font-size: 12px; white-space: nowrap; }
 .cmp-grid-volume.missing { color: var(--warn); }
+/* 材料費・製造原価は地を敷いて太字、ほかの4費目は文字を淡く（地は重ねるので選んだ費目の地とも並ぶ） */
+td.cmp-key, th.cmp-key, tr.cmp-key > td { background-image: linear-gradient(var(--cmp-key), var(--cmp-key)); font-weight: 700; }
+.cmp-minor, tr.cmp-minor > td { --cmp-ink: var(--text); color: color-mix(in srgb, var(--cmp-ink) var(--cmp-minor-ink), transparent); }
+.cmp-minor.neg, .cmp-minor .neg { --cmp-ink: var(--good); }
+.cmp-minor.pos, .cmp-minor .pos { --cmp-ink: var(--bad); }
+.cmp-minor.missing, .cmp-minor .missing { --cmp-ink: var(--warn); }
 .cmp-grid-mark { margin-left: 2px; color: var(--warn); font-size: 11px; vertical-align: super; cursor: help; }
 @media (max-width: 860px) {
   .cmp-split { grid-template-columns: 1fr; }
@@ -299,3 +308,5 @@ tr.look-current td { background: var(--accent-soft); }
 .trial-structure-tools { display: flex; align-items: center; gap: 12px; }
 .trial-structure-tools button[aria-pressed="true"] { background: #dceafa; }
 .trial-parts-layout { margin-bottom: 8px; }
+.trial-view { margin: 6px 0 2px; }
+table.trial-all th, table.trial-all td { white-space: nowrap; }

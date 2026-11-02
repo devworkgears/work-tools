@@ -26,6 +26,20 @@ DEFAULT_PRODUCT_LIMIT = 500
 DEFAULT_ROW_LIMIT = 2000
 MAX_LIMIT = 20000
 PRODUCT_KIND_TEXT = "製品"
+PRODUCT_KIND_CODE = "2"  # 区分の記号: 製品
+PART_KIND_CODE = "1"  # 区分の記号: 部品（製品の記号が PRODUCT_KIND_CODE の時に付ける）
+
+
+def part_kind(product_kind: str, kind: str) -> str:
+    """部品として登録する品目の区分。記号が空で、製品の記号が PRODUCT_KIND_CODE なら PART_KIND_CODE。"""
+    return kind or (PART_KIND_CODE if product_kind == PRODUCT_KIND_CODE else "")
+
+
+def is_product_kind(product_kind: str, kind: str) -> bool:
+    """部品に付けられない区分の記号か（製品とみなす記号と PRODUCT_KIND_CODE）。"""
+    return bool(kind) and kind in (product_kind, PRODUCT_KIND_CODE)
+
+
 COMPARE_HEADS: tuple[CostHead, ...] = (
     CostHead.MATERIAL,
     CostHead.AMORTIZATION,
@@ -332,10 +346,12 @@ class Group:
 
     @staticmethod
     def product_kind(version: Version, structure: _Structure, requested: str = "") -> str | None:
-        """製品とみなす区分の記号。指定が無ければ「製品」、それも無ければ構成の一番上の親に多い記号。"""
+        """製品とみなす区分の記号。指定 → 品目にあれば PRODUCT_KIND_CODE → 「製品」 → 構成の一番上の親に多い記号の順。"""
         if requested:
             return requested
         kinds = {item.kind for item in version.items.values()}
+        if PRODUCT_KIND_CODE in kinds:
+            return PRODUCT_KIND_CODE
         if PRODUCT_KIND_TEXT in kinds:
             return PRODUCT_KIND_TEXT
         top_kinds = Counter(

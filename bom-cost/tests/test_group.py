@@ -313,7 +313,8 @@ class ManualSplit(SampleDbCase):
 class EmptyManual(EmptyDbCase):
     def test_product_kind_without_versions(self) -> None:
         data = self.ok("PUT", "/api/manual/items", body={"code": "N-1", "name": "n", "role": "product"})
-        self.assertEqual((data["product_kind"], data["items"][0]["kind"], data["trials"]), ("製品", "製品", []))
+        self.assertEqual(data["items"][0]["kind"], data["product_kind"])
+        self.assertEqual(data["trials"], [])
 
 
 class DemoTree(unittest.TestCase):

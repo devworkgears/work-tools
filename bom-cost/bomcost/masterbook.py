@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .api import HEADS
+from .group import is_product_kind, part_kind
 from .importer import load_openpyxl
 from .model import MANUAL_VERSION_ID, CostHead, CostRow, Item, Version, Volume
 from .mold import MoldCost, ReuseTarget
@@ -262,8 +263,9 @@ def _plan_row(
             kind = product_kind
         else:
             kind = to_symbol(_text(v["区分"]) or None, name="区分")
-            if kind == product_kind:
+            if is_product_kind(product_kind, kind):
                 raise _RowError(f"部品の区分に製品の記号 {kind} は使えない")
+            kind = part_kind(product_kind, kind)
         heads = {h: _decimal(v[h.value], h.value, False) for h in HEADS}
         if code in item_rows and item_rows[code][0] != sheet:
             other, row = item_rows[code]

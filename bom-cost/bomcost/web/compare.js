@@ -96,6 +96,10 @@ function isIgnored(r, head) {
   return head === "AMORTIZATION" && r.ignore_amortization;
 }
 
+// 表で目立たせる費目（材料費・製造原価）と、文字を淡くするほかの費目
+const CMP_KEY_HEADS = new Set(["MATERIAL", "MANUFACTURING"]);
+const cmpHeadClass = (head) => (CMP_KEY_HEADS.has(head) ? "cmp-key" : "cmp-minor");
+
 function drawCompareView() {
   const isTable = compareState.layout === "table";
   const r = isTable ? compareState.table : compareState.data;
@@ -216,7 +220,7 @@ function drawCompareDetail() {
   const multi = r.names.length > 1;
   const max = Math.max(...names.flatMap((n) => r.heads.map((h) => Math.abs(diffNumber(p.trials[n].differences[h.id]) ?? 0))), 0) || 1;
   const cell = (text, head, opts) => (isIgnored(r, head) ? el("td", { class: "num muted" }, "—") : numTd(text, opts));
-  const rows = r.heads.map((h) => el("tr", { class: h.id === compareState.head ? "cmp-current-head" : "" },
+  const rows = r.heads.map((h) => el("tr", { class: `${cmpHeadClass(h.id)} ${h.id === compareState.head ? "cmp-current-head" : ""}` },
     el("td", {}, h.label),
     cell(p.base.costs[h.id], h.id),
     names.map((n) => {
@@ -256,7 +260,7 @@ const CMP_MARK = "※";
 function compareGrid(t, head) {
   const multi = t.names.length > 1;
   const ignored = (h) => h === "AMORTIZATION" && t.ignore_amortization;
-  const current = (h) => (h === head ? "cmp-grid-current" : "");
+  const current = (h) => `${cmpHeadClass(h)} ${h === head ? "cmp-grid-current" : ""}`;
   const mark = (title) => el("span", { class: "cmp-grid-mark", title }, CMP_MARK);
   const cell = (text, h, { sign = false, percent = false, known = true, excluded = null, partial = null } = {}) => {
     if (ignored(h)) return el("td", { class: `num muted ${current(h)}` }, "—");
