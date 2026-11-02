@@ -344,6 +344,8 @@ class StaticAndServer(unittest.TestCase):
     def test_no_external_resources(self) -> None:
         web = Path(__file__).resolve().parent.parent / "bomcost" / "web"
         for path in web.iterdir():
+            if not path.is_file():
+                continue
             text = path.read_text(encoding="utf-8")
             self.assertNotRegex(text, r"(?i)(src|href)=[\"']?(https?:)?//", path.name)
             self.assertNotIn("@import", text, path.name)
