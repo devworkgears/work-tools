@@ -413,21 +413,39 @@ class Store:
         if cursor.rowcount == 0:
             raise KeyError(f"版 {version_id} は無い")
 
-    def delete_version(self, version_id: str) -> None:
-        """版を消す。マスタ登録の版と、試算が使っている版は消せない。"""
+    def delete_version(self, version_id: str, cascade: bool = False) -> None:
+        """版を消す。マスタ登録の版は消せない。試算が使っている版は cascade=False なら消せない。
+
+        cascade=True なら version_locks の検討案（名前と版の組ごとの試算の全部）と版を1つの書き込みで消す。
+        """
         if is_manual_version_id(version_id):
             raise ValueError("manual は消せない")
-        users = self._conn.execute(
-            "SELECT DISTINCT s.name FROM scenario s LEFT JOIN change c ON c.scenario_id = s.scenario_id "
-            "WHERE s.version_id = ? OR c.version_id = ? ORDER BY s.scenario_id",
-            (version_id, version_id),
-        ).fetchall()
-        if users:
-            raise VersionInUseError(version_id, [u[0] for u in users])
-        with self._conn:
-            cursor = self._conn.execute("DELETE FROM version WHERE version_id = ?", (version_id,))
-        if cursor.rowcount == 0:
+        if not cascade:
+            users = self._conn.execute(
+                "SELECT DISTINCT s.name FROM scenario s LEFT JOIN change c ON c.scenario_id = s.scenario_id "
+                "WHERE s.version_id = ? OR c.version_id = ? ORDER BY s.scenario_id",
+                (version_id, version_id),
+            ).fetchall()
+            if users:
+                raise VersionInUseError(version_id, [u[0] for u in users])
+        if not self._conn.execute("SELECT 1 FROM version WHERE version_id = ?", (version_id,)).fetchone():
             raise KeyError(f"版 {version_id} は無い")
+        here, others = self.version_locks(version_id)
+        trials = [(name, version_id) for name in here] + others
+        with self._conn:
+            for name, trial_version in trials:
+                self._conn.execute("DELETE FROM scenario WHERE name = ? AND version_id = ?", (name, trial_version))
+            self._conn.execute("DELETE FROM version WHERE version_id = ?", (version_id,))
+
+    def version_locks(self, version_id: str) -> tuple[list[str], list[tuple[str, str]]]:
+        """版をロックしている検討案。(この版の上の検討名, 変更の記録がこの版を参照する他の版の (検討名, 版))。作った順。"""
+        here = [r[0] for r in self._conn.execute(
+            "SELECT name FROM scenario WHERE version_id = ? GROUP BY name ORDER BY MIN(scenario_id)", (version_id,))]
+        others = [(r[0], r[1]) for r in self._conn.execute(
+            "SELECT s.name, s.version_id FROM scenario s JOIN change c ON c.scenario_id = s.scenario_id "
+            "WHERE c.version_id = ? AND s.version_id <> ? GROUP BY s.name, s.version_id "
+            "ORDER BY MIN(s.scenario_id)", (version_id, version_id))]
+        return here, others
 
     def _delete_rows(self, version_id: str) -> None:
         for table in ("item", "bom_line", "bom_conflict", "cost", "volume"):
@@ -858,6 +876,12 @@ class Store:
     def delete_scenario(self, scenario_id: int) -> None:
         with self._conn:
             self._conn.execute("DELETE FROM scenario WHERE scenario_id = ?", (scenario_id,))
+
+    def delete_trial(self, version_id: str, name: str) -> int:
+        """版のその名前の検討案（製品ごとの試算と変更の記録）を全部消し、消した試算の数を返す。"""
+        with self._conn:
+            cursor = self._conn.execute("DELETE FROM scenario WHERE name = ? AND version_id = ?", (name, version_id))
+        return cursor.rowcount
 
 
 def _iso(value: datetime | None) -> str | None:

@@ -41,7 +41,9 @@ async function drawGroup() {
     el("td", {}, t.name),
     el("td", { class: "num" }, String(t.count)),
     el("td", {}, versionLabel(t.version_id)),
-    el("td", {}, el("button", { type: "button", onclick: () => guarded(() => openTrial(t.version_id, t.name)) }, "構成変更で開く")),
+    el("td", {},
+      el("button", { type: "button", onclick: () => guarded(() => openTrial(t.version_id, t.name)) }, "構成変更で開く"),
+      el("button", { type: "button", onclick: () => guarded(() => deleteTrial(t)) }, "消す")),
   ));
   const none = (n) => [el("tr", {}, el("td", { colspan: n, class: "muted" }, "なし"))];
   document.getElementById("group-body").replaceChildren(
@@ -64,6 +66,17 @@ async function createTrials() {
   await loadLists();
   await drawGroup();
   showMessage(`「${name}」${r.created} 製品に作成・既存 ${r.existing} 製品${r.truncated ? "（上限）" : ""}`, "info");
+}
+
+async function deleteTrial(t) {
+  if (!confirm(`「${t.name}」（${t.count} 製品）を消しますか？（元に戻せません）`)) return;
+  await api("DELETE", `/api/group/trials?${qs({ version: t.version_id, name: t.name })}`);
+  if (typeof trialOpened !== "undefined" && trialOpened?.version === t.version_id && trialOpened?.name === t.name) {
+    trialOpened = null;
+  }
+  await refreshLists();
+  await drawGroup();
+  showMessage(`「${t.name}」を消しました。`, "info");
 }
 
 function wireGroup() {

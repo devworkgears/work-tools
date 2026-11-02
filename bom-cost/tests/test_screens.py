@@ -4,9 +4,10 @@ import base64
 import io
 import json
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
-from bomcost import Store
+from bomcost import Scenario, Store
 from bomcost.api import Api, Response
 from bomcost.importer import load_openpyxl
 from bomcost.model import CostHead
@@ -439,6 +440,24 @@ class DeleteVersion(DemoDbCase):
         self.assertEqual([v["version_id"] for v in remaining], ["2026-10"])
         self.assertEqual(self.call("DELETE", "/api/versions", "version=2026-12").status, 404)
         self.assertIn("manual は消せない", self.call("DELETE", "/api/versions", "version=manual").json()["error"])
+
+    def test_cascade_deletes_locking_trials_with_the_version(self) -> None:
+        demo = self.store.load_scenario(self.scenario_id)
+        later = Scenario("後の検討", demo.base, demo.product_code, self.store.load_version("2026-12"), demo.head,
+                         self.store.load_scope_policy(),
+                         history=[replace(r, version_id="2026-10") for r in demo.history[:1]])
+        self.store.save_scenario(later)
+        info = self.ok("GET", "/api/versions/info", "version=2026-10")
+        self.assertEqual(info["locked_here"], [demo.name])
+        self.assertEqual([(t["name"], t["version_id"]) for t in info["locked_others"]], [("後の検討", "2026-12")])
+        self.assertIn("第2版", info["locked_others"][0]["version_label"])
+        self.assertEqual(self.call("DELETE", "/api/versions", "version=2026-10").status, 400)
+        self.assertEqual(len(self.store.list_scenarios()), 2)
+        remaining = self.ok("DELETE", "/api/versions", "version=2026-10&cascade=1")
+        self.assertEqual([v["version_id"] for v in remaining], ["2026-12"])
+        self.assertEqual(self.store.list_scenarios(), [])
+        self.assertEqual(self.call("DELETE", "/api/versions", "version=manual&cascade=1").status, 400)
+        self.assertEqual(self.call("DELETE", "/api/versions", "version=2026-10&cascade=1").status, 404)
 
 
 class VersionNote(EmptyDbCase):

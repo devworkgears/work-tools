@@ -5,6 +5,7 @@ import io
 import sqlite3
 import tempfile
 import unittest
+from dataclasses import replace
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -448,6 +449,79 @@ class VersionsAndScenarios(unittest.TestCase):
         self.assertEqual([i.version_id for i in self.store.list_versions()], ["2026-10"])
         with self.assertRaises(KeyError):
             self.store.load_version("2026-12")
+
+    def other_version_trial(self, name: str = "後の検討") -> int:
+        """版 2026-12 の上の試算で、変更の記録の1件が版 2026-10 を参照する物。"""
+        s = Scenario(name, "A-100", "V-110", self.store.load_version("2026-12"), M, self.store.load_scope_policy())
+        s.apply(Change(ChangeKind.ADD, "F-600"), datetime(2026, 11, 1, 9, 0))
+        moved = Scenario(name, "A-100", "V-110", s.version, M, self.store.load_scope_policy(),
+                         history=[replace(r, version_id="2026-10") for r in s.history])
+        return self.store.save_scenario(moved)
+
+    def test_version_locks_split_here_and_other_versions(self) -> None:
+        self.store.save_scenario(self.scenario())
+        self.store.save_scenario(self.scenario())  # 同じ名前の2本目は1件にまとめる
+        self.other_version_trial()
+        self.assertEqual(self.store.version_locks("2026-10"), (["V-110 検討"], [("後の検討", "2026-12")]))
+        self.assertEqual(self.store.version_locks("2026-12"), (["後の検討"], []))
+
+    def test_cascade_deletes_trials_on_and_referencing_the_version(self) -> None:
+        self.store.save_scenario(self.scenario())
+        self.other_version_trial()
+        untouched = Scenario("残る", "A-100", "V-110", self.store.load_version("2026-12"), M,
+                             self.store.load_scope_policy())
+        kept = self.store.save_scenario(untouched)
+        with self.assertRaises(VersionInUseError):
+            self.store.delete_version("2026-10")
+        self.store.delete_version("2026-10", cascade=True)
+        self.assertEqual([i.version_id for i in self.store.list_versions()], ["2026-12"])
+        self.assertEqual([s.scenario_id for s in self.store.list_scenarios()], [kept])
+        self.assertEqual(self.store._conn.execute("SELECT COUNT(*) FROM change").fetchone()[0], 0)
+        with self.assertRaises(ValueError):
+            self.store.delete_version("manual", cascade=True)
+        with self.assertRaises(KeyError):
+            self.store.delete_version("1999", cascade=True)
+
+    def test_cascade_failure_midway_deletes_nothing(self) -> None:
+        self.store.save_scenario(self.scenario())
+        self.other_version_trial()
+        real = self.store._conn
+
+        class FailOnVersionDelete:
+            def __getattr__(self, name: str) -> object:
+                return getattr(real, name)
+
+            def __enter__(self) -> object:
+                return real.__enter__()
+
+            def __exit__(self, *exc: object) -> object:
+                return real.__exit__(*exc)
+
+            def execute(self, sql: str, *args: object) -> object:
+                if sql.startswith("DELETE FROM version"):
+                    raise sqlite3.OperationalError("止める")
+                return real.execute(sql, *args)
+
+        self.store._conn = FailOnVersionDelete()
+        try:
+            with self.assertRaises(sqlite3.OperationalError):
+                self.store.delete_version("2026-10", cascade=True)
+        finally:
+            self.store._conn = real
+        self.assertEqual(len(self.store.list_scenarios()), 2)
+        self.assertEqual(len(self.store.list_versions()), 2)
+        self.assertEqual(real.execute("SELECT COUNT(*) FROM change").fetchone()[0], 4)
+
+    def test_delete_trial_removes_every_product_of_the_name(self) -> None:
+        self.store.save_scenario(self.scenario())
+        other = Scenario("V-110 検討", "B-200", "V-111", self.store.load_version("2026-10"), M,
+                         self.store.load_scope_policy())
+        self.store.save_scenario(other)
+        kept = self.other_version_trial("V-110 検討")  # 同じ名前でも別の版の物は残す
+        self.assertEqual(self.store.delete_trial("2026-10", "V-110 検討"), 2)
+        self.assertEqual([s.scenario_id for s in self.store.list_scenarios()], [kept])
+        self.assertEqual(self.store._conn.execute("SELECT COUNT(*) FROM change").fetchone()[0], 1)
+        self.assertEqual(self.store.delete_trial("2026-10", "V-110 検討"), 0)
 
     def test_versions_are_kept_without_limit(self) -> None:
         for n in range(15):

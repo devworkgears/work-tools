@@ -219,6 +219,15 @@ th.sortable { cursor: pointer; user-select: none; }
 tr.trial-total th { color: inherit; font-weight: 600; }
 .trial-foot { display: flex; justify-content: flex-end; padding: 8px 0; }
 
+/* 版管理: 検討案ごと消す確認の枠 */
+.verdel { margin: 10px 0; padding: 8px 12px; border: 1px solid var(--bad); border-radius: 6px; background: var(--panel); }
+.verdel ul { margin: 2px 0 6px; padding-left: 20px; }
+.verdel-head { margin-top: 6px; font-size: 13px; color: var(--muted); }
+.verdel-others { margin-top: 6px; padding: 2px 8px; border-radius: 4px; background: var(--warn-soft); }
+.verdel-others .verdel-head { color: var(--bad); font-weight: 700; }
+.verdel-buttons { display: flex; gap: 8px; margin-top: 6px; }
+.verdel-go { background: var(--bad); color: var(--panel); border-color: var(--bad); }
+
 /* マスタ登録のタブ */
 .manual-tabs { justify-self: start; flex-wrap: wrap; }
 .mreg-dev { justify-self: start; }

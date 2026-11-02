@@ -135,6 +135,7 @@ class Group:
             ("POST", r"/api/group/changes/by-code", self.replace_code),
             ("GET", r"/api/group/names", self.names),
             ("GET", r"/api/group/trials", self.trials),
+            ("DELETE", r"/api/group/trials", self.delete_trial),
             ("GET", r"/api/group/changes", self.changes),
             ("POST", r"/api/group/changes", self.add_change),
             ("POST", r"/api/group/changes/bulk", self.add_changes),
@@ -654,6 +655,17 @@ class Group:
             if not version_id or s.version_id == version_id:
                 bases.setdefault((s.name, s.version_id), set()).add(s.base)
         return _json_response([{"name": n, "version_id": v, "count": len(b)} for (n, v), b in bases.items()])
+
+    def delete_trial(self, params: dict[str, str]) -> Response:
+        """版のその検討名の試算（製品ごと）と変更の記録を全部消す。無ければ 404。"""
+        version_id = (params.get("version") or "").strip()
+        name = (params.get("name") or "").strip()
+        if not version_id or not name:
+            raise ApiError(400, "版（version）と検討名（name）を付ける")
+        deleted = self.store.delete_trial(version_id, name)
+        if not deleted:
+            raise ApiError(404, f"検討案 {name} は無い")
+        return _json_response({"version_id": version_id, "name": name, "deleted": deleted})
 
     # 替える・足す ------------------------------------------------------------
 

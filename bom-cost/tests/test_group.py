@@ -265,6 +265,18 @@ class Trials(SampleDbCase):
         self.assertEqual(self.ok("GET", "/api/group/trials", "version=2026-10"), expected)
         self.assertEqual(self.ok("GET", "/api/group/trials", "version=nope"), [])
 
+    def test_delete_trial_removes_all_products_of_the_name(self) -> None:
+        self.ok("POST", "/api/group/scenarios", body={"version_id": "2026-10", "name": NAME, "q": "-1"})
+        self.change("K-200", kind="ADD", part="F-600")
+        self.ok("POST", "/api/group/changes", body={"version_id": "2026-10", "name": "別の検討", "product": "A-100",
+                                                     "kind": "ADD", "part": "F-600"})
+        done = self.ok("DELETE", "/api/group/trials", f"version=2026-10&name={quote(NAME)}")
+        self.assertEqual(done, {"version_id": "2026-10", "name": NAME, "deleted": 3})
+        self.assertEqual(self.ok("GET", "/api/group/trials"), [{"name": "別の検討", "version_id": "2026-10", "count": 1}])
+        self.assertEqual(self.store._conn.execute("SELECT COUNT(*) FROM change").fetchone()[0], 1)
+        self.assertEqual(self.call("DELETE", "/api/group/trials", f"version=2026-10&name={quote(NAME)}").status, 404)
+        self.assertEqual(self.call("DELETE", "/api/group/trials", "version=2026-10").status, 400)
+
     def test_trial_flag_limits_products_and_parts(self) -> None:
         self.ok("POST", "/api/group/scenarios", body={"version_id": "2026-10", "name": NAME, "q": "V-",
                                                       "head": "MANUFACTURING"})

@@ -65,6 +65,11 @@ function codeSpan(versionId, code) {
 
 async function refreshLists() {
   await loadLists();
+  // 開いていた試算が消えたら（検討案・版を消した時）、開いていない状態に戻す
+  if (state.summary && !state.scenarios.some((s) => s.scenario_id === state.summary.scenario.scenario_id)) {
+    state.summary = null;
+    state.scenarioId = null;
+  }
   if (state.summary) {
     document.getElementById("scenario-select").value = String(state.summary.scenario.scenario_id);
     document.getElementById("version-select").value = state.summary.scenario.version_id;
@@ -781,15 +786,53 @@ async function drawVersions() {
           type: "button", class: screenState.warningOpen?.version_id === v.version_id ? "on" : null,
           onclick: toggleWarnings(v.version_id),
         }, "警告を見る"),
-        el("button", { type: "button", onclick: () => guarded(async () => {
-          if (!confirm(`${versionLabel(v)} を消しますか？（元に戻せません）`)) return;
-          await api("DELETE", `/api/versions?${qs({ version: v.version_id })}`);
-          await refreshLists();
-          await drawVersions();
-          showMessage(`${versionLabel(v)} を消しました。`, "info");
-        }) }, "消す")),
+        el("button", { type: "button", onclick: () => guarded(() => askDeleteVersion(v)) }, "消す")),
     ))),
+    versionDeleteBox() ?? "",
     warningDetail() ?? "",
+  );
+}
+
+// ロックしている検討案があれば画面の中の枠で並べて確かめ、無ければ今までどおり confirm で消す
+async function askDeleteVersion(v) {
+  const info = await api("GET", `/api/versions/info?${qs({ version: v.version_id })}`);
+  if (info.locked_here.length || info.locked_others.length) {
+    screenState.versionDelete = { version: v, info };
+    await drawVersions();
+    return;
+  }
+  if (!confirm(`${versionLabel(v)} を消しますか？（元に戻せません）`)) return;
+  await deleteVersion(v, false);
+}
+
+async function deleteVersion(v, cascade) {
+  await api("DELETE", `/api/versions?${qs({ version: v.version_id, cascade: cascade ? "1" : "" })}`);
+  const gone = screenState.versionDelete?.info.locked_others.map((t) => t.version_id) ?? [];
+  if (typeof trialOpened !== "undefined" && trialOpened
+      && (trialOpened.version === v.version_id || gone.includes(trialOpened.version))) trialOpened = null;
+  screenState.versionDelete = null;
+  await refreshLists();
+  await drawVersions();
+  showMessage(`${versionLabel(v)} を消しました。`, "info");
+}
+
+function versionDeleteBox() {
+  const d = screenState.versionDelete;
+  if (!d || !state.versions.some((v) => v.version_id === d.version.version_id)) return null;
+  const close = () => { screenState.versionDelete = null; drawVersions(); };
+  const here = d.info.locked_here;
+  const others = d.info.locked_others;
+  return el("div", { class: "verdel" },
+    el("div", { class: "detail-title" }, `${versionLabel(d.version)} を検討案ごと消しますか？（元に戻せません）`),
+    here.length ? el("div", {},
+      el("div", { class: "verdel-head" }, `この版の上の検討案（${here.length} 件）`),
+      el("ul", {}, here.map((n) => el("li", {}, n)))) : null,
+    others.length ? el("div", { class: "verdel-others" },
+      el("div", { class: "verdel-head" }, `他の版の検討案も消えます（${others.length} 件）`),
+      el("ul", {}, others.map((t) => el("li", {}, `${t.name}（${t.version_label}）`)))) : null,
+    el("div", { class: "verdel-buttons" },
+      el("button", { type: "button", class: "verdel-go", onclick: () => guarded(() => deleteVersion(d.version, true)) }, "全部消す"),
+      el("button", { type: "button", onclick: close }, "やめる")),
   );
 }
 

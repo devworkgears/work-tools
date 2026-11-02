@@ -12,7 +12,8 @@ from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
-from .api import HEADS, ApiError, Response, _flag, _head, _json_response, _known_codes, _s, _text_field, _View
+from .api import (HEADS, ApiError, Response, _flag, _head, _json_response, _known_codes, _s, _text_field, _View,
+                  version_label)
 from .importer import (
     TABLE_FIELDS,
     ColumnMap,
@@ -394,12 +395,22 @@ class Screens:
                 "warning_count": info.warning_count,
                 "warnings": [_warning_json(w) for w in self.store.version_warnings(version_id)],
                 "used_by": [s.name for s in self.store.list_scenarios() if s.version_id == version_id],
+                **self._locks_json(version_id),
             }
         )
 
+    def _locks_json(self, version_id: str) -> dict[str, Any]:
+        here, others = self.store.version_locks(version_id)
+        labels = {v.version_id: v for v in self.store.list_versions()}
+        return {
+            "locked_here": here,
+            "locked_others": [{"name": n, "version_id": v,
+                               "version_label": version_label(labels[v]) if v in labels else v} for n, v in others],
+        }
+
     def delete_version(self, params: dict[str, str]) -> Response:
-        """試算が使っている版は VersionInUseError（400）で消せない。"""
-        self.store.delete_version(_param(params, "version", "版"))
+        """試算が使っている版は VersionInUseError（400）で消せない。cascade=1 ならロックしている検討案ごと消す。"""
+        self.store.delete_version(_param(params, "version", "版"), cascade=_flag(params.get("cascade")))
         return self.api.versions({})
 
     def put_version_note(self, params: dict[str, str], body: dict[str, Any]) -> Response:
