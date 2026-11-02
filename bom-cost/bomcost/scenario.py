@@ -165,7 +165,16 @@ class Scenario:
 
     def root_lines(self, changes: tuple[Change, ...] | None = None) -> tuple[BomLine, ...]:
         """土台 ×1 に変更（省けば履歴の全部）を順に当てた、仮の製品の直下の行（同じ品番は合算）。"""
-        entries: list[list] = [[self.base, Decimal(1), True]]  # 品番・数量・土台か
+        merged: dict[str, Decimal] = {}
+        for code, qty, _, _ in self.root_entries(changes):
+            merged[code] = merged.get(code, Decimal(0)) + qty
+        return tuple(
+            BomLine(self.product_code, None, code, qty) for code, qty in merged.items() if qty != 0
+        )
+
+    def root_entries(self, changes: tuple[Change, ...] | None = None) -> list[tuple[str, Decimal, bool, str | None]]:
+        """root_lines の合算前の行（品番・製品1台あたりの数量・土台か・場所つきの変更ならその場所の親）。先頭は土台 ×1。"""
+        entries: list[list] = [[self.base, Decimal(1), True, None]]
         removed: set[tuple[str, str | None, str]] = set()  # 1回の置換の代わりの部品が何行でも、場所の部品は1回だけ抜く
         usage: dict[str, Decimal] | None = None
         for change in self.changes if changes is None else changes:
@@ -180,15 +189,10 @@ class Scenario:
             per_unit = Decimal(1) if change.parent == self.base else usage.get(change.parent, Decimal(0))
             if location not in removed:
                 removed.add(location)
-                entries.append([change.part, -self.location_quantity(location) * per_unit, False])
+                entries.append([change.part, -self.location_quantity(location) * per_unit, False, change.parent])
             # 場所の員数変更は、その場所を同じ部品の新しい員数に置き換えるのと同じ
-            entries.append([change.replacement or change.part, change.quantity * per_unit, False])
-        merged: dict[str, Decimal] = {}
-        for code, qty, _ in entries:
-            merged[code] = merged.get(code, Decimal(0)) + qty
-        return tuple(
-            BomLine(self.product_code, None, code, qty) for code, qty in merged.items() if qty != 0
-        )
+            entries.append([change.replacement or change.part, change.quantity * per_unit, False, change.parent])
+        return [(e[0], e[1], e[2], e[3]) for e in entries]
 
     def location_quantity(self, location: tuple[str, str | None, str]) -> Decimal:
         """版の構成の、その場所（親・風船番号・品番）の員数。場所が版に無ければ 0。"""
@@ -338,17 +342,17 @@ def _amount(quantity: Decimal, unit: Decimal | None) -> Decimal | None:
 
 def _apply(entries: list[list], change: Change) -> None:
     if change.kind is ChangeKind.ADD:
-        entries.append([change.part, change.quantity, False])
+        entries.append([change.part, change.quantity, False, None])
     elif change.kind is ChangeKind.REMOVE:
-        entries.append([change.part, -change.quantity, False])
+        entries.append([change.part, -change.quantity, False, None])
     elif change.kind is ChangeKind.SET_QUANTITY:
         entries[:] = [e for e in entries if e[0] != change.part]
-        entries.append([change.part, change.quantity, False])
+        entries.append([change.part, change.quantity, False, None])
     elif change.kind is ChangeKind.REPLACE:
         # 足した部品を替えるときは、その行の品番を差し替える。土台の中の部品は「抜く＋足す」で表す
         for entry in entries:
             if entry[0] == change.part and entry[1] > 0 and not entry[2]:
                 entry[0] = change.replacement
                 return
-        entries.append([change.part, -change.quantity, False])
-        entries.append([change.replacement, change.quantity, False])
+        entries.append([change.part, -change.quantity, False, None])
+        entries.append([change.replacement, change.quantity, False, None])

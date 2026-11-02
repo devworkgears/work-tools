@@ -3,7 +3,11 @@
 "use strict";
 
 // layout は グラフ（chart）か 表（table）。画面を開いている間は覚える。data・table はそれぞれの API の返事（要る時に読む）
-const compareState = { query: null, data: null, table: null, layout: "chart", head: "MANUFACTURING", product: null };
+// picked は表でチェックした製品（材料費の内訳を出す）、by・weight は内訳のまとめ方と数え方、breakdown はその API の返事
+const compareState = {
+  query: null, data: null, table: null, layout: "chart", head: "MANUFACTURING", product: null,
+  picked: new Set(), by: "code", weight: "unit", breakdown: null,
+};
 
 async function enterCompare() {
   const version = document.getElementById("cmp-version");
@@ -33,6 +37,8 @@ async function drawCompareTable() {
   compareState.data = null;
   compareState.table = null;
   compareState.product = null;
+  compareState.picked = new Set();
+  compareState.breakdown = null;
   await Promise.all([loadCompareLayout(), loadCodeNames(version)]);
   drawCompareView();
 }
@@ -110,7 +116,9 @@ function drawCompareView() {
   const tools = el("div", { class: "cmp-tools" }, compareLayoutSeg(), el("label", {}, "費目 ", headSelect));
   if (isTable) {
     tools.append(el("button", { type: "button", onclick: () => guarded(exportCompareXlsx) }, "Excel に書き出す"));
-    document.getElementById("cmp-body").replaceChildren(tools, ...compareGrid(r, head));
+    document.getElementById("cmp-body").replaceChildren(tools, ...compareGrid(r, head),
+      el("section", { class: "cmp-bd", id: "cmp-bd" }));
+    drawBreakdown();
     return;
   }
 
@@ -278,7 +286,10 @@ function compareGrid(t, head) {
   for (const p of t.products) {
     const span = 1 + p.trials.length * 4;
     rows.push(el("tr", { class: "cmp-grid-first" },
-      el("td", { rowspan: span }, codeSpan(t.version_id, p.product)),
+      el("td", { rowspan: span }, el("label", { class: "cmp-pick" }, el("input", {
+        type: "checkbox", checked: compareState.picked.has(p.product),
+        onchange: (e) => guarded(() => pickCompareProduct(p.product, e.target.checked)),
+      }), codeSpan(t.version_id, p.product))),
       el("td", { rowspan: span }, p.product_name, el("div", { class: `cmp-grid-volume ${p.volume === null ? "missing" : ""}` },
         p.volume === null ? "年間台数 未登録" : `年間 ${fmt(p.volume)} 台`)),
       el("td", { rowspan: span }, p.specification),
@@ -327,6 +338,88 @@ function compareGrid(t, head) {
       ? table(heads, rows, "small cmp-grid")
       : el("p", { class: "muted" }, "なし")),
   ];
+}
+
+// 材料費の内訳: 表でチェックした製品の直の子を、まとめ方ごとに金額の高い順に。検討案があれば変更後を横に並べる。
+// 行の並びは現行の順で、変更後だけにある行は後ろに足す。割合の分母は未登録を除いた合計（API が出す）
+async function pickCompareProduct(code, on) {
+  if (on) compareState.picked.add(code);
+  else compareState.picked.delete(code);
+  await loadBreakdown();
+}
+
+async function loadBreakdown() {
+  const products = compareState.table?.products.map((p) => p.product).filter((c) => compareState.picked.has(c)) ?? [];
+  const { version, names } = compareState.query;
+  compareState.breakdown = products.length ? await api("GET", `/api/group/compare/breakdown?${qs({
+    version, names, products: JSON.stringify(products), by: compareState.by, weight: compareState.weight,
+  })}`) : null;
+  drawBreakdown();
+}
+
+function breakdownSeg(key, options) {
+  return el("div", { class: "seg" }, options.map(([value, label]) => el("button", {
+    type: "button", class: compareState[key] === value ? "on" : "",
+    onclick: () => guarded(async () => { compareState[key] = value; await loadBreakdown(); }),
+  }, label)));
+}
+
+function breakdownShare(row) {
+  const missing = row?.amount === null;
+  if (!row) return el("td", {});
+  return el("td", {}, el("div", { class: "cmp-bd-share" },
+    el("div", { class: "cmp-bd-track" }, row.share ? el("span", { class: "cmp-bd-fill", style: `width:${Math.min(100, Number(row.share))}%` }) : null),
+    el("span", { class: `num ${missing ? "missing" : ""}` }, missing ? "分母外" : `${row.share ?? "—"}%`)));
+}
+
+function drawBreakdown() {
+  const box = document.getElementById("cmp-bd");
+  if (!box) return;
+  const b = compareState.breakdown;
+  const head = el("div", { class: "cmp-bd-head" }, el("h3", {}, "材料費の内訳"),
+    breakdownSeg("by", [["code", "品番"], ["name", "名称"], ["name_spec", "名称＋記号・寸法"]]),
+    breakdownSeg("weight", [["unit", "1台ずつ"], ["volume", "年間台数"]]));
+  if (!b) {
+    box.replaceChildren(head, el("p", { class: "muted" }, "表で製品をチェック"));
+    return;
+  }
+  const multi = b.series.length > 2;
+  const keys = [...new Set(b.series.flatMap((s) => s.rows.map((r) => r.key)))];
+  const bySeries = b.series.map((s) => new Map(s.rows.map((r) => [r.key, r])));
+  const pick = (key) => bySeries.map((m) => m.get(key)).find((r) => r);
+  const amountTd = (row) => {
+    if (!row) return el("td", { class: "num muted" }, "—");
+    const td = numTd(row.amount, { yen: true });
+    if (row.amount !== null && (row.missing || row.incomplete)) td.prepend(el("span", { class: "tag warn", title: "一部未登録" }, "一部"));
+    return td;
+  };
+  const rows = keys.map((key) => {
+    const first = pick(key);
+    const codes = first.codes.length > 1 ? `${first.codes[0]} 他${first.codes.length - 1}` : first.code;
+    return el("tr", {},
+      el("td", { title: first.codes.join("・") }, b.by === "code" ? codeSpan(b.version_id, first.code) : codes),
+      el("td", {}, first.name), el("td", {}, first.specification),
+      bySeries.map((m, i) => {
+        const row = m.get(key);
+        return [el("td", { class: "num" }, row ? fmt(row.quantity) : "—"), amountTd(row), breakdownShare(row),
+          i === 0 ? el("td", { class: "num muted" }, row?.cumulative ? `${row.cumulative}%` : "") : null];
+      }));
+  });
+  const label = (s) => (s.name === null ? "現行" : multi ? `変更後（${s.name}）` : "変更後");
+  const heads = ["品番", "名称", "記号・寸法", ...b.series.flatMap((s, i) => [
+    numTh(i === 0 ? "数量" : `数量（${label(s)}）`), numTh(label(s)), el("th", {}, "割合"), i === 0 ? numTh("累積") : null,
+  ].filter((h) => h))];
+  rows.push(el("tr", { class: "cmp-bd-total" }, el("td", { colspan: 3 }, "計"), b.series.map((s, i) => [
+    el("td", {}), numTd(s.total, { yen: true }),
+    el("td", { class: s.missing ? "missing" : "muted" }, s.missing ? `未登録 ${s.missing} 行を除く` : ""),
+    i === 0 ? el("td", {}) : null])));
+  const notes = [
+    `${b.products.length} 製品`,
+    b.excluded.length ? `台数未登録 ${b.excluded.length} 製品を除く` : null,
+    ...b.series.filter((s) => s.without_trial).map((s) => `${s.name}: 試算なし ${s.without_trial}（現行で数える）`),
+  ].filter((x) => x);
+  box.replaceChildren(head, el("div", { class: "cmp-bd-notes muted" }, notes.join("・")),
+    el("div", { class: "table-scroll" }, table(heads, rows, "small cmp-bd-table")));
 }
 
 function wireCompare() {

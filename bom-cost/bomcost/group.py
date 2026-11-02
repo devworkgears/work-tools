@@ -145,6 +145,7 @@ class Group:
             ("GET", r"/api/group/compare", self.compare),
             ("GET", r"/api/group/compare/table", self.compare_table),
             ("GET", r"/api/group/compare/table/xlsx", self.compare_table_xlsx),
+            ("GET", r"/api/group/compare/breakdown", self.compare_breakdown),
         ]
 
     # 比べる ------------------------------------------------------------------
@@ -192,6 +193,51 @@ class Group:
         return Response(200, body, XLSX_TYPE, {
             "Content-Disposition": f"attachment; filename=\"bom-cost-compare.xlsx\"; filename*=UTF-8''{quote(name)}",
         })
+
+    def compare_breakdown(self, params: dict[str, str]) -> Response:
+        """選んだ製品（products）の材料費の内訳。製品の直の子ごとに 材料費小計 × 員数 を、子の合計に対する割合の高い順に。
+
+        by は まとめ方（code＝品番・name＝名称・name_spec＝名称＋記号・寸法）、weight は 数え方（unit＝1台ずつ足す・
+        volume＝年間台数を掛けて足す。台数が未登録の製品は除いて excluded に）。series の先頭は現行、続いて検討名（names）
+        ごとの変更後（その検討名の試算が無い製品は現行の構成で数え、数を without_trial に）。
+        材料費が未登録の子は 0 にせず、行の amount を None（一部の子だけなら分かる分の合計）にして missing に数え、割合の分母から除く。
+        """
+        version = self._version(params)
+        names = _names(params.get("names"))
+        products = [to_code(c) for c in _names(params.get("products"))]
+        if not products:
+            raise ApiError(400, "製品（products）が空")
+        for code in products:
+            _require_known(version, code, "製品")
+        by = (params.get("by") or "code").strip()
+        if by not in BREAKDOWN_KEYS:
+            raise ApiError(400, f"まとめ方（by）は {'・'.join(BREAKDOWN_KEYS)} のどれか: {by}")
+        weight = (params.get("weight") or "unit").strip()
+        if weight not in ("unit", "volume"):
+            raise ApiError(400, f"数え方（weight）は unit・volume のどちらか: {weight}")
+        weights: dict[str, Decimal] = {}
+        excluded: list[str] = []
+        for code in products:
+            volume = version.volume(code)
+            if weight == "unit":
+                weights[code] = Decimal(1)
+            elif volume is None:
+                excluded.append(code)
+            else:
+                weights[code] = volume.annual
+        structure = _Structure(version)
+        view = _View(Scenario("", products[0], f"{products[0]}#", version, CostHead.MATERIAL,
+                              self.store.load_scope_policy()), "bulk", CostHead.MATERIAL, False)
+        current = {code: _base_parts(structure, code) for code in weights}
+        series = [_breakdown_series(None, view, version, by, weights, current, 0)]
+        for name in names:
+            scenario_ids = self._scenarios(version, name)
+            parts = {code: (_trial_parts(structure, self.store.load_scenario(scenario_ids[code], version))
+                            if code in scenario_ids else current[code]) for code in weights}
+            series.append(_breakdown_series(name, view, version, by, weights, parts,
+                                            sum(1 for code in weights if code not in scenario_ids)))
+        return _json_response({"version_id": version.version_id, "by": by, "weight": weight,
+                               "products": list(weights), "excluded": excluded, "series": series})
 
     def _table_data(self, params: dict[str, str]) -> tuple[Version, dict[str, Any]]:
         version, names, ignore, codes, limit, rows = self._compare_rows(params, with_changes=False)
@@ -725,6 +771,102 @@ class Group:
             code = f"{product}#{name}#{n}"
             n += 1
         return code
+
+
+# 内訳のまとめ方 → 品目からまとめの鍵を作る関数。名称が空の品目は品番でまとめる（名前の無い物どうしを1行にしない）
+BREAKDOWN_KEYS: dict[str, Callable[[str, str, str], str]] = {
+    "code": lambda code, name, spec: code,
+    "name": lambda code, name, spec: name or f"\0{code}",
+    "name_spec": lambda code, name, spec: f"{name}\0{spec}" if name else f"\0{code}",
+}
+
+# 製品の直の子 → 員数と、材料費を足す品番ごとの数量（ふつうは子そのもの。組立品の中の変更はその組立品の行に足す）
+_Parts = dict[str, dict[str, Any]]
+
+
+def _base_parts(structure: _Structure, product: str) -> _Parts:
+    return {line.child: {"quantity": line.quantity, "terms": {line.child: line.quantity}}
+            for line in structure.children.get(product, ())}
+
+
+def _trial_parts(structure: _Structure, scenario: Scenario) -> _Parts:
+    """検討案の変更を当てた直の子（Scenario.root_entries と同じ当て方）。組立品の中の変更は、その場所の親を含む直の子へ
+    使用数の割合で分けて足す。製品の直下の変更と場所の無い変更は直の子の行そのものを増減する。"""
+    product = scenario.base
+    parts: _Parts = {}
+
+    def add(child: str, quantity: Decimal, code: str, amount: Decimal) -> None:
+        row = parts.setdefault(child, {"quantity": Decimal(0), "terms": {}})
+        row["quantity"] += quantity
+        row["terms"][code] = row["terms"].get(code, Decimal(0)) + amount
+
+    kids = structure.children.get(product, ())
+    for code, qty, is_base, parent in scenario.root_entries():
+        if is_base:
+            for line in kids:
+                add(line.child, qty * line.quantity, line.child, qty * line.quantity)
+            continue
+        shares = {}
+        if parent is not None and parent != product:
+            shares = {line.child: line.quantity * (Decimal(1) if line.child == parent
+                                                   else structure.usage(line.child).get(parent, Decimal(0)))
+                      for line in kids}
+        total = sum(shares.values(), Decimal(0))
+        if not total:
+            add(code, qty, code, qty)
+            continue
+        for child, share in shares.items():
+            if share:
+                add(child, Decimal(0), code, qty * share / total)
+    return {c: r for c, r in parts.items() if any(r["terms"].values())}
+
+
+def _breakdown_series(name: str | None, view: _View, version: Version, by: str, weights: dict[str, Decimal],
+                      parts: dict[str, _Parts], without_trial: int) -> dict[str, Any]:
+    """製品ごとの直の子を重み（weights）を掛けてまとめ方 by の行に足し、金額の高い順に割合と累積の割合を付ける。"""
+    key_of = BREAKDOWN_KEYS[by]
+    groups: dict[str, dict[str, Any]] = {}
+    for product, w in weights.items():
+        for child, row in parts[product].items():
+            item = version.items.get(child)
+            child_name, spec = ("", "") if item is None else (item.name, item.specification)
+            key = key_of(child, child_name, spec)
+            g = groups.setdefault(key, {
+                "kind": "child", "key": key, "code": child, "codes": [], "name": child_name, "specification": spec,
+                "quantity": Decimal(0), "amount": None, "missing": 0, "incomplete": False})
+            if child not in g["codes"]:
+                g["codes"].append(child)
+            g["quantity"] += w * row["quantity"]
+            known, found, missing = Decimal(0), False, False
+            for code, qty in row["terms"].items():
+                if not qty:
+                    continue
+                cost = view.cost(code, CostHead.MATERIAL)
+                if cost is None:
+                    missing = True
+                    continue
+                known, found = known + qty * cost, True
+                g["incomplete"] |= view.incomplete(code, CostHead.MATERIAL)
+            g["missing"] += missing
+            if found:
+                g["amount"] = (g["amount"] or Decimal(0)) + w * known
+    rows = sorted(groups.values(), key=lambda g: (g["amount"] is None, -(g["amount"] or 0), g["code"]))
+    total = sum((g["amount"] for g in rows if g["amount"] is not None), Decimal(0))
+    found = any(g["amount"] is not None for g in rows)
+    running = Decimal(0)
+    for g in rows:
+        g["codes"].sort()
+        if g["amount"] is not None:
+            running += g["amount"]
+        g["share"] = None if g["amount"] is None or not total else _share(g["amount"], total)
+        g["cumulative"] = None if g["amount"] is None or not total else _share(running, total)
+        g["quantity"], g["amount"] = _s(g["quantity"]), _s(g["amount"])
+    return {"name": name, "total": _s(total) if found else None, "missing": sum(1 for g in rows if g["missing"]),
+            "without_trial": without_trial, "rows": rows}
+
+
+def _share(part: Decimal, total: Decimal) -> str:
+    return _s((part / total * 100).quantize(Decimal("0.1"), ROUND_HALF_UP))
 
 
 def _differences(base: dict[str, str | None], after: dict[str, str | None]) -> dict[str, str | None]:

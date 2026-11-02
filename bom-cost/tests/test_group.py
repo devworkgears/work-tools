@@ -5,10 +5,11 @@ import json
 import tempfile
 import unittest
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 from urllib.parse import quote
 
-from bomcost import BomLine, Item, Version, overlay_manual
+from bomcost import BomLine, CostHead, CostRow, Item, Version, overlay_manual
 from bomcost.api import Api
 from bomcost.app import static_response
 from bomcost.demo import build_demo
@@ -792,6 +793,106 @@ class CompareBookFormat(unittest.TestCase):
         self.assertEqual([c.number_format for c in material[:5]], ["#,##0", "#,##0", "#,##0", "0.0%", "#,##0"])
         # 年間台数は金額でないので小数を落とさない
         self.assertEqual(ws.cell(row=2, column=3).number_format, "#,##0.00")
+
+
+def breakdown_version() -> Version:
+    """P-1: 組立 S-1 ×2（中に N-6 ×4）・N-6 ×3・N-8 ×2・B-1 ×1・U-1 ×1（未登録）。P-2: N-6B ×5・B-1 ×2。品番・数値は架空。"""
+    m = CostHead.MATERIAL
+    v = Version("2026-11")
+    v.add_items([Item("P-1", "製品1", "2"), Item("P-2", "製品2", "2"), Item("S-1", "組立", "1"),
+                 Item("N-6", "ねじ", "1", specification="M6"), Item("N-6B", "ねじ", "1", specification="M6"),
+                 Item("N-8", "ねじ", "1", specification="M8"), Item("B-1", "板", "1", specification="t2"),
+                 Item("U-1", "未登録の部品", "1")])
+    v.add_bom_lines([BomLine("P-1", "1", "S-1", 2), BomLine("P-1", "2", "N-6", 3), BomLine("P-1", "3", "N-8", 2),
+                     BomLine("P-1", "4", "B-1", 1), BomLine("P-1", "5", "U-1", 1), BomLine("S-1", "1", "N-6", 4),
+                     BomLine("P-2", "1", "N-6B", 5), BomLine("P-2", "2", "B-1", 2)])
+    v.add_costs([CostRow("N-6", {m: 10}), CostRow("N-6B", {m: 12}), CostRow("N-8", {m: 20}), CostRow("B-1", {m: 500})])
+    return v
+
+
+class CompareBreakdown(EmptyDbCase):
+    """P-1 の直の子: S-1＝2×(4×10)＝80・N-6＝30・N-8＝40・B-1＝500・U-1＝未登録。分母は 650。"""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.store.save_version(breakdown_version())
+
+    def breakdown(self, products: list[str], query: str = "") -> dict:
+        return self.ok("GET", "/api/group/compare/breakdown",
+                       f"version=2026-11&products={quote(json.dumps(products))}" + query)
+
+    @staticmethod
+    def rows(series: dict) -> list[tuple]:
+        return [(r["code"], None if r["amount"] is None else int(Decimal(r["amount"])), r["share"], r["cumulative"])
+                for r in series["rows"]]
+
+    def test_one_product_by_code_sorted_with_shares(self) -> None:
+        r = self.breakdown(["P-1"])
+        self.assertEqual((r["by"], r["weight"], r["products"], r["excluded"]), ("code", "unit", ["P-1"], []))
+        s, = r["series"]
+        self.assertEqual((s["name"], s["total"], s["missing"]), (None, "650", 1))
+        self.assertEqual(self.rows(s), [("B-1", 500, "76.9", "76.9"), ("S-1", 80, "12.3", "89.2"),
+                                        ("N-8", 40, "6.2", "95.4"), ("N-6", 30, "4.6", "100.0"),
+                                        ("U-1", None, None, None)])
+        b1, u1 = s["rows"][0], s["rows"][-1]
+        self.assertEqual((b1["kind"], b1["name"], b1["specification"], b1["quantity"], b1["missing"]),
+                         ("child", "板", "t2", "1", 0))
+        # 未登録は 0 にしない
+        self.assertEqual((u1["amount"], u1["missing"]), (None, 1))
+
+    def test_group_by_name_and_name_spec(self) -> None:
+        by_name = self.breakdown(["P-1"], "&by=name")["series"][0]
+        self.assertEqual([(r["name"], r["codes"], r["amount"], r["quantity"]) for r in by_name["rows"]],
+                         [("板", ["B-1"], "500", "1"), ("組立", ["S-1"], "80", "2"), ("ねじ", ["N-6", "N-8"], "70", "5"),
+                          ("未登録の部品", ["U-1"], None, "1")])
+        by_spec = self.breakdown(["P-1", "P-2"], "&by=name_spec")["series"][0]
+        # 2製品を1台ずつ: ねじ M6 は N-6 30 ＋ N-6B 5×12、板は 500 ＋ 2×500
+        self.assertEqual([(r["name"], r["specification"], r["codes"], r["amount"]) for r in by_spec["rows"]],
+                         [("板", "t2", ["B-1"], "1500"), ("ねじ", "M6", ["N-6", "N-6B"], "90"),
+                          ("組立", "", ["S-1"], "80"), ("ねじ", "M8", ["N-8"], "40"), ("未登録の部品", "", ["U-1"], None)])
+        self.assertEqual(by_spec["total"], "1710")
+
+    def test_weight_by_volume_skips_products_without_volume(self) -> None:
+        self.ok("PUT", "/api/manual/volumes", body={"product": "P-2", "annual": "10"})
+        r = self.breakdown(["P-1", "P-2"], "&weight=volume")
+        self.assertEqual((r["products"], r["excluded"]), (["P-2"], ["P-1"]))
+        self.assertEqual(self.rows(r["series"][0]), [("B-1", 10000, "94.3", "94.3"), ("N-6B", 600, "5.7", "100.0")])
+        self.ok("PUT", "/api/manual/volumes", body={"product": "P-1", "annual": "100"})
+        r = self.breakdown(["P-1", "P-2"], "&weight=volume&by=name")
+        # 板は 100×500 ＋ 10×2×500、ねじは 100×70 ＋ 10×60
+        self.assertEqual([(x["name"], x["amount"]) for x in r["series"][0]["rows"]][:3],
+                         [("板", "60000"), ("組立", "8000"), ("ねじ", "7600")])
+        self.assertEqual(r["excluded"], [])
+
+    def test_trial_series_applies_changes(self) -> None:
+        base = {"version_id": "2026-11", "name": NAME, "product": "P-1", "head": "MATERIAL", "kind": "REPLACE"}
+        # 直下の N-8 ×2 → N-6B ×2、組立 S-1 の中の N-6 ×4 → N-8 ×4（S-1 の行は 2×4×20＝160 になる）
+        self.ok("POST", "/api/group/changes", body={**base, "part": "N-8", "parent": "P-1", "balloon": "3",
+                                                    "replacement": "N-6B", "quantity": "2"})
+        self.ok("POST", "/api/group/changes", body={**base, "part": "N-6", "parent": "S-1", "balloon": "1",
+                                                    "replacement": "N-8", "quantity": "4"})
+        names = quote(json.dumps([NAME, "無い検討"]))
+        r = self.breakdown(["P-1", "P-2"], f"&names={names}")
+        current, trial, none = r["series"]
+        self.assertEqual((trial["name"], trial["without_trial"], none["without_trial"]), (NAME, 1, 2))
+        self.assertEqual(none["rows"], current["rows"])
+        self.assertEqual([(x["code"], x["amount"]) for x in trial["rows"]],
+                         [("B-1", "1500"), ("S-1", "160"), ("N-6B", "84"), ("N-6", "30"), ("U-1", None)])
+        self.assertEqual(Decimal(trial["total"]), Decimal(1774))
+        # 1製品なら変更後の子の合計は ③の変更後の材料費と同じ（製品自身の登録値が無いので）
+        one = self.breakdown(["P-1"], f"&names={quote(NAME)}")["series"][1]
+        after = self.ok("GET", "/api/group/products", f"version=2026-11&name={quote(NAME)}&q=P-1")["products"][0]["after"]
+        self.assertEqual(Decimal(one["total"]), Decimal(after))
+        by_name = self.breakdown(["P-1"], f"&names={quote(NAME)}&by=name")["series"][1]
+        self.assertEqual([(x["name"], x["amount"]) for x in by_name["rows"]][:3],
+                         [("板", "500"), ("組立", "160"), ("ねじ", "54")])
+
+    def test_input_errors(self) -> None:
+        url = "/api/group/compare/breakdown"
+        self.assert_error(self.call("GET", url, "version=2026-11"), 400, "products")
+        self.assert_error(self.call("GET", url, "version=2026-11&products=Z-9"), 400, "Z-9")
+        self.assert_error(self.call("GET", url, "version=2026-11&products=P-1&by=x"), 400, "by")
+        self.assert_error(self.call("GET", url, "version=2026-11&products=P-1&weight=x"), 400, "weight")
 
 
 class ChildrenIndex(unittest.TestCase):
