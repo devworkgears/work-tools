@@ -12,7 +12,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
-from .api import HEADS, ApiError, Response, _flag, _head, _json_response, _known_codes, _s, _text_field
+from .api import HEADS, ApiError, Response, _flag, _head, _json_response, _known_codes, _s, _text_field, _View
 from .importer import (
     TABLE_FIELDS,
     ColumnMap,
@@ -37,7 +37,6 @@ from .masterbook import MasterPlan, apply_plan, book_bytes, plan_book, plan_json
 from .modelchange import compare_structures
 from .mold import Allocation, MoldCost, ReuseTarget, allocate_mold_cost, part_users, reuse_impact
 from .normalize import to_code, to_decimal, to_optional_code
-from .rollup import calculate_cost
 from .scenario import Scenario
 
 if TYPE_CHECKING:
@@ -786,7 +785,8 @@ class Screens:
         """部品を使う製品・流用先と、型費の載り方・原価の今と後（費目5つ）。設計書 6章の図4。
 
         scenario を選ぶと、その試算の製品は「土台＋変更」の仮の構成で使用数を数える。
-        head は主に見る費目（既定は材料費）。費目5つの値は heads に並べる。
+        head は主に見る費目（既定は材料費）。費目5つの値は heads に並べる。材料費のほかは製品を一番上にした式の値で、
+        流用先の部品の差は部品の材料費がその費目に効く分。
         """
         part = to_code(_param(params, "part", "部品の品番"))
         allocation = _allocation(params.get("allocation"))
@@ -806,14 +806,14 @@ class Screens:
         mold = self.store.mold_costs_for(version.dev_number).get(part)
         users, unknown = part_users(version, part, reuse, overrides)
         alloc = None if mold is None else allocate_mold_cost(version, mold, allocation, reuse, overrides)
-        costs: dict[tuple[str, CostHead], Decimal | None] = {}
-
-        def cost(code: str, h: CostHead) -> Decimal | None:
-            if (code, h) not in costs:
-                result = calculate_cost(version, code, h, policy, overrides)
-                # 足し上げた範囲に登録値が1つも無い品目は 0 でなく未登録にする
-                costs[(code, h)] = None if result.missing and result.total == 0 else result.total
-            return costs[(code, h)]
+        # 原価は「製品から」の画面と同じ見方（材料費の足し上げと式）で出す
+        if scenario is not None:
+            view = _View(Scenario(scenario.name, scenario.base, scenario.product_code, version, CostHead.MATERIAL,
+                                  policy, history=scenario.history), "diff", CostHead.MATERIAL, False)
+        else:
+            view = _View(Scenario("", part, f"{part}#", version, CostHead.MATERIAL, policy),
+                         "bulk", CostHead.MATERIAL, False)
+        cost = view.cost
 
         rows = []
         for user in users:

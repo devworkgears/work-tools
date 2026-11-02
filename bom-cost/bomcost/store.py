@@ -156,12 +156,15 @@ CREATE TABLE IF NOT EXISTS change (
     parent TEXT,
     balloon TEXT,
     batch INTEGER,
+    target_head TEXT,
     PRIMARY KEY (scenario_id, sequence)
 );
 """
 
 # 後から change に足した列（古い DB は開いたときに足す。今ある行は NULL のまま）
-CHANGE_ADDED_COLUMNS: tuple[tuple[str, str], ...] = (("parent", "TEXT"), ("balloon", "TEXT"), ("batch", "INTEGER"))
+CHANGE_ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("parent", "TEXT"), ("balloon", "TEXT"), ("batch", "INTEGER"), ("target_head", "TEXT")
+)
 # 後から version に足した列。古い DB の版は開発番号＝版 ID・名称＝空・第1版にする
 VERSION_ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
     ("dev_number", "TEXT"), ("dev_name", "TEXT NOT NULL DEFAULT ''"), ("revision", "INTEGER NOT NULL DEFAULT 1")
@@ -169,7 +172,7 @@ VERSION_ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
 PART_MAP_COLUMNS = "old_product, new_product, old_part, new_part, old_balloon, new_balloon, dev_number"
 CHANGE_COLUMNS = (
     "scenario_id, sequence, recorded_at, kind, part, replacement, quantity, cost_before, cost_after, "
-    "version_id, head, volume, allocation, parent, balloon, batch"
+    "version_id, head, volume, allocation, parent, balloon, batch, target_head"
 )
 
 COST_COLUMNS: tuple[tuple[str, CostHead], ...] = (
@@ -785,14 +788,14 @@ class Store:
             )
             self._conn.execute("DELETE FROM change WHERE scenario_id = ?", (scenario.scenario_id,))
         self._conn.executemany(
-            f"INSERT INTO change ({CHANGE_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            f"INSERT INTO change ({CHANGE_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (
                     scenario.scenario_id, r.sequence, r.recorded_at.isoformat(), r.change.kind.name,
                     r.change.part, r.change.replacement, str(r.change.quantity),
                     _text(r.cost_before), _text(r.cost_after), r.version_id, r.head.name,
                     _text(r.volume), None if r.allocation is None else r.allocation.name,
-                    r.change.parent, r.change.balloon, r.batch,
+                    r.change.parent, r.change.balloon, r.batch, r.change.target_head,
                 )
                 for r in scenario.history
             ],
@@ -816,7 +819,7 @@ class Store:
         history = [
             ChangeRecord(
                 sequence=seq,
-                change=Change(ChangeKind[kind], part, Decimal(qty), replacement, parent, balloon),
+                change=Change(ChangeKind[kind], part, Decimal(qty), replacement, parent, balloon, target_head),
                 version_id=ver,
                 head=CostHead[head],
                 cost_before=_decimal(before),
@@ -827,9 +830,9 @@ class Store:
                 batch=batch,
             )
             for (seq, at, kind, part, replacement, qty, before, after, ver, head, volume, allocation,
-                 parent, balloon, batch) in self._conn.execute(
+                 parent, balloon, batch, target_head) in self._conn.execute(
                 "SELECT sequence, recorded_at, kind, part, replacement, quantity, cost_before, cost_after, "
-                "version_id, head, volume, allocation, parent, balloon, batch FROM change "
+                "version_id, head, volume, allocation, parent, balloon, batch, target_head FROM change "
                 "WHERE scenario_id = ? ORDER BY sequence",
                 (scenario_id,),
             )

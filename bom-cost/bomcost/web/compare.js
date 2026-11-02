@@ -1,4 +1,4 @@
-// ③原価比較: 上に検討案ごとの数字のタイル、左に製品ごとの差の横棒、右に選んだ製品の6費目と変更の一覧。
+// ③原価比較: 上に検討案ごとの数字のタイル、左に製品ごとの差の横棒、右に選んだ製品の8費目（式の並び）と変更の一覧。
 // 差・合計は API が Decimal で出したものを使い、ここで数にするのは棒の長さと並べ替えだけ。app.js・screens.js の関数を使う。
 "use strict";
 
@@ -96,7 +96,7 @@ function isIgnored(r, head) {
   return head === "AMORTIZATION" && r.ignore_amortization;
 }
 
-// 表で目立たせる費目（材料費・製造原価）と、文字を淡くするほかの費目
+// 表で目立たせる費目（材料費小計・製造原価）と、文字を淡くするほかの費目
 const CMP_KEY_HEADS = new Set(["MATERIAL", "MANUFACTURING"]);
 const cmpHeadClass = (head) => (CMP_KEY_HEADS.has(head) ? "cmp-key" : "cmp-minor");
 
@@ -253,7 +253,7 @@ function compareChanges(r, name, changes) {
   ];
 }
 
-// 表: 製品ごとに 現行・変更後・差・差%・年間効果額 の行、列は6費目、一番下に計。
+// 表: 製品ごとに 現行・変更後・差・差%・年間効果額 の行、列は8費目、一番下に計。
 // 計は API の合計で、片方でも未登録の製品はその費目の計から除く（除いた値と計に ※）
 const CMP_MARK = "※";
 

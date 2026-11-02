@@ -352,11 +352,12 @@ function changeText(c) {
   if (c.kind === "REMOVE") return ["削除 ", trialCode(c.part)];
   if (c.kind === "ADD") return ["追加 ", trialCode(c.part), ` ×${fmt(c.quantity)}`];
   if (c.kind === "SET_QUANTITY") return ["員数変更 ", at, trialCode(c.part), ` → ${fmt(c.quantity)}`];
+  if (c.kind === "SET_HEAD") return [`費目変更 ${c.target_head_label} → ${fmt(c.quantity)}`];
   return [at, trialCode(c.part), " → ", joinReplacements(c, (r) => [trialCode(r.code), ` ×${fmt(r.quantity)}`])];
 }
 
 const undoButton = (change) => el("button", { type: "button", onclick: () => guarded(() => trialUndo(change)) }, "取り消す");
-const CHANGE_CLASS = { REPLACE: "chg-replace", REMOVE: "chg-remove", ADD: "chg-add", SET_QUANTITY: "chg-qty" };
+const CHANGE_CLASS = { REPLACE: "chg-replace", REMOVE: "chg-remove", ADD: "chg-add", SET_QUANTITY: "chg-qty", SET_HEAD: "chg-head" };
 
 // 構成の行に当たる変更: その場所の置換・員数変更、なければその品番の削除・場所なしの置換
 function rowChange(changes, node) {
@@ -488,9 +489,25 @@ function layoutSeg() {
   return el("div", { class: "seg trial-layout" }, button("list", "一覧"), button("pair", "左右"));
 }
 
-// 開いた製品の中身: この製品の変更（1回の操作ごと）と、変えた所に印を付けた版の構成（一覧か左右）
+// 製品自身の費目（社内加工費・償却費・直接費）の現行・変更後と、書き換える欄（送ると費目変更の1行になる）
+async function trialHeadsBlock(t, product) {
+  const h = await api("GET", `/api/group/heads?${qs({ version: t.version, name: t.name, product })}`);
+  const labels = new Map(h.heads.map((x) => [x.id, x.label]));
+  const rows = h.editable.map((id) => {
+    const input = el("input", { inputmode: "decimal", size: 8, value: h.after[id] ?? "", placeholder: "未登録" });
+    const send = () => guarded(() => trialChange(product, { kind: "SET_HEAD", part: product, target_head: id, quantity: input.value.trim() }));
+    input.addEventListener("keydown", (e) => e.key === "Enter" && send());
+    return el("tr", {}, el("td", {}, labels.get(id)), numTd(h.current[id]), numTd(h.after[id]),
+      el("td", {}, input, " ", el("button", { type: "button", onclick: send }, "変える")));
+  });
+  return el("div", { class: "trial-heads" },
+    el("div", { class: "trial-changes-head" }, "製品の費目"),
+    table(["費目", numTh("現行"), numTh("変更後"), ""], rows));
+}
+
+// 開いた製品の中身: この製品の変更（1回の操作ごと）と、製品の費目と、変えた所に印を付けた版の構成（一覧か左右）
 async function trialProductPanel(t, product, changes) {
-  const root = await trialTree(t, product);
+  const [root, costHeads] = await Promise.all([trialTree(t, product), trialHeadsBlock(t, product)]);
   const ctx = { t, product, changes };
   if (trialChangedOnly.has(product)) {
     for (const path of [...trialOpen]) if (path.startsWith(`${product}/`)) trialOpen.delete(path);
@@ -515,6 +532,7 @@ async function trialProductPanel(t, product, changes) {
       el("div", { class: "trial-changes-head" }, "この製品の変更"),
       el("table", { class: "small" }, el("tbody", {},
         changeRows.length ? changeRows : el("tr", {}, el("td", { colspan: 3, class: "muted" }, "なし")), addRow))),
+    costHeads,
     el("div", { class: "trial-structure-tools" }, layoutSeg(),
       el("button", { type: "button", "aria-pressed": String(trialChangedOnly.has(product)),
         onclick: () => toggleChangedOnly(product) }, "変更した所だけ")),
@@ -587,7 +605,7 @@ function trialViewSeg() {
 function allChangesBlock(p, changes) {
   const rows = changes.rows.map((c) => el("tr", { class: CHANGE_CLASS[c.kind] },
     el("td", {}, trialCode(c.product), ` ${c.product_name}`),
-    el("td", {}, `${c.kind_label}${c.balloon ? ` #${c.balloon}` : ""}`),
+    el("td", {}, `${c.kind_label}${c.target_head_label ? ` ${c.target_head_label}` : ""}${c.balloon ? ` #${c.balloon}` : ""}`),
     el("td", {}, trialCode(c.part)), el("td", {}, c.part_name), el("td", {}, c.part_specification || ""),
     el("td", {}, joinReplacements(c, (r) => trialCode(r.code))),
     el("td", {}, joinReplacements(c, (r) => r.name || "—")),

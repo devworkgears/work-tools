@@ -5,6 +5,7 @@ from decimal import Decimal
 from enum import Enum
 from typing import Mapping, Sequence
 
+from .formula import OwnValues, breakdown, registered_own
 from .model import BomConflict, BomLine, Code, CostHead, Version
 from .normalize import to_code
 
@@ -151,6 +152,20 @@ def calculate_cost(
     head: CostHead = CostHead.MATERIAL,
     policy: ScopePolicy | None = None,
     overrides: StructureOverrides | None = None,
+    own_values: Mapping[str, OwnValues] | None = None,
 ) -> CostResult:
-    """root の原価を1つの費目で計算する。"""
-    return CostCalculator(version, head, policy, overrides).calculate(root)
+    """root の原価を1つの費目で計算する。
+
+    材料費は足し上げ。ほかの費目は材料費の足し上げから式（formula）で出し、品目ごとの値（item_costs）は
+    その品目を一番上にして式を当てた値。own_values は品目自身の値を登録値の代わりに使う品目（試算の製品）。
+    """
+    if head is CostHead.MATERIAL or head is CostHead.AMORTIZATION:
+        return CostCalculator(version, head, policy, overrides).calculate(root)
+    material = CostCalculator(version, CostHead.MATERIAL, policy, overrides).calculate(root)
+    own = {to_code(k): v for k, v in (own_values or {}).items()}
+    costs = {
+        code: breakdown(value, own.get(code) or registered_own(version, code)).value(head)
+        for code, value in material.item_costs.items()
+    }
+    return CostResult(material.root, head, material.version_id, costs[material.root], costs,
+                      material.missing, material.conflicts)

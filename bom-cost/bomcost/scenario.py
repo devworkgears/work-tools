@@ -9,6 +9,7 @@ from decimal import Decimal
 from enum import Enum
 from typing import Iterable
 
+from .formula import EDITABLE_HEADS, Head, OwnValues, registered_own
 from .model import BomLine, Code, CostHead, Version
 from .mold import Allocation, usage_per_unit
 from .normalize import NumberLike, to_code, to_decimal, to_optional_code
@@ -20,13 +21,15 @@ class ChangeKind(Enum):
     REMOVE = "削除"
     REPLACE = "置換"
     SET_QUANTITY = "員数変更"
+    SET_HEAD = "費目変更"  # 製品の社内加工費・償却費・直接費を書き換える（構成は変えない）
 
 
 @dataclass(frozen=True)
 class Change:
     """parent を付けた置換・員数変更は、その親の風船番号 balloon（空欄可）の場所だけを変える。
 
-    quantity は置換なら代わりの部品の員数、場所の員数変更ならその場所の新しい員数。
+    quantity は置換なら代わりの部品の員数、場所の員数変更ならその場所の新しい員数、費目変更なら費目 target_head
+    （formula.EDITABLE_HEADS の id）の新しい値。費目変更の part は製品の品番。
     """
 
     kind: ChangeKind
@@ -35,8 +38,14 @@ class Change:
     replacement: str | None = None
     parent: str | None = None
     balloon: str | None = None
+    target_head: str | None = None
 
     def __post_init__(self) -> None:
+        if (self.kind is ChangeKind.SET_HEAD) != (self.target_head is not None):
+            raise ValueError("費目（target_head）を付けるのは費目変更だけで、費目変更には要る")
+        if self.target_head is not None and self.target_head not in {h.name for h in EDITABLE_HEADS}:
+            raise ValueError(f"書き換えられる費目でない: {self.target_head}（"
+                             + "・".join(h.value for h in EDITABLE_HEADS) + "）")
         object.__setattr__(self, "part", to_code(self.part))
         object.__setattr__(self, "quantity", to_decimal(self.quantity, name="数量"))
         if self.replacement is not None:
@@ -53,6 +62,11 @@ class Change:
             raise ValueError("員数は 0 以上で渡す")
         if self.balloon is not None and self.parent is None:
             raise ValueError("風船番号には親品番が要る")
+        if self.kind is ChangeKind.SET_HEAD:
+            if self.parent is not None or self.replacement is not None:
+                raise ValueError("費目変更には場所・代わりの品番を付けない")
+            if self.quantity < 0:
+                raise ValueError("費目の値は 0 以上で渡す")
 
     @property
     def location(self) -> tuple[str, str | None, str] | None:
@@ -155,6 +169,8 @@ class Scenario:
         removed: set[tuple[str, str | None, str]] = set()  # 1回の置換の代わりの部品が何行でも、場所の部品は1回だけ抜く
         usage: dict[str, Decimal] | None = None
         for change in self.changes if changes is None else changes:
+            if change.kind is ChangeKind.SET_HEAD:
+                continue
             location = change.location
             if location is None:
                 _apply(entries, change)
@@ -186,6 +202,14 @@ class Scenario:
     def overrides(self, changes: tuple[Change, ...] | None = None) -> dict[str, tuple[BomLine, ...]]:
         return {self.product_code: self.root_lines(changes)}
 
+    def own_values(self, version: Version | None = None, changes: tuple[Change, ...] | None = None) -> OwnValues:
+        """試算の製品自身の値: 土台の製品の登録値に、費目変更（省けば履歴の全部）を順に当てたもの。"""
+        own = registered_own(version or self.version, self.base)
+        for change in self.changes if changes is None else changes:
+            if change.kind is ChangeKind.SET_HEAD and change.target_head is not None:
+                own = own.with_value(Head[change.target_head], change.quantity)
+        return own
+
     def calculate(
         self,
         version: Version | None = None,
@@ -193,12 +217,14 @@ class Scenario:
         changes: tuple[Change, ...] | None = None,
     ) -> CostResult:
         """同じ土台＋変更の履歴を、指定の版（省けば試算の版）の原価で計算する。"""
+        version = version or self.version
         return calculate_cost(
-            version or self.version,
+            version,
             self.product_code,
             head or self.head,
             self.policy,
             self.overrides(changes),
+            {self.product_code: self.own_values(version, changes)},
         )
 
     def apply(

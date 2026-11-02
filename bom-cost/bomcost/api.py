@@ -14,6 +14,7 @@ from typing import Any, Callable
 from urllib.parse import parse_qs
 
 from .doublecount import Judgement, judge_double_counting
+from .formula import EDITABLE_HEADS, Breakdown, Head, OwnValues, breakdown, registered_own
 from .importer import load_openpyxl
 from .model import BomLine, CostHead, Version
 from .mold import usage_per_unit
@@ -22,7 +23,7 @@ from .rollup import CostCalculator, Scope
 from .scenario import Change, ChangeKind, ChangeRecord, Scenario
 from .store import Store
 
-# 画面に並べる5費目（償却費は計算から外し、詳細に登録値だけ出す）
+# 「製品から」の画面に並べる5費目（材料費のほかは式の値。償却費は式に入れ、詳細に登録値を出す）
 HEADS: tuple[CostHead, ...] = (
     CostHead.MATERIAL,
     CostHead.DIRECT,
@@ -152,6 +153,8 @@ def _change_text(change: Change) -> str:
         return f"{_place(change)} → {change.replacement} ×{qty}"
     if change.kind is ChangeKind.REPLACE:
         return f"{change.part} → {change.replacement}（×{qty}）"
+    if change.kind is ChangeKind.SET_HEAD and change.target_head is not None:
+        return f"費目変更 {Head[change.target_head].value} → {qty}"
     return f"員数変更 {_place(change)} → {qty}"
 
 
@@ -164,10 +167,14 @@ class _View:
     """1つの試算を、モード・費目・風船番号の分け方を決めて見る。原価は費目ごとに1回だけ計算して使い回す。"""
 
     def __init__(
-        self, scenario: Scenario, mode: str, head: CostHead, by_balloon: bool, amortization: bool = False
+        self, scenario: Scenario, mode: str, head: CostHead, by_balloon: bool, ignore_amortization: bool = False
     ) -> None:
+        """材料費は足し上げ、ほかの費目は品目ごとにその品目を一番上にして式（formula）で出す。
+
+        ignore_amortization は式で償却費を 0 として扱い、未登録の印を付けない。
+        """
         self.scenario = scenario
-        self.amortization = amortization
+        self.ignore_amortization = ignore_amortization
         self.version = scenario.version
         self.mode = mode
         self.head = head
@@ -178,17 +185,19 @@ class _View:
         self._calcs: dict[CostHead, CostCalculator] = {}
         self._incomplete: dict[tuple[str, CostHead], bool] = {}
         self._registered: dict[tuple[str, CostHead], bool] = {}
+        self._breakdowns: dict[str, Breakdown] = {}
         self._usage: dict[str, Decimal] | None = None
         self._judgements: dict[str, tuple[Judgement, ...]] = {}
-        self.result = self.calc(head).calculate(self.root)
+        # 未登録の品目の一覧は、直接費ならその登録値の無い品目、式で出す費目なら材料費の足し上げの未登録
+        listed = head if head in (CostHead.MATERIAL, CostHead.DIRECT) else CostHead.MATERIAL
+        self.result = self.calc(listed).calculate(self.root)
         # 差分の試算の製品は仮の品目なので、自分の登録値が無いのは当たり前（未登録に数えない）
         self.missing = tuple(c for c in self.result.missing if not (self.diff and c == self.root))
         self.total = self.cost(self.root)
 
     def calc(self, head: CostHead) -> CostCalculator:
         if head not in self._calcs:
-            self._calcs[head] = CostCalculator(self.version, head, self.scenario.policy, self.overrides,
-                                               allow_amortization=self.amortization)
+            self._calcs[head] = CostCalculator(self.version, head, self.scenario.policy, self.overrides)
         return self._calcs[head]
 
     def lines(self, code: str) -> tuple[BomLine, ...]:
@@ -201,9 +210,26 @@ class _View:
             return None
         return self.version.cost_value(code, head)
 
+    def own_values(self, code: str) -> OwnValues:
+        """式の入力の品目自身の値。差分の試算の製品は土台の登録値に費目変更を当てたもの。"""
+        if self.diff and code == self.root:
+            return self.scenario.own_values(self.version)
+        return registered_own(self.version, code)
+
+    def breakdown(self, code: str) -> Breakdown:
+        """code を計算の一番上にして式を当てた8費目。"""
+        if code not in self._breakdowns:
+            self._breakdowns[code] = breakdown(
+                self.cost(code, CostHead.MATERIAL), self.own_values(code),
+                material_incomplete=self.incomplete(code, CostHead.MATERIAL),
+                ignore_amortization=self.ignore_amortization)
+        return self._breakdowns[code]
+
     def cost(self, code: str, head: CostHead | None = None) -> Decimal | None:
-        """計算の層の原価。足し上げた範囲に登録値が1つも無ければ、0 でなく未登録（None）にする。"""
+        """材料費は計算の層の足し上げで、範囲に登録値が1つも無ければ 0 でなく未登録（None）。ほかの費目は式の値。"""
         head = head or self.head
+        if head is not CostHead.MATERIAL:
+            return self.breakdown(code).value(head)
         value = self.calc(head).item_cost(code)
         return value if self._has_registered(code, head) else None
 
@@ -218,8 +244,10 @@ class _View:
         return self._registered[key]
 
     def incomplete(self, code: str, head: CostHead | None = None) -> bool:
-        """計算に使った範囲のどこかに未登録があるか（計算の層の足し上げと同じ道をたどる）。"""
+        """計算に使った範囲のどこかに未登録があるか（材料費は計算の層の足し上げと同じ道をたどる）。"""
         head = head or self.head
+        if head is not CostHead.MATERIAL:
+            return self.breakdown(code).is_incomplete(head)
         key = (code, head)
         if key not in self._incomplete:
             calc = self.calc(head)
@@ -504,7 +532,22 @@ class Api:
         try:
             kind = ChangeKind[str(kind_name)]
         except KeyError:
-            raise ApiError(400, f"変更の種類が分からない: {kind_name}（ADD・REMOVE・REPLACE・SET_QUANTITY）") from None
+            raise ApiError(400, f"変更の種類が分からない: {kind_name}（"
+                           + "・".join(k.name for k in ChangeKind) + "）") from None
+        volume = scenario.version.volume(scenario.product_code)
+        annual = None if volume is None else volume.annual
+        if kind is ChangeKind.SET_HEAD:
+            target = str(body.get("target_head") or "").strip()
+            if target not in {h.name for h in EDITABLE_HEADS}:
+                raise ApiError(400, f"書き換える費目（target_head）が分からない: {target}（"
+                               + "・".join(h.name for h in EDITABLE_HEADS) + "）")
+            # 費目変更は製品自身の値なので、品番は土台の製品（省けば土台）
+            part = to_code(body.get("part") or scenario.base)
+            if part != scenario.base:
+                raise ApiError(400, f"費目変更の品番は製品 {scenario.base} にする: {part}")
+            change = Change(kind, part, _number(body.get("quantity"), "値"), target_head=target)
+            scenario.apply_batch([change], volume=annual)
+            return
         part = to_code(_text_field(body, "part", "品番"))
         if part == scenario.product_code:
             raise ApiError(400, "試算の製品そのものは追加・削除・置換の対象にできない")
@@ -538,8 +581,7 @@ class Api:
         elif len(pairs) > 1:
             raise ApiError(400, "代わりの部品を複数入れるには親品番（parent）が要る")
         changes = [Change(kind, part, qty, code, parent, balloon) for code, qty in pairs]
-        volume = scenario.version.volume(scenario.product_code)
-        scenario.apply_batch(changes, volume=None if volume is None else volume.annual)
+        scenario.apply_batch(changes, volume=annual)
 
     @staticmethod
     def _replacements(scenario: Scenario, body: dict[str, Any]) -> list[tuple[str, Decimal]]:
@@ -773,7 +815,6 @@ def _premises(version_id: str, head: CostHead, missing: bool) -> dict[str, Any]:
         "head": head.name,
         "head_label": head.value,
         "reference": "参考値",
-        "amortization_excluded": True,
         "has_missing": missing,
     }
 
@@ -800,6 +841,8 @@ def _record_json(record: ChangeRecord) -> dict[str, Any]:
         "parent": change.parent,
         "balloon": change.balloon,
         "batch": record.batch,
+        "target_head": change.target_head,
+        "target_head_label": None if change.target_head is None else Head[change.target_head].value,
     }
 
 
@@ -849,7 +892,7 @@ def _workbook(
         ("計算に使った版", version_label(view.version)),
         ("費目（ツリー・合計）", view.head.value),
         ("値の扱い", "参考値"),
-        ("償却費", "計算から外す（型費は別枠）"),
+        ("調整費・間接費・製造原価", "式で計算（取り込んだ値は使わない）"),
         ("未登録", "あり（" + "・".join(view.missing) + "）" if view.missing else "なし"),
         ("合計", MISSING_TEXT if view.total is None else view.total),
     ):

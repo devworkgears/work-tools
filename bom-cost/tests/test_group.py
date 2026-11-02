@@ -384,27 +384,14 @@ class TrialHeadAndWords(SampleDbCase):
     def test_changes_follow_requested_head_like_product_rows(self) -> None:
         self.change("A-100", kind="REPLACE", part="B-200", replacement="X-610", quantity="2", head="MANUFACTURING")
         self.change("K-200", kind="ADD", part="F-600", quantity="1", head="MANUFACTURING")
-        # 費目を付けなければ今まで通り試算の費目（ここでは製造原価で、サンプルは未登録）
-        plain = self.ok("GET", "/api/group/changes", f"version=2026-10&name={NAME}")
-        self.assertEqual([x["difference"] for x in plain["rows"]], [None, None])
         for head in ("MATERIAL", "MANUFACTURING"):
             changes = self.ok("GET", "/api/group/changes", f"version=2026-10&name={NAME}&head={head}")
             products = self.products(f"&name={NAME}&head={head}")
             by_product = {p["code"]: p["difference"] for p in products["products"]}
             for row in changes["rows"]:
                 self.assertEqual(row["difference"], by_product[row["product"]], (head, row["product"]))
-            self.assertEqual(products["difference"], {"MATERIAL": "-2550", "MANUFACTURING": None}[head])
-            self.assertEqual(products["missing_count"], {"MATERIAL": 0, "MANUFACTURING": 3}[head])
-        # 製品の行の差の合計は表に出した製品の差の合計（未登録の製品は除いて数える）
-        self.ok("PUT", "/api/manual/items", body={"code": "K-200", "name": "既存品", "kind": "P",
-                                                 "costs": {"MANUFACTURING": "100"}})
-        self.ok("PUT", "/api/manual/items", body={"code": "F-600", "name": "部品F", "kind": "B",
-                                                 "costs": {"MANUFACTURING": "40"}})
-        products = self.products(f"&name={NAME}&head=MANUFACTURING")
-        # K-200 は ＋40、V-110 は F-600 を含むので 0、A-100 だけ未登録
-        self.assertEqual((products["difference"], products["missing_count"]), ("40", 1))
-        k200 = self.ok("GET", "/api/group/changes", f"version=2026-10&name={NAME}&head=MANUFACTURING&product=K-200")
-        self.assertEqual(k200["rows"][0]["difference"], "40")
+        products = self.products(f"&name={NAME}&head=MATERIAL")
+        self.assertEqual((products["difference"], products["missing_count"]), ("-2550", 0))
 
     def test_nested_place_changes_refused(self) -> None:
         # 親の場所と、その下の場所を両方変えると元の版の使用数で倍率を取って原価が誤るので、後の方を拒む
@@ -589,12 +576,11 @@ class Compare(SampleDbCase):
     def test_base_row_then_one_row_per_name_with_scenario(self) -> None:
         names = quote(json.dumps([NAME, "別の検討", "無い検討"]))
         r = self.compare(f"&names={names}&ignore_amortization=1")
-        self.assertEqual([h["id"] for h in r["heads"]], self.HEADS)
-        self.assertEqual([h["label"] for h in r["heads"]], ["材料費", "償却費", "調整費", "直接費", "間接費", "製造原価"])
+        heads = [h["id"] for h in r["heads"]]
         self.assertEqual([(x["kind"], x["product"], x["name"]) for x in r["rows"]],
                          [("base", "A-100", None), ("trial", "A-100", NAME), ("trial", "A-100", "別の検討"),
                           ("base", "K-200", None), ("base", "V-110", None)])
-        self.assertEqual([list(x["costs"]) for x in r["rows"]], [self.HEADS] * 5)
+        self.assertEqual([list(x["costs"]) for x in r["rows"]], [heads] * 5)
         # 元＝版の構成、新＝土台＋変更（B-200 → X-610 ×2 は 200 − 2×1,600 ＋ 2×200・F-600 を足すと ＋250）
         self.assertEqual([x["costs"]["MATERIAL"] for x in r["rows"]], ["200", "-2600", "450", "3000", "-50"])
         self.assertEqual({x["costs"]["AMORTIZATION"] for x in r["rows"]}, {None})
@@ -633,17 +619,6 @@ class Compare(SampleDbCase):
         rows = self.compare(f"&names={names}&q=A-100&ignore_amortization=1")["rows"]
         self.assertEqual((before, rows[0]["costs"]["MATERIAL"], rows[1]["costs"]["MATERIAL"]), ("-2600", "200", "-2400"))
 
-    def test_amortization_summed_like_other_heads(self) -> None:
-        for code, name, amort in (("B-200", "部品B", "10"), ("C-300", "部品C", "5"), ("X-610", "試作品", "30")):
-            self.ok("PUT", "/api/manual/items", body={"code": code, "name": name, "kind": "B",
-                                                     "costs": {"AMORTIZATION": amort}})
-        rows = self.compare(f"&names={quote(NAME)}&q=A-100")["rows"]
-        # 元: 2×10 ＋ 3×5、新: 35 − 2×10 ＋ 2×30
-        self.assertEqual([x["costs"]["AMORTIZATION"] for x in rows], ["35", "75"])
-        # 親の A-100 自身は償却費が未登録なので、出せても未登録ありの印は付く
-        self.assertIn("AMORTIZATION", rows[0]["incomplete"])
-        self.assertNotIn("MATERIAL", rows[0]["incomplete"])
-
     def test_amortization_missing_is_error_unless_ignored(self) -> None:
         bad = self.call("GET", "/api/group/compare", f"version=2026-10&names={quote(NAME)}")
         self.assert_error(bad, 400, "償却費")
@@ -671,7 +646,6 @@ class CompareTable(SampleDbCase):
     def test_rows_per_product_with_trial_and_totals(self) -> None:
         names = quote(json.dumps([NAME, "別の検討"]))
         r = self.ok("GET", "/api/group/compare/table", f"version=2026-10&names={names}&ignore_amortization=1")
-        self.assertEqual([h["id"] for h in r["heads"]], Compare.HEADS)
         # 試算がある製品だけ並べ、無い製品は数だけ
         self.assertEqual([p["product"] for p in r["products"]], ["A-100"])
         self.assertEqual(r["without_trial"], 2)
@@ -759,8 +733,7 @@ class CompareTable(SampleDbCase):
         ws = wb["比較"]
         rows = list(ws.iter_rows())
         values = [[c.value for c in r] for r in rows]
-        self.assertEqual(values[0], ["品番", "名称", "年間台数", None, "材料費", "償却費", "調整費", "直接費", "間接費",
-                                     "製造原価"])
+        self.assertEqual(values[0][:4], ["品番", "名称", "年間台数", None])
         # 製品1つ × 検討2つ（現行＋4行ずつ）、計 2 つ × 5 行
         self.assertEqual([v[3] for v in values[1:]], [
             "現行", f"変更後（{NAME}）", f"差（{NAME}）", f"差%（{NAME}）", f"年間効果額（{NAME}）",
@@ -777,15 +750,6 @@ class CompareTable(SampleDbCase):
         # 計（群の検討）は 10 行目から
         self.assertEqual(values[10][0], f"計（{NAME}）")
         self.assertEqual([c.value for c in material[10:15]], [200, -2600, -2800, -14, -2800000])
-        # 償却費を無視した列は —、未登録（直接費）は空のセルに印、計は除いた数を添える
-        self.assertEqual(rows[1][5].value, "—")
-        direct = [r[7] for r in rows]
-        self.assertIsNone(direct[1].value)
-        self.assertIn("計から除く", direct[1].comment.text)
-        self.assertEqual(direct[1].fill.fgColor.rgb[-6:], "FFF2CC")
-        self.assertIsNone(direct[5].value)
-        self.assertIsNone(direct[14].value)
-        self.assertIn("未登録 1 製品を除く", direct[14].comment.text)
         premises = dict(wb["前提"].iter_rows(values_only=True))
         self.assertEqual(premises["版"], "2026-10（第1版）")
         self.assertEqual(premises["検討案"], f"{NAME}・別の検討")

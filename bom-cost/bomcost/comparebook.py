@@ -15,7 +15,7 @@ SHEET = "比較"
 PREMISES = "前提"
 DASH = "—"
 MISSING_NOTE = "未登録・計から除く"
-PARTIAL_NOTE = "一部未登録（未登録の部品を除いて足した値）"
+PARTIAL_NOTE = "一部未登録（未登録の部品を除くか、償却費・直接費を 0 とした値）"
 EXCLUDED_NOTE = "計から除く"
 MONEY_FORMAT = "#,##0"
 MONEY_FRACTION_FORMAT = "#,##0.00"
@@ -130,7 +130,8 @@ def compare_workbook(table: dict[str, Any], version_text: str, query: str, now: 
         ("償却費", "無視（—）" if table["ignore_amortization"] else "含める"),
         ("年間効果額", "差 × 年間台数"),
         ("未登録", "空欄（塗りとコメント）・計から除く"),
-        ("一部未登録", "未登録の部品を除いて足した値（コメント）"),
+        ("一部未登録", "未登録の部品を除くか、償却費・直接費を 0 とした値（コメント）"),
+        ("調整費・間接費・製造原価", "材料費小計から式で計算"),
         ("値の扱い", "参考値"),
         ("書き出した日時", now.strftime("%Y-%m-%d %H:%M")),
     ):

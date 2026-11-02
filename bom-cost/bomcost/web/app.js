@@ -366,7 +366,7 @@ async function renderDetail() {
     el("dt", {}, "区分・状態"), el("dd", {}, [d.kind, d.lifecycle].filter(Boolean).join("・") || "—"),
     el("dt", {}, "出どころ"), el("dd", {}, `${sources} ・ ${d.has_children ? "子部品あり" : "子部品なし"}`),
     el("dt", {}, "1台あたり"), el("dd", {}, d.usage === null ? "—" : `${fmt(d.usage)} 個`),
-    el("dt", {}, "償却費"), el("dd", {}, `${fmt(d.amortization)}（計算から外す）`),
+    el("dt", {}, "償却費"), el("dd", {}, fmt(d.amortization)),
   );
   const heads = el(
     "table",
@@ -476,7 +476,7 @@ function renderHistory() {
 function renderResult() {
   const s = state.summary;
   const p = s.premises;
-  const premise = [p.head_label, p.reference, p.amortization_excluded ? "償却費除外" : null, p.has_missing ? "一部未登録" : "未登録なし"]
+  const premise = [p.head_label, p.reference, p.has_missing ? "一部未登録" : "未登録なし"]
     .filter(Boolean).join("・");
   const box = document.getElementById("result");
   const last = s.last;

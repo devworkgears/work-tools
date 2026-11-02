@@ -21,6 +21,7 @@
   --chg-remove: #fbe3e1;
   --chg-add: #e2f2e7;
   --chg-qty: #e4ecfa;
+  --chg-head: #efe8f7;
   /* ③の表の目立たせる費目の地と、ほかの費目の文字の濃さ（地と文字の色に混ぜるので明暗どちらでも読める） */
   --cmp-key: color-mix(in srgb, var(--accent) 9%, transparent);
   --cmp-minor-ink: 70%;
@@ -208,6 +209,8 @@ tr.chg-replace td { background: var(--chg-replace); }
 tr.chg-remove td { background: var(--chg-remove); }
 tr.chg-add td { background: var(--chg-add); }
 tr.chg-qty td { background: var(--chg-qty); }
+tr.chg-head td { background: var(--chg-head); }
+.trial-heads { border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; margin-bottom: 6px; background: var(--panel); }
 .trial-layout { margin: 2px 0 4px; }
 table.small .pair-split { border-left: 2px solid var(--line); }
 tr.pair-sides th { font-weight: 600; color: inherit; }

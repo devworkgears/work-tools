@@ -6,11 +6,12 @@
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Callable
 
-from .api import ApiError, Response, _change_text, _json_response, _known_codes, _s
+from .api import ApiError, Response, _change_text, _json_response, _known_codes, _s, _View
+from .formula import Head
 from .group import Group, _matches, _Structure
 from .model import CostHead, Version
 from .normalize import to_code
-from .scenario import ChangeKind
+from .scenario import ChangeKind, Scenario
 
 if TYPE_CHECKING:
     from .api import Api
@@ -48,12 +49,13 @@ class Lookup:
             if not hits:
                 raise ApiError(404, f"「{needle}」に当たる品が版 {version_id} に無い")
             if len(hits) > 1:
+                view = self._view(version, hits[0])
                 return _json_response({
                     "version_id": version_id, "q": needle, "item": None,
                     "candidates": [{"code": c, "name": _name(version, c),
                                     "specification": _specification(version, c),
-                                    "material": _s(version.cost_value(c, CostHead.MATERIAL)),
-                                    "manufacturing": _s(version.cost_value(c, CostHead.MANUFACTURING))}
+                                    "material": _s(view.cost(c, CostHead.MATERIAL)),
+                                    "manufacturing": _s(view.cost(c, CostHead.MANUFACTURING))}
                                    for c in hits[:MAX_CANDIDATES]],
                     "truncated": len(hits) > MAX_CANDIDATES,
                 })
@@ -74,8 +76,12 @@ class Lookup:
         item_source = next((key for key, layer in layers if code in layer.items), None)
         entries = self.store.bom_entries([code])
         product_kind = Group.product_kind(version, structure)
+        calculated = self._view(version, code).breakdown(code)
         return {
             **basics,
+            # この品を計算の一番上にして式で出した値（costs の取込値と並べる）
+            "calculated": [{"head": h.name, "label": h.value, "value": _s(calculated.value(h)),
+                            "incomplete": calculated.is_incomplete(h)} for h in Head],
             "kind": "" if item is None else item.kind,
             "lifecycle": "" if item is None else item.lifecycle,
             "is_product": code in Group.product_codes(version, structure, product_kind),
@@ -88,6 +94,11 @@ class Lookup:
             "revisions": self._revisions(version, code),
             "changes": self._changes(version, code),
         }
+
+    def _view(self, version: Version, code: str) -> _View:
+        """版の構成のまま（一括の見方）で原価を出す見方。"""
+        scenario = Scenario("", code, f"{code}#", version, CostHead.MATERIAL, self.store.load_scope_policy())
+        return _View(scenario, "bulk", CostHead.MATERIAL, False)
 
     def _revisions(self, version: Version, code: str) -> list[dict[str, Any]]:
         """同じ開発番号の各版（版の番号の順）での、この品の原価（マスタ登録を敷いた値）。"""

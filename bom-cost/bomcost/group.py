@@ -15,6 +15,7 @@ from urllib.parse import quote
 from .api import (XLSX_TYPE, ApiError, Response, _flag, _head, _json_response, _known_codes, _place, _require_known,
                   _record_json, _s, _text_field, _View, version_label)
 from .comparebook import compare_file_name, compare_workbook
+from .formula import EDITABLE_HEADS, Head
 from .model import BomLine, CostHead, Version
 from .normalize import to_code
 from .scenario import ChangeKind, ChangeRecord, Scenario
@@ -40,14 +41,8 @@ def is_product_kind(product_kind: str, kind: str) -> bool:
     return bool(kind) and kind in (product_kind, PRODUCT_KIND_CODE)
 
 
-COMPARE_HEADS: tuple[CostHead, ...] = (
-    CostHead.MATERIAL,
-    CostHead.AMORTIZATION,
-    CostHead.ADJUSTMENT,
-    CostHead.DIRECT,
-    CostHead.INDIRECT,
-    CostHead.MANUFACTURING,
-)
+# ③で並べる8費目（式の並び）。材料費小計のほかは製品を一番上にして式で出す
+COMPARE_HEADS: tuple[Head, ...] = tuple(Head)
 
 
 def _names(value: Any) -> list[str]:
@@ -145,6 +140,7 @@ class Group:
             ("POST", r"/api/group/changes/bulk", self.add_changes),
             ("POST", r"/api/group/changes/undo", self.undo_change),
             ("GET", r"/api/group/tree", self.tree),
+            ("GET", r"/api/group/heads", self.heads),
             ("POST", r"/api/group/scenarios", self.add_scenarios),
             ("GET", r"/api/group/compare", self.compare),
             ("GET", r"/api/group/compare/table", self.compare_table),
@@ -154,10 +150,10 @@ class Group:
     # 比べる ------------------------------------------------------------------
 
     def compare(self, params: dict[str, str]) -> Response:
-        """製品ごとに元（版の構成）の行と、試算がある検討名ごとの新（土台＋変更）の行を、6費目で並べる。
+        """製品ごとに元（版の構成）の行と、試算がある検討名ごとの新（土台＋変更）の行を、8費目（COMPARE_HEADS）で並べる。
 
-        償却費が出せない（足し上げる範囲に登録値が1つも無い）行があれば 400。
-        ignore_amortization を付けると償却費は null で通す。incomplete は範囲のどこかに未登録がある費目。
+        製品の償却費が未登録の行があれば 400。ignore_amortization を付けると償却費は null で、式では 0 として通す。
+        incomplete は未登録を除いた・0 とした値を使った費目。
         新の行には元との差（differences）と変更の一覧（changes・原価は今の登録値で当て直した値）を添え、summary に検討名×費目の合計の差と、
         下がった・上がった・変わらない・未登録の製品の数を置く。
         """
@@ -212,7 +208,7 @@ class Group:
             effects = {h: _effect(row["differences"][h], p["volume"]) for h in row["costs"]}
             p["trials"].append({"name": row["name"], "scenario_id": row["scenario_id"], "after": row["costs"],
                                 "difference": row["differences"], "percent": percents, "effect": effects,
-                                # 未登録の部品を除いて足した費目（差・差%・年間効果額も一部未登録）
+                                # 未登録を除いた・0 とした値を使った費目（差・差%・年間効果額も一部未登録）
                                 "incomplete": sorted(set(row["incomplete"]) | set(p["incomplete"]))})
         return version, {
             "version_id": version.version_id,
@@ -243,7 +239,7 @@ class Group:
         if shown:
             policy = self.store.load_scope_policy()
             bulk = _View(Scenario("", shown[0], f"{shown[0]}#", version, CostHead.MATERIAL, policy),
-                         "bulk", CostHead.MATERIAL, False, amortization=True)
+                         "bulk", CostHead.MATERIAL, False, ignore_amortization=ignore)
             scenario_ids = {n: self._scenarios(version, n) for n in names}
             for code in shown:
                 product_name = self._name(version, code)
@@ -255,7 +251,7 @@ class Group:
                     if sid is None:
                         continue
                     scenario = self.store.load_scenario(sid, version)
-                    view = _View(scenario, "diff", CostHead.MATERIAL, False, amortization=True)
+                    view = _View(scenario, "diff", CostHead.MATERIAL, False, ignore_amortization=ignore)
                     row = self._compare_row(view, view.root, code, product_name, n, sid, ignore, failed)
                     row["differences"] = _differences(base["costs"], row["costs"])
                     if with_changes:
@@ -268,18 +264,11 @@ class Group:
     @staticmethod
     def _compare_row(view: _View, root: str, code: str, product_name: str, name: str | None, sid: int | None,
                      ignore: bool, failed: list[str]) -> dict[str, Any]:
-        costs: dict[str, str | None] = {}
-        incomplete: list[str] = []
-        for head in COMPARE_HEADS:
-            if head is CostHead.AMORTIZATION and ignore:
-                costs[head.name] = None
-                continue
-            value = view.cost(root, head)
-            if view.incomplete(root, head):
-                incomplete.append(head.name)
-            if value is None and head is CostHead.AMORTIZATION:
-                failed.append(code if name is None else f"{code}（{name}）")
-            costs[head.name] = _s(value)
+        b = view.breakdown(root)
+        if not ignore and b.value(Head.AMORTIZATION) is None:
+            failed.append(code if name is None else f"{code}（{name}）")
+        costs = {head.name: _s(b.value(head)) for head in COMPARE_HEADS}
+        incomplete = [head.name for head in COMPARE_HEADS if b.is_incomplete(head)]
         return {
             "kind": "base" if name is None else "trial",
             "product": code,
@@ -493,6 +482,28 @@ class Group:
             view = _View(scenario, "bulk", head, by_balloon)
         return _json_response({"scenario_id": sid, **self.api.tree_payload(view, params.get("code"))})
 
+    def heads(self, params: dict[str, str]) -> Response:
+        """製品の8費目を現行（版の構成）と変更後（検討名の試算・無ければ現行と同じ）で。editable は費目変更で書き換えられる費目。"""
+        version = self._version(params)
+        product = to_code(_text_field(params, "product", "製品の品番"))
+        _require_known(version, product, "製品")
+        name = (params.get("name") or "").strip()
+        sid = self._scenarios(version, name).get(product) if name else None
+        scenario = Scenario(name, product, f"{product}#", version, CostHead.MATERIAL, self.store.load_scope_policy())
+        current = _View(scenario, "bulk", CostHead.MATERIAL, False).breakdown(product)
+        after = current
+        if sid is not None:
+            view = _View(self.store.load_scenario(sid, version), "diff", CostHead.MATERIAL, False)
+            after = view.breakdown(view.root)
+        return _json_response({
+            "product": product, "scenario_id": sid,
+            "heads": [{"id": h.name, "label": h.value} for h in COMPARE_HEADS],
+            "editable": [h.name for h in EDITABLE_HEADS],
+            "current": {h.name: _s(current.value(h)) for h in COMPARE_HEADS},
+            "after": {h.name: _s(after.value(h)) for h in COMPARE_HEADS},
+            "incomplete": sorted(h.name for h in current.incomplete | after.incomplete),
+        })
+
     # 部品の検索 --------------------------------------------------------------
 
     def parts(self, params: dict[str, str]) -> Response:
@@ -611,8 +622,8 @@ class Group:
         created = sid is None
         if created:
             sid = self.store.save_scenario(self._new_scenario(version, name, product, head))
-        change = {k: body[k] for k in ("kind", "part", "replacement", "quantity", "parent", "balloon", "replacements")
-                  if k in body}
+        change = {k: body[k] for k in ("kind", "part", "replacement", "quantity", "parent", "balloon", "replacements",
+                                       "target_head") if k in body}
         try:
             response = self.api.add_change(sid, {}, change)
         except Exception:

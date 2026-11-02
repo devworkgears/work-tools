@@ -9,6 +9,7 @@ from decimal import Decimal
 from enum import Enum
 from typing import Iterable
 
+from .formula import OwnValues, breakdown
 from .model import Code, CostHead, Version, VolumeKind
 from .normalize import NumberLike, to_code, to_decimal
 from .rollup import ScopePolicy, StructureOverrides, calculate_cost
@@ -223,22 +224,27 @@ def reuse_impact(
 ) -> ReuseImpact:
     """流用先の既存品の差額 ＝ 使用数 ×（新しい部品の原価 − 古い部品の原価）＋ 型費の分。
 
-    既存品の今の原価は原価の表の製品の行から引く。古い部品が無い流用は古い部品の原価を 0 とする。
+    既存品の今の原価はその品を一番上にした原価（材料費は登録値、ほかは式）。古い部品が無い流用は古い部品の原価を 0 とする。
+    部品の抜き差しで動くのは既存品の材料費小計だけなので、部品の原価は部品の材料費が既存品の費目 head に効く分
+    （材料費だけを入れた式の値・式は材料費について1次）にする。
     """
     if mold_allocation is None:
         mold_share: Decimal | None = Decimal(0)
     else:
         share = mold_allocation.share_for(target.product)
         mold_share = None if share is None else share.per_unit
-    new_cost = calculate_cost(version, target.part, head, policy).total
-    old_cost = (
-        Decimal(0)
-        if target.replaced_part is None
-        else calculate_cost(version, target.replaced_part, head, policy).total
-    )
+
+    def part_cost(code: str) -> Decimal | None:
+        material = calculate_cost(version, code, CostHead.MATERIAL, policy).total
+        if head is CostHead.MATERIAL or material is None:
+            return material
+        return breakdown(material, OwnValues(Decimal(0), Decimal(0), Decimal(0))).value(head)
+
+    new_cost = part_cost(target.part)
+    old_cost = Decimal(0) if target.replaced_part is None else part_cost(target.replaced_part)
     return ReuseImpact(
         product=target.product,
-        current_cost=version.cost_value(target.product, head),
+        current_cost=calculate_cost(version, target.product, head, policy).total,
         quantity_per_unit=target.quantity_per_unit,
         new_part_cost=new_cost,
         old_part_cost=old_cost,

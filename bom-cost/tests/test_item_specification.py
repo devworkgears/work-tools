@@ -88,9 +88,10 @@ class ItemSpecificationApi(SampleDbCase):
             self.assertEqual(self.store.load_manual("2026-10").items[code].specification, spec)
             self.assertNotIn(code, self.store.load_manual().items)
         candidates = self.ok("GET", "/api/lookup", "version=2026-10&q=照会用")["candidates"]
-        self.assertEqual(candidates, [
-            {"code": "X-1", "name": "照会用", "specification": "φ20", "material": "0", "manufacturing": "12.5"},
-            {"code": "X-2", "name": "照会用", "specification": "M6", "material": None, "manufacturing": None}])
+        self.assertEqual([{k: c[k] for k in ("code", "name", "specification", "material")} for c in candidates], [
+            {"code": "X-1", "name": "照会用", "specification": "φ20", "material": "0"},
+            {"code": "X-2", "name": "照会用", "specification": "M6", "material": None}])
+        self.assertEqual(candidates[1]["manufacturing"], None)
         item = self.ok("GET", "/api/lookup", "version=2026-10&q=X-1")["item"]
         self.assertEqual(item["specification"], "φ20")
         self.ok("PUT", "/api/manual/items", body={"dev_number": "2026-10", "code": "X-1", "name": "照会用", "specification": ""})

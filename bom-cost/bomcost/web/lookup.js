@@ -36,7 +36,7 @@ async function drawLookup() {
   if (!r.item) {
     body.replaceChildren(
       el("h3", {}, `候補（${r.candidates.length}${r.truncated ? "+" : ""} 件）`),
-      table(["品番", "名称", "記号・寸法", numTh("材料費"), numTh("製造原価")], r.candidates.map((c) => el("tr", {}, el("td", {}, lookLink(c.code)), el("td", {}, c.name), el("td", {}, c.specification), numTd(c.material), numTd(c.manufacturing)))),
+      table(["品番", "名称", "記号・寸法", numTh("材料費小計"), numTh("製造原価")], r.candidates.map((c) => el("tr", {}, el("td", {}, lookLink(c.code)), el("td", {}, c.name), el("td", {}, c.specification), numTd(c.material), numTd(c.manufacturing)))),
     );
     return;
   }
@@ -67,18 +67,25 @@ function lookBasics(x) {
   );
 }
 
+// 計算値（この品を一番上にした式の値）の8費目に、取込値（登録の6費目）と出どころを並べる
 function lookCosts(x) {
+  const imported = new Map(x.costs.map((c) => [c.head, c]));
   return el(
     "section", { class: "look-section" },
     el("h3", {}, "原価"),
     table(
-      ["費目", numTh("値"), "出どころ"],
-      x.costs.map((c) => el(
-        "tr", {},
-        el("td", {}, c.label),
-        numTd(c.value),
-        el("td", {}, el("span", { class: `look-src ${LOOK_SOURCE_CLASS[c.source] || "missing"}` }, c.source_label)),
-      )),
+      ["費目", numTh("計算値"), numTh("取込値"), "出どころ"],
+      x.calculated.map((k) => {
+        const c = imported.get(k.head);
+        return el(
+          "tr", {},
+          el("td", {}, k.label),
+          el("td", { class: `num ${k.value === null ? "missing" : ""}` },
+            k.incomplete && k.value !== null ? el("span", { class: "tag warn", title: "一部未登録" }, "一部") : null, fmt(k.value)),
+          c ? numTd(c.value) : el("td", { class: "num muted" }, "—"),
+          el("td", {}, c ? el("span", { class: `look-src ${LOOK_SOURCE_CLASS[c.source] || "missing"}` }, c.source_label) : ""),
+        );
+      }),
     ),
   );
 }
