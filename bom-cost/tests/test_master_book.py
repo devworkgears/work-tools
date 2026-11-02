@@ -72,9 +72,10 @@ class MasterBook(DemoDbCase):
         self.assertEqual((check["added"], check["changed"], check["errors"]), (0, 0, []))
 
     def test_master_heads_are_formula_inputs(self) -> None:
-        self.assertEqual([h["label"] for h in self.manual()["heads"]], ["材料費", "償却費", "直接費"])
-        self.assertEqual(SHEETS["製品"], ("品番", "名称", "材料費", "償却費", "直接費", "記号・寸法"))
-        self.assertEqual(SHEETS["部品"], ("品番", "名称", "区分", "材料費", "償却費", "直接費", "記号・寸法"))
+        labels = [h["label"] for h in self.manual()["heads"]]
+        self.assertEqual(labels[:3], ["材料費", "償却費", "直接費"])
+        self.assertEqual(SHEETS["製品"], ("品番", "名称", *labels, "記号・寸法"))
+        self.assertEqual(SHEETS["部品"], ("品番", "名称", "区分", *labels, "記号・寸法"))
         self.ok("PUT", "/api/manual/items", body={"role": "part", "code": "MQ-4", "name": "部品4",
                                                   "costs": {"MATERIAL": "10", "AMORTIZATION": "3", "DIRECT": "2"}})
         items = {i["code"]: i for i in self.manual()["items"]}

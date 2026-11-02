@@ -293,10 +293,11 @@ function unknownCode(input) {
 // 品番が無い時に出す、部品として登録する欄（名称と費目）
 function registerPanel(codeField) {
   const name = el("input", { placeholder: "名称", size: 12 });
-  const costs = state.meta.heads.map((h) => [h.id, el("input", { inputmode: "decimal", size: 8 })]);
+  const heads = state.meta.master_heads;
+  const costs = heads.map((h) => [h.id, el("input", { inputmode: "decimal", size: 8 })]);
   const panel = el("div", { class: "change-register", hidden: true },
     el("label", {}, "名称 ", name),
-    state.meta.heads.map((h, i) => el("label", {}, `${h.label} `, costs[i][1])));
+    ...heads.map((h, i) => el("label", {}, `${h.label} `, costs[i][1])));
   const body = () => ({ role: "part", code: codeField.value.trim(), name: name.value,
     costs: Object.fromEntries(costs.map(([id, input]) => [id, input.value])) });
   return { panel, inputs: [name, ...costs.map(([, input]) => input)], body };

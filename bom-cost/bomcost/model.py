@@ -28,6 +28,7 @@ class CostHead(Enum):
     ADJUSTMENT = "調整費"
     AMORTIZATION = "償却費"
     MANUFACTURING = "製造原価"
+    PROCESSING = "社内加工費"
 
 
 # 製造原価と比べる4費目

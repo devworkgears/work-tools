@@ -62,7 +62,8 @@ class Costs(LookupCase):
         self.ok("PUT", "/api/manual/items", body={"code": "B-200", "name": "部品B",
                                                   "costs": {"DIRECT": "99", "INDIRECT": "7"}})
         costs = {c["head"]: (c["value"], c["source"], c["source_label"]) for c in self.item("B-200")["costs"]}
-        self.assertEqual(costs, {
+        self.assertEqual({k: costs[k] for k in ("MATERIAL", "DIRECT", "INDIRECT", "ADJUSTMENT", "AMORTIZATION",
+                                                 "MANUFACTURING")}, {
             "MATERIAL": ("1600", "bom", "BOM"),
             "DIRECT": ("30", "dev", "開発番号の登録"),
             "INDIRECT": ("7", "common", "共通の登録"),

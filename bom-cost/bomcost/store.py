@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS cost (
     adjustment TEXT,
     amortization TEXT,
     manufacturing TEXT,
+    processing TEXT,
     PRIMARY KEY (version_id, code)
 );
 CREATE TABLE IF NOT EXISTS volume (
@@ -182,6 +183,7 @@ COST_COLUMNS: tuple[tuple[str, CostHead], ...] = (
     ("adjustment", CostHead.ADJUSTMENT),
     ("amortization", CostHead.AMORTIZATION),
     ("manufacturing", CostHead.MANUFACTURING),
+    ("processing", CostHead.PROCESSING),
 )
 
 
@@ -263,6 +265,8 @@ class Store:
         self._conn.execute("UPDATE version SET dev_number = version_id WHERE dev_number IS NULL OR dev_number = ''")
         if "specification" not in {row[1] for row in self._conn.execute("PRAGMA table_info(item)")}:
             self._conn.execute("ALTER TABLE item ADD COLUMN specification TEXT NOT NULL DEFAULT ''")
+        if "processing" not in {row[1] for row in self._conn.execute("PRAGMA table_info(cost)")}:
+            self._conn.execute("ALTER TABLE cost ADD COLUMN processing TEXT")
         self._migrate_master_tables()
         self._conn.execute(
             "INSERT OR IGNORE INTO version (version_id, note) VALUES (?, ?)",
@@ -467,7 +471,8 @@ class Store:
             [(version_id, *conflict.key, str(q)) for conflict in version.conflicts for q in conflict.quantities],
         )
         c.executemany(
-            "INSERT INTO cost VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            f"INSERT INTO cost (version_id, code, mbom_code, {', '.join(n for n, _ in COST_COLUMNS)}) "
+            f"VALUES ({', '.join('?' * (3 + len(COST_COLUMNS)))})",
             [(version_id, r.code, r.mbom_code, *(_text(r.value(h)) for _, h in COST_COLUMNS))
              for r in version.cost_rows],
         )

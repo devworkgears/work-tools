@@ -20,7 +20,7 @@ INDIRECT_RATE = Decimal("0.11")
 
 
 class Head(Enum):
-    """式で出す費目（③の並び）。6つの id は CostHead と同じ。"""
+    """式で出す費目（③の並び）。7つの id は CostHead と同じ。"""
 
     MATERIAL = "材料費小計"
     PROCESSING = "社内加工費"
@@ -54,9 +54,10 @@ class OwnValues:
 
 
 def registered_own(version: Version, code: Code) -> OwnValues:
-    """品目の登録値から。社内加工費は CSV に出ないので 0。"""
-    return OwnValues(Decimal(0), version.cost_value(code, CostHead.AMORTIZATION),
-                     version.cost_value(code, CostHead.DIRECT))
+    """品目の登録値から。社内加工費はもともと CSV に無い前提なので、未登録は 0（未登録の印は付けない）。"""
+    processing = version.cost_value(code, CostHead.PROCESSING)
+    return OwnValues(Decimal(0) if processing is None else processing,
+                     version.cost_value(code, CostHead.AMORTIZATION), version.cost_value(code, CostHead.DIRECT))
 
 
 @dataclass(frozen=True)

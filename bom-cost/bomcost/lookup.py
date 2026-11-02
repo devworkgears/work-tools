@@ -204,7 +204,7 @@ def _role(kind: ChangeKind, part: str, replacement: str | None, code: str) -> st
 
 
 def _costs(code: str, layers: tuple[tuple[str, Version], ...]) -> list[dict[str, Any]]:
-    """6費目の値と出どころ。費目ごとに、強い層（BOM ＞ 開発番号 ＞ 共通）から最初に値のある層を採る。"""
+    """登録できる全費目（CostHead）の値と出どころ。費目ごとに、強い層（BOM ＞ 開発番号 ＞ 共通）から最初に値のある層を採る。"""
     rows = []
     for head in CostHead:
         value, source = None, None

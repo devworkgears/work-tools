@@ -50,6 +50,7 @@ TABLE_FIELDS: dict[str, tuple[FieldSpec, ...]] = {
         FieldSpec("adjustment", CostHead.ADJUSTMENT.value, False),
         FieldSpec("amortization", CostHead.AMORTIZATION.value, False),
         FieldSpec("manufacturing", CostHead.MANUFACTURING.value, False),
+        FieldSpec("processing", CostHead.PROCESSING.value, False),
     ),
     "volume": (
         FieldSpec("product", "製品の品番", True),
@@ -64,6 +65,7 @@ COST_FIELDS: dict[str, CostHead] = {
     "adjustment": CostHead.ADJUSTMENT,
     "amortization": CostHead.AMORTIZATION,
     "manufacturing": CostHead.MANUFACTURING,
+    "processing": CostHead.PROCESSING,
 }
 
 

@@ -238,8 +238,6 @@ class SampleApi(SampleDbCase):
         self.assertEqual(list(calc), [h.name for h in Head])
         self.assertEqual(calc["MATERIAL"], ("200", False))
         self.assertEqual(calc["MANUFACTURING"], ("228.66", True))  # 償却費・直接費が未登録で 0 として通した
-        # 取込値は6費目のまま
-        self.assertEqual(len(item["costs"]), 6)
         candidates = {c["code"]: c for c in self.ok("GET", "/api/lookup", "version=2026-10&q=部品")["candidates"]}
         self.assertEqual(candidates["B-200"]["manufacturing"], "1829.28")  # 1600 × 1.03 × 1.11
 

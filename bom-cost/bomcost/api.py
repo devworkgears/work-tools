@@ -32,7 +32,8 @@ HEADS: tuple[CostHead, ...] = (
     CostHead.MANUFACTURING,
 )
 # マスタ登録で入れる費目（式の入力のうち登録値を使うもの）。調整費・間接費・製造原価は式で出すので入れない
-MASTER_HEADS: tuple[CostHead, ...] = (CostHead.MATERIAL, CostHead.AMORTIZATION, CostHead.DIRECT)
+MASTER_HEADS: tuple[CostHead, ...] = (CostHead.MATERIAL, CostHead.AMORTIZATION, CostHead.DIRECT,
+                                      CostHead.PROCESSING)
 MODES = {"diff": "差分", "bulk": "一括"}
 JSON_TYPE = "application/json; charset=utf-8"
 XLSX_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -452,6 +453,7 @@ class Api:
         return _json_response(
             {
                 "heads": [{"id": h.name, "label": h.value} for h in HEADS],
+                "master_heads": [{"id": h.name, "label": h.value} for h in MASTER_HEADS],
                 "modes": [{"id": k, "label": v} for k, v in MODES.items()],
                 "table_columns": [{"key": k, "label": label, "type": t} for k, label, t in TABLE_COLUMNS],
             }

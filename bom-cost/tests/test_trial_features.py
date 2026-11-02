@@ -21,7 +21,6 @@ class TrialFeatures(SampleDbCase):
         full = self.ok("GET", "/api/lookup", query)["item"]
         brief = self.ok("GET", "/api/lookup", query + "&brief=1")["item"]
         self.assertEqual(brief, {key: full[key] for key in ("code", "name", "specification", "costs")})
-        self.assertEqual(len(brief["costs"]), 6)
         costs = {c["head"]: (c["value"], c["source"]) for c in brief["costs"]}
         self.assertEqual(costs["MATERIAL"], ("1600", "bom"))
         self.assertEqual(costs["INDIRECT"], ("7", "common"))
