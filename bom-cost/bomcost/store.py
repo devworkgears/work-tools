@@ -531,11 +531,14 @@ class Store:
         reuse: Iterable[ReuseTarget],
         part_maps: Iterable[tuple[str, str, str, str, str | None, str | None]],
         dev_number: str = "",
+        removed_molds: Iterable[str] = (),
+        removed_reuse: Iterable[tuple[str, str]] = (),
+        removed_part_maps: Iterable[tuple[str, str, str, str, str | None, str | None]] = (),
     ) -> None:
         """マスタのブックの取り込みを1回の書き込みで入れる（途中で落ちたら何も入らない）。
 
         manual は入れ替えるその開発番号（空なら共通）の登録（None なら触らない）。型費と流用先は同じキーを入れ替え、
-        対応表は足す。
+        対応表は足す。removed_* の型費（部品）・流用先（部品, 製品）・対応表の行は消す。
         """
         version_id = manual_version_id(dev_number)
         with self._conn:
@@ -546,6 +549,15 @@ class Store:
                 )
                 self._delete_rows(version_id)
                 self._insert_rows(version_id, manual)
+            self._conn.executemany("DELETE FROM mold_cost WHERE part = ? AND dev_number = ?",
+                                   [(p, dev_number) for p in removed_molds])
+            self._conn.executemany("DELETE FROM reuse_target WHERE part = ? AND product = ? AND dev_number = ?",
+                                   [(p, pr, dev_number) for p, pr in removed_reuse])
+            self._conn.executemany(
+                "DELETE FROM part_map WHERE old_product = ? AND new_product = ? AND old_part = ? AND new_part = ? "
+                "AND old_balloon IS ? AND new_balloon IS ? AND dev_number = ?",
+                [(*key, dev_number) for key in removed_part_maps],
+            )
             self._conn.executemany(
                 "INSERT OR REPLACE INTO mold_cost (part, amount, years, dev_number) VALUES (?, ?, ?, ?)",
                 [(m.part, str(m.amount), str(m.years), dev_number) for m in molds],

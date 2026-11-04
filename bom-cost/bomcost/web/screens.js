@@ -12,6 +12,7 @@ const screenState = {
   manualTab: "product", // マスタ登録で選んでいるタブ
   manualDev: "", // マスタ登録で選んでいる開発番号（空は共通）
   masterFile: null, // マスタのブックを選ぶ欄（描き直しても選んだファイルを残すため1つを使い回す）
+  masterFileShown: false, // 別のファイルの欄を出しているか
   masterCheck: null, // { body, result }: 取り込みの確認
   preview: null, // { file, content, data }
   pending: [], // 取り込む一覧
@@ -375,7 +376,7 @@ async function renderManual(data) {
   const itemCells = (i) => [
     m.heads.map((h) => numTd(i.costs[h.id], { yen: true })),
     el("td", {},
-      el("button", { type: "button", onclick: edit(i.role, { code: i.code, name: i.name, specification: i.specification, kind: i.kind, ...i.costs }) }, "直す"),
+      el("button", { type: "button", onclick: edit(i.role, { code: i.code, name: i.name, specification: i.specification, kind: i.kind, ...i.costs, original: { code: i.code } }) }, "直す"),
       el("button", { type: "button", onclick: del(`/api/manual/items?${qs({ code: i.code })}`) }, "消す")),
   ];
   const itemForm = (role) => {
@@ -390,6 +391,7 @@ async function renderManual(data) {
       el("button", { type: "button", class: "primary", onclick: () => send("PUT", "/api/manual/items", {
         role, code: code.value, name: name.value, specification: specification.value, kind: role === "part" ? kind.value : "",
         costs: Object.fromEntries(m.heads.map((h) => [h.id, costs[h.id].value])),
+        original: screenState.editing[role]?.original,
       }) }, saveLabel));
   };
   const productRows = m.items.filter((i) => i.role === "product").map((i) => el("tr", {},
@@ -415,11 +417,11 @@ async function renderManual(data) {
     table(["製品の品番", numTh("年間台数"), "種別", ""], m.volumes.map((v) => el("tr", {},
       el("td", {}, v.product, " ", inBom(v.product)), numTd(v.annual), el("td", {}, v.kind),
       el("td", {},
-        el("button", { type: "button", onclick: edit("volume", v) }, "直す"),
+        el("button", { type: "button", onclick: edit("volume", { ...v, original: { product: v.product } }) }, "直す"),
         el("button", { type: "button", onclick: del(`/api/manual/volumes?${qs({ product: v.product })}`) }, "消す")),
     ))),
     el("div", { class: "form-row" }, field("製品の品番", volProduct), field("年間台数", volAnnual),
-      el("button", { type: "button", class: "primary", onclick: () => send("PUT", "/api/manual/volumes", { product: volProduct.value, annual: volAnnual.value }) }, saveLabel)),
+      el("button", { type: "button", class: "primary", onclick: () => send("PUT", "/api/manual/volumes", { product: volProduct.value, annual: volAnnual.value, original: screenState.editing.volume?.original }) }, saveLabel)),
   );
 
   // 型費
@@ -430,11 +432,11 @@ async function renderManual(data) {
     table(["部品の品番", numTh("型費（円）"), numTh("償却年数"), numTh("1年あたり（円）"), ""], m.molds.map((x) => el("tr", {},
       el("td", {}, x.part), numTd(x.amount, { yen: true }), numTd(x.years), numTd(x.annual_amount, { yen: true }),
       el("td", {},
-        el("button", { type: "button", onclick: edit("mold", x) }, "直す"),
+        el("button", { type: "button", onclick: edit("mold", { ...x, original: { part: x.part } }) }, "直す"),
         el("button", { type: "button", onclick: del(`/api/molds?${qs({ part: x.part })}`) }, "消す")),
     ))),
     el("div", { class: "form-row" }, field("部品の品番", moldPart), field("型費（円）", moldAmount), field("償却年数", moldYears),
-      el("button", { type: "button", class: "primary", onclick: () => send("PUT", "/api/molds", { part: moldPart.value, amount: moldAmount.value, years: moldYears.value }) }, saveLabel)),
+      el("button", { type: "button", class: "primary", onclick: () => send("PUT", "/api/molds", { part: moldPart.value, amount: moldAmount.value, years: moldYears.value, original: screenState.editing.mold?.original }) }, saveLabel)),
   );
 
   // 流用先
@@ -516,8 +518,8 @@ function masterBookBar(dev) {
   const open = () => guarded(async () => {
     // 置き場のブックに取り込んでいない差があるなら、作り直して消す前に確かめる（ブックが無い・読めない時は作り直す）
     const diff = await api("POST", "/api/master/check", { dev_number: dev }).catch(() => null);
-    const keep = diff && diff.added + diff.changed > 0
-      && !confirm(`取り込んでいない差があります（追加 ${diff.added}件・変更 ${diff.changed}件）。ブックを作り直しますか？`);
+    const keep = diff && diff.added + diff.changed + diff.removed > 0
+      && !confirm(`取り込んでいない差があります（${masterDiffText(diff)}）。ブックを作り直しますか？`);
     const r = await api("POST", keep ? "/api/master/open" : "/api/master/book", { dev_number: dev });
     showMessage(`${r.opened ? "開きました" : "書き出しました"}: ${r.path}`, "info");
   });
@@ -526,10 +528,22 @@ function masterBookBar(dev) {
     screenState.masterCheck = { body, result: await api("POST", "/api/master/check", body) };
     await renderManual(screenState.manual);
   });
-  return el("div", { class: "form-row" },
-    el("button", { type: "button", onclick: open }, "Excel で開く"),
-    el("button", { type: "button", class: "primary", onclick: check }, `${dev || "共通"}に取り込む`),
-    field("ファイル", screenState.masterFile));
+  // 別のファイルの欄は選んだ時だけ出す（閉じたら選んだファイルも外し、置き場のブックに戻す）
+  const toggleFile = () => {
+    screenState.masterFileShown = !screenState.masterFileShown;
+    if (!screenState.masterFileShown) screenState.masterFile.value = "";
+    renderManual(screenState.manual);
+  };
+  return el("div", { class: "form-row mreg-book" },
+    el("button", { type: "button", onclick: open }, "① Excel で開く"),
+    el("span", { class: "muted", "aria-hidden": "true" }, "→"),
+    el("button", { type: "button", class: "primary", onclick: check }, `② ${dev || "共通"}に取り込む`),
+    el("button", { type: "button", "aria-pressed": String(!!screenState.masterFileShown), onclick: toggleFile }, "別のファイル"),
+    screenState.masterFileShown ? field("ファイル", screenState.masterFile) : null);
+}
+
+function masterDiffText(r) {
+  return `追加 ${r.added}件・変更 ${r.changed}件・削除 ${r.removed}件`;
 }
 
 function masterCheckPanel() {
@@ -545,17 +559,17 @@ function masterCheckPanel() {
     screenState.masterCheck = null;
     screenState.masterFile.value = "";
     await renderManual(done.manual);
-    showMessage(`取り込みました（追加 ${done.added}件・変更 ${done.changed}件）`, "info");
+    showMessage(`取り込みました（${masterDiffText(done)}）`, "info");
   });
   return card("取り込みの確認", [
-    el("p", {}, `追加 ${r.added}件・変更 ${r.changed}件`),
+    el("p", {}, masterDiffText(r)),
     r.errors.length ? [
       el("p", { class: "missing" }, `行の誤り ${r.errors.length}件`),
       table(["シート", numTh("行"), "内容"], r.errors.map((e) => el("tr", {},
         el("td", {}, e.sheet), el("td", { class: "num" }, e.row ?? ""), el("td", {}, e.message)))),
     ] : null,
     el("div", { class: "form-row" },
-      el("button", { type: "button", class: "primary", disabled: r.errors.length > 0 || r.added + r.changed === 0, onclick: apply }, `${c.body.dev_number || "共通"}に保存`),
+      el("button", { type: "button", class: "primary", disabled: r.errors.length > 0 || r.added + r.changed + r.removed === 0, onclick: apply }, `${c.body.dev_number || "共通"}に保存`),
       el("button", { type: "button", onclick: close }, "やめる")),
   ]);
 }

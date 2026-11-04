@@ -1,6 +1,6 @@
 """マスタ登録（製品・部品・年間台数・型費・流用先・部品の対応表）を Excel のブックで書き出し、取り込む。
 
-取り込みは追加と上書きだけ（ブックから行を消しても登録は消さない）。確認（plan_book）は何も保存せず、
+取り込みは追加・上書き・削除（登録にあってブックに無い行は登録から消す）。確認（plan_book）は何も保存せず、
 決定（apply_plan）は全部を1回の書き込みで入れる。列の見出しは画面の表にそろえる。
 """
 
@@ -53,6 +53,7 @@ class SheetCount:
     added: int = 0
     changed: int = 0
     unchanged: int = 0
+    removed: int = 0
 
 
 @dataclass
@@ -67,6 +68,12 @@ class MasterPlan:
     molds: list[MoldCost] = field(default_factory=list)
     reuse: list[ReuseTarget] = field(default_factory=list)
     part_maps: list[PartMapKey] = field(default_factory=list)
+    # 登録にあってブックに無い行（消す）
+    removed_items: list[str] = field(default_factory=list)
+    removed_volumes: list[str] = field(default_factory=list)
+    removed_molds: list[str] = field(default_factory=list)
+    removed_reuse: list[tuple[str, str]] = field(default_factory=list)
+    removed_part_maps: list[PartMapKey] = field(default_factory=list)
     dev_number: str = ""  # 入れる先の開発番号（空は共通）
 
     def total(self, key: str) -> int:
@@ -205,7 +212,9 @@ def _read_sheets(data: bytes) -> dict[str, list[tuple[Any, ...]]]:
 
 
 def plan_book(store: Store, product_kind: str, data: bytes, dev_number: str = "") -> MasterPlan:
-    """ブックを読み、今の登録（その開発番号の分・空は共通）との差（追加・変更・同じ）と行の誤りを返す。何も保存しない。
+    """ブックを読み、今の登録（その開発番号の分・空は共通）との差（追加・変更・同じ・削除）と行の誤りを返す。何も保存しない。
+
+    削除はブックに無い登録の行。誤りのあるシートでは行のキーが分からないので削除を数えない（入れられもしない）。
 
     読めないブックは ValueError 以外の例外（zipfile など）も出るので、呼ぶ側でまとめて受ける。
     """
@@ -213,6 +222,7 @@ def plan_book(store: Store, product_kind: str, data: bytes, dev_number: str = ""
     plan = MasterPlan(dev_number=dev_number)
     current = _Current.load(store, dev_number)
     item_rows: dict[str, tuple[str, int]] = {}  # 品番 → 最初に出たシートと行（製品と部品をまたいで見る）
+    keys: dict[str, set[Any]] = {s: set() for s in SHEETS}  # シート → ブックにある行のキー
 
     for sheet, headers in SHEETS.items():
         if sheet not in sheets:
@@ -238,9 +248,38 @@ def plan_book(store: Store, product_kind: str, data: bytes, dev_number: str = ""
             except (_RowError, ValueError, TypeError) as exc:
                 plan.errors.append(BookError(sheet, number, str(exc)))
                 continue
+            keys[sheet].add(key)
             count = plan.counts[sheet]
             setattr(count, status, getattr(count, status) + 1)
+    _plan_removed(plan, current, product_kind, keys)
     return plan
+
+
+def _plan_removed(plan: MasterPlan, current: _Current, product_kind: str, keys: dict[str, set[Any]]) -> None:
+    """登録にあってブックに無い行を plan の削除に入れる（誤りのあるシートは見ない）。"""
+    broken = {e.sheet for e in plan.errors}
+    manual = current.manual
+    if not broken & {PRODUCT, PART}:
+        codes = list(manual.items) + [r.code for r in manual.cost_rows if r.code not in manual.items]
+        for code in codes:
+            if code in keys[PRODUCT] or code in keys[PART]:
+                continue
+            item = manual.items.get(code)
+            plan.removed_items.append(code)
+            plan.counts[PRODUCT if item is not None and item.kind == product_kind else PART].removed += 1
+    found = {
+        VOLUME: (list(manual.volumes), plan.removed_volumes),
+        MOLD: (list(current.molds), plan.removed_molds),
+        REUSE: (list(dict.fromkeys((t.part, t.product) for t in current.reuse)), plan.removed_reuse),
+        PART_MAP: (sorted(current.part_maps, key=str), plan.removed_part_maps),
+    }
+    for sheet, (registered, removed) in found.items():
+        if sheet in broken:
+            continue
+        for key in registered:
+            if key not in keys[sheet]:
+                removed.append(key)
+                plan.counts[sheet].removed += 1
 
 
 def _plan_row(
@@ -368,26 +407,28 @@ def apply_plan(store: Store, plan: MasterPlan) -> None:
         raise ValueError("行の誤りがある plan は入れない")
     manual = store.load_manual(plan.dev_number)
     new_manual: Version | None = None
-    if plan.items or plan.volumes:
+    if plan.items or plan.volumes or plan.removed_items or plan.removed_volumes:
         new_manual = Version(MANUAL_VERSION_ID)
-        items = dict(manual.items)
+        items = {c: i for c, i in manual.items.items() if c not in plan.removed_items}
         items.update(plan.items)
         new_manual.add_items(items.values())
         new_manual.add_bom_lines(manual.lines)
         for conflict in manual.conflicts:
             new_manual.add_conflict(conflict.key, conflict.quantities)
-        costs: dict[str, CostRow] = {r.code: r for r in manual.cost_rows}
+        costs: dict[str, CostRow] = {r.code: r for r in manual.cost_rows if r.code not in plan.removed_items}
         for code, row in plan.costs.items():
             if row is None:
                 costs.pop(code, None)
             else:
                 costs[code] = row
         new_manual.add_costs(costs.values())
-        volumes = dict(manual.volumes)
+        volumes = {p: x for p, x in manual.volumes.items() if p not in plan.removed_volumes}
         volumes.update({x.product: x for x in plan.volumes})
         for volume in volumes.values():
             new_manual.add_volume(volume)
-    store.apply_master(new_manual, plan.molds, plan.reuse, plan.part_maps, plan.dev_number)
+    store.apply_master(new_manual, plan.molds, plan.reuse, plan.part_maps, plan.dev_number,
+                       removed_molds=plan.removed_molds, removed_reuse=plan.removed_reuse,
+                       removed_part_maps=plan.removed_part_maps)
 
 
 def plan_json(plan: MasterPlan) -> dict[str, Any]:
@@ -395,7 +436,8 @@ def plan_json(plan: MasterPlan) -> dict[str, Any]:
         "added": plan.total("added"),
         "changed": plan.total("changed"),
         "unchanged": plan.total("unchanged"),
-        "sheets": [{"sheet": c.sheet, "added": c.added, "changed": c.changed, "unchanged": c.unchanged}
-                   for c in plan.counts.values()],
+        "removed": plan.total("removed"),
+        "sheets": [{"sheet": c.sheet, "added": c.added, "changed": c.changed, "unchanged": c.unchanged,
+                    "removed": c.removed} for c in plan.counts.values()],
         "errors": [{"sheet": e.sheet, "row": e.row, "message": e.message} for e in plan.errors],
     }

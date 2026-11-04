@@ -124,12 +124,13 @@ class MasterBook(DemoDbCase):
         self.edit(path, change)
         check = self.ok("POST", "/api/master/check")
         self.assertEqual(check["errors"], [])
-        by_sheet = {s["sheet"]: (s["added"], s["changed"], s["unchanged"]) for s in check["sheets"]}
+        by_sheet = {s["sheet"]: (s["added"], s["changed"], s["unchanged"], s["removed"]) for s in check["sheets"]}
         # 変わらない行は、デモの登録があるシートでは MP-2 などより多い
         for sheet in SHEETS:
-            added, changed, unchanged = by_sheet[sheet]
-            self.assertEqual((added, changed), (1, 0 if sheet == "部品の対応表" else 1), sheet)
+            added, changed, unchanged, removed = by_sheet[sheet]
+            self.assertEqual((added, changed, removed), (1, 0 if sheet == "部品の対応表" else 1, 1), sheet)
             self.assertGreaterEqual(unchanged, 1, sheet)
+        self.assertEqual(check["removed"], len(SHEETS))
         self.assertEqual(self.manual(), before)  # 確認では何も保存しない
 
         done = self.ok("POST", "/api/master/apply")
@@ -151,16 +152,46 @@ class MasterBook(DemoDbCase):
         self.assertEqual(reuse[("MQ-9", "MP-9")]["quantity"], "2")
         maps = {(r["old_part"], r["new_part"], r["old_balloon"], r["new_balloon"]) for r in m["part_maps"]}
         self.assertIn(("MQ-9", "MR-9", "3", "4"), maps)
-        # 消した行は登録に残る（6シートとも）
-        self.assertIn("MP-3", items)
-        self.assertIn("MQ-3", items)
-        self.assertIn("MP-3", volumes)
-        self.assertIn("MQ-3", molds)
-        self.assertIn(("MQ-3", "MP-3"), reuse)
-        self.assertIn(("MQ-3", "MR-3", None, None), maps)
+        # 消した行は登録からも消える（6シートとも）
+        self.assertNotIn("MP-3", items)
+        self.assertNotIn("MQ-3", items)
+        self.assertNotIn("MP-3", volumes)
+        self.assertNotIn("MQ-3", molds)
+        self.assertNotIn(("MQ-3", "MP-3"), reuse)
+        self.assertNotIn(("MQ-3", "MR-3", None, None), maps)
+        self.assertIn(("MQ-1", "MR-1", None, None), maps)
         # 入れた後は同じブックの差が無い
         again = self.ok("POST", "/api/master/check")
-        self.assertEqual((again["added"], again["changed"]), (0, 0))
+        self.assertEqual((again["added"], again["changed"], again["removed"]), (0, 0, 0))
+
+    def test_removal_only_can_be_applied(self) -> None:
+        path = self.write_book()
+
+        def change(wb) -> None:
+            ws = wb["型費"]
+            ws.delete_rows(next(r for r in range(2, ws.max_row + 1) if ws.cell(r, 1).value == "MQ-2"))
+
+        self.edit(path, change)
+        check = self.ok("POST", "/api/master/check")
+        self.assertEqual((check["added"], check["changed"], check["removed"]), (0, 0, 1))
+        self.assertEqual(next(s for s in check["sheets"] if s["sheet"] == "型費")["removed"], 1)
+        done = self.ok("POST", "/api/master/apply")
+        self.assertEqual(done["removed"], 1)
+        self.assertEqual({x["part"] for x in done["manual"]["molds"] if x["part"].startswith("MQ-")}, {"MQ-1", "MQ-3"})
+        self.assertEqual(len([i for i in done["manual"]["items"] if i["code"].startswith("M")]), 6)
+
+    def test_broken_sheet_counts_no_removal(self) -> None:
+        path = self.write_book()
+
+        def change(wb) -> None:
+            ws = wb["年間台数"]
+            ws.delete_rows(2, ws.max_row)
+            ws.append(["MP-1", "たくさん"])
+
+        self.edit(path, change)
+        check = self.ok("POST", "/api/master/check")
+        self.assertEqual([e["sheet"] for e in check["errors"]], ["年間台数"])
+        self.assertEqual(check["removed"], 0)
 
     def test_row_errors_block_everything(self) -> None:
         path = self.write_book()

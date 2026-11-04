@@ -372,6 +372,25 @@ class Manual(DemoDbCase):
         data = self.ok("DELETE", "/api/manual/volumes", "product=V-110")
         self.assertEqual((data["molds"], data["reuse"], data["volumes"], data["part_maps"]), ([], [], [], []))
 
+    def test_edit_with_original_replaces_the_row(self) -> None:
+        # 品番を変えて直すと元の行は消える（original が無ければ今どおり同じ品番を入れ替え）
+        data = self.ok("PUT", "/api/manual/items", body={"code": "X-611", "name": "試作品改", "costs": {"MATERIAL": "250"},
+                                                         "original": {"code": "X-610"}})
+        items = {i["code"]: i for i in data["items"]}
+        self.assertEqual(set(items), {"X-611"})
+        self.assertEqual((items["X-611"]["name"], items["X-611"]["costs"]["MATERIAL"]), ("試作品改", "250"))
+        data = self.ok("PUT", "/api/manual/items", body={"code": "X-611", "name": "試作品改2", "original": {"code": ""}})
+        self.assertEqual([i["name"] for i in data["items"]], ["試作品改2"])
+        data = self.ok("PUT", "/api/manual/volumes", body={"product": "V-111", "annual": "9000",
+                                                           "original": {"product": "V-110"}})
+        self.assertEqual(data["volumes"], [{"product": "V-111", "annual": "9000", "kind": "新製品の計画"}])
+        self.ok("PUT", "/api/molds", body={"part": "X-610", "amount": "3000000", "years": "3"})
+        data = self.ok("PUT", "/api/molds", body={"part": "X-611", "amount": "1000000", "years": "2",
+                                                  "original": {"part": "X-610"}})
+        self.assertEqual([m["part"] for m in data["molds"]], ["X-611"])
+        data = self.ok("PUT", "/api/molds", body={"part": "X-611", "amount": "2000000", "original": {"part": "X-611"}})
+        self.assertEqual([m["amount"] for m in data["molds"]], ["2000000"])
+
     def test_errors_in_japanese(self) -> None:
         bad = [
             (("PUT", "/api/manual/items", "", {"code": "Y", "name": "y", "costs": {"MATERIAL": "abc"}}), "材料費を数として読めない"),

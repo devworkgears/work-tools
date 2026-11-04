@@ -10,7 +10,7 @@ import re
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Collection
 
 from .api import (HEADS, MASTER_HEADS, ApiError, Response, _flag, _head, _json_response, _known_codes, _s, _text_field, _View,
                   version_label)
@@ -111,19 +111,27 @@ def _warning_json(w: ImportWarning) -> dict[str, Any]:
 
 
 def _manual_copy(
-    manual: Version, drop_item: str | None = None, drop_volume: str | None = None
+    manual: Version, drop_items: Collection[str] = (), drop_volumes: Collection[str] = ()
 ) -> Version:
-    """manual の中身を写す。drop_item の品目と原価、drop_volume の台数は写さない。"""
+    """manual の中身を写す。drop_items の品目と原価、drop_volumes の台数は写さない。"""
     v = Version(MANUAL_VERSION_ID)
-    v.add_items(i for code, i in manual.items.items() if code != drop_item)
+    v.add_items(i for code, i in manual.items.items() if code not in drop_items)
     v.add_bom_lines(manual.lines)
     for conflict in manual.conflicts:
         v.add_conflict(conflict.key, conflict.quantities)
-    v.add_costs(r for r in manual.cost_rows if r.code != drop_item)
+    v.add_costs(r for r in manual.cost_rows if r.code not in drop_items)
     for product, volume in manual.volumes.items():
-        if product != drop_volume:
+        if product not in drop_volumes:
             v.add_volume(volume)
     return v
+
+
+def _original_code(body: dict[str, Any], key: str, name: str) -> str | None:
+    """直す元の行（original の key）の品番。送られていなければ None（同じ品番を入れ替える）。"""
+    original = body.get("original")
+    if not isinstance(original, dict) or not str(original.get(key) or "").strip():
+        return None
+    return to_code(original[key], name=name)
 
 
 class Screens:
@@ -537,9 +545,11 @@ class Screens:
         role（product・part）を送ると区分はそれで決まる: product は製品とみなす記号、part は kind（製品の記号は不可・
         空なら part_kind）。
         role が無ければ kind をそのまま区分にする。
+        original（{"code": 直す元の品番}）があれば、その行を消して code の行に置き換える。
         """
         dev = self._dev_number(params, body)
         code = to_code(_text_field(body, "code", "品番"))
+        original = _original_code(body, "code", "直す元の品番") or code
         name = _text_field(body, "name", "名称")
         costs = body.get("costs") or {}
         if not isinstance(costs, dict):
@@ -564,8 +574,8 @@ class Screens:
             else:
                 kind = part_kind(product_kind, kind)
         manual = self.store.load_manual(dev)
-        kept = manual.items.get(code)
-        result = _manual_copy(manual, drop_item=code)
+        kept = manual.items.get(original) or manual.items.get(code)
+        result = _manual_copy(manual, drop_items={code, original})
         result.add_item(Item(code, name, kind,
                              "" if kept is None else kept.lifecycle,
                              False if kept is None else kept.has_children,
@@ -581,18 +591,19 @@ class Screens:
         manual = self.store.load_manual(dev)
         if code not in manual.items and manual.cost_row(code) is None:
             raise ApiError(404, f"手入力の品目 {code} は無い")
-        self.store.save_manual(_manual_copy(manual, drop_item=code), dev)
+        self.store.save_manual(_manual_copy(manual, drop_items={code}), dev)
         return self.manual({"dev_number": dev})
 
     def put_volume(self, params: dict[str, str], body: dict[str, Any]) -> Response:
-        """新製品の年間台数（計画）を足す・直す。"""
+        """新製品の年間台数（計画）を足す・直す。original（{"product": 直す元の品番}）があればその行を置き換える。"""
         dev = self._dev_number(params, body)
         product = to_code(_text_field(body, "product", "製品の品番"))
+        original = _original_code(body, "product", "直す元の品番") or product
         annual = _required_number(body.get("annual"), "年間台数")
         if annual < 0:
             raise ApiError(400, "年間台数は 0 以上にする")
         manual = self.store.load_manual(dev)
-        result = _manual_copy(manual, drop_volume=product)
+        result = _manual_copy(manual, drop_volumes={product, original})
         result.add_volume(Volume(product, annual))
         self.store.save_manual(result, dev)
         return self.manual({"dev_number": dev})
@@ -603,18 +614,22 @@ class Screens:
         manual = self.store.load_manual(dev)
         if product not in manual.volumes:
             raise ApiError(404, f"手入力の年間台数 {product} は無い")
-        self.store.save_manual(_manual_copy(manual, drop_volume=product), dev)
+        self.store.save_manual(_manual_copy(manual, drop_volumes={product}), dev)
         return self.manual({"dev_number": dev})
 
     def put_mold(self, params: dict[str, str], body: dict[str, Any]) -> Response:
+        """型費を足す・直す。original（{"part": 直す元の品番}）があればその行を置き換える。"""
         dev = self._dev_number(params, body)
         part = to_code(_text_field(body, "part", "部品の品番"))
+        original = _original_code(body, "part", "直す元の品番")
         amount = _required_number(body.get("amount"), "型費")
         years = _required_number(body.get("years", "2"), "償却年数")
         if amount < 0:
             raise ApiError(400, "型費は 0 以上にする")
         if years <= 0:
             raise ApiError(400, "償却年数は正の数にする")
+        if original is not None and original != part:
+            self.store.delete_mold_cost(original, dev)
         self.store.save_mold_cost(MoldCost(part, amount, years), dev)
         return self.manual({"dev_number": dev})
 
@@ -777,7 +792,7 @@ class Screens:
         return name, plan
 
     def check_master_book(self, params: dict[str, str], body: dict[str, Any]) -> Response:
-        """ブックと今の登録の差（追加・変更・同じの件数）と行の誤りを返す。何も保存しない。"""
+        """ブックと今の登録の差（追加・変更・同じ・削除の件数）と行の誤りを返す。何も保存しない。"""
         name, plan = self._master_plan(params, body)
         return _json_response({"source": name, **plan_json(plan)})
 
