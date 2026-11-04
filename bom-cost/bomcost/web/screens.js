@@ -455,7 +455,7 @@ async function renderManual(data) {
     return el("div", { class: "form-row" },
       field("品番", code), field("名称", name), field("記号・寸法", specification), role === "part" ? field("区分", kind) : null,
       m.heads.map((h) => field(h.label, costs[h.id])),
-      el("button", { type: "button", class: "primary", onclick: () => send("PUT", "/api/manual/items", {
+      el("button", { type: "button", onclick: () => send("PUT", "/api/manual/items", {
         role, code: code.value, name: name.value, specification: specification.value, kind: role === "part" ? kind.value : "",
         costs: Object.fromEntries(m.heads.map((h) => [h.id, costs[h.id].value])),
         original: screenState.editing[role]?.original,
@@ -488,7 +488,7 @@ async function renderManual(data) {
         el("button", { type: "button", onclick: del(`/api/manual/volumes?${qs({ product: v.product })}`, `${v.product} の年間台数`) }, "消す")),
     ))),
     el("div", { class: "form-row" }, field("製品の品番", volProduct), field("年間台数", volAnnual),
-      el("button", { type: "button", class: "primary", onclick: () => send("PUT", "/api/manual/volumes", { product: volProduct.value, annual: volAnnual.value, original: screenState.editing.volume?.original }) }, saveLabel)),
+      el("button", { type: "button", onclick: () => send("PUT", "/api/manual/volumes", { product: volProduct.value, annual: volAnnual.value, original: screenState.editing.volume?.original }) }, saveLabel)),
   );
 
   // 型費
@@ -503,7 +503,7 @@ async function renderManual(data) {
         el("button", { type: "button", onclick: del(`/api/molds?${qs({ part: x.part })}`, `${x.part} の型費`) }, "消す")),
     ))),
     el("div", { class: "form-row" }, field("部品の品番", moldPart), field("型費（円）", moldAmount), field("償却年数", moldYears),
-      el("button", { type: "button", class: "primary", onclick: () => send("PUT", "/api/molds", { part: moldPart.value, amount: moldAmount.value, years: moldYears.value, original: screenState.editing.mold?.original }) }, saveLabel)),
+      el("button", { type: "button", onclick: () => send("PUT", "/api/molds", { part: moldPart.value, amount: moldAmount.value, years: moldYears.value, original: screenState.editing.mold?.original }) }, saveLabel)),
   );
 
   // 流用先
@@ -519,7 +519,7 @@ async function renderManual(data) {
         el("button", { type: "button", onclick: del(`/api/reuse?${qs({ part: t.part, product: t.product })}`, `${t.part} の流用先 ${t.product}`) }, "消す")),
     ))),
     el("div", { class: "form-row" }, field("部品", reusePart), field("流用先", reuseProduct), field("使用数", reuseQty), field("古い部品", reuseOld),
-      el("button", { type: "button", class: "primary", onclick: () => send("PUT", "/api/reuse", {
+      el("button", { type: "button", onclick: () => send("PUT", "/api/reuse", {
         part: reusePart.value, product: reuseProduct.value, quantity: reuseQty.value, replaced_part: reuseOld.value,
         original: screenState.editing.reuse?.original,
       }) }, saveLabel)),
@@ -543,7 +543,7 @@ async function renderManual(data) {
       field("元の製品", mapInputs.old_product), field("新しい製品", mapInputs.new_product),
       field("元の部品", mapInputs.old_part), field("元の風船番号", mapInputs.old_balloon),
       field("新しい部品", mapInputs.new_part), field("新しい風船番号", mapInputs.new_balloon),
-      el("button", { type: "button", class: "primary", onclick: () => (original
+      el("button", { type: "button", onclick: () => (original
         ? send("PUT", "/api/partmaps", { ...mapBody(), original })
         : send("POST", "/api/partmaps", mapBody())) }, saveLabel)),
   );
