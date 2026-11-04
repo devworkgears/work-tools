@@ -16,6 +16,7 @@ from bomcost.demo import build_demo
 from bomcost.importer import load_openpyxl
 from bomcost.store import Store
 from bomcost import comparebook, group
+from bomcost.formula import ADJUSTMENT_RATE, INDIRECT_RATE
 from bomcost.group import Group, _Structure
 from test_screens import SAMPLES, EmptyDbCase, b64
 
@@ -984,6 +985,136 @@ class CompareAnalysis(EmptyDbCase):
         self.assertEqual([(x["code"], x["difference"]) for x in r["contributions"][0]["rows"]], [("B", "120")])
 
 
+class CompareAnalysisManufacturing(EmptyDbCase):
+    """③の分析を製造原価で: 部品の行は率を掛け、製品の費目の行を足すと③の表の製造原価・上のタイルの差にそろう。"""
+
+    RATE = (1 + ADJUSTMENT_RATE) * (1 + INDIRECT_RATE)
+
+    def setUp(self) -> None:
+        super().setUp()
+        v = breakdown_version()
+        a, d = CostHead.AMORTIZATION, CostHead.DIRECT
+        v.add_costs([CostRow("P-1", {a: 20, d: 15}), CostRow("P-2", {a: 8})])  # P-2 の直接費は未登録
+        self.store.save_version(v)
+
+    def analysis(self, products: list[str], query: str = "") -> dict:
+        return self.ok("GET", "/api/group/compare/analysis", f"version=2026-11&cost=manufacturing"
+                       f"&names={quote(json.dumps([NAME]))}&products={quote(json.dumps(products))}" + query)
+
+    def table(self, query: str = "") -> dict:
+        return self.ok("GET", "/api/group/compare/table", f"version=2026-11&names={quote(json.dumps([NAME]))}" + query)
+
+    def set_heads(self, product: str, **values: str) -> None:
+        self.ok("POST", "/api/group/heads/bulk", body={"version_id": "2026-11", "name": NAME, "head": "MANUFACTURING",
+                                                      "items": [{"product": product, "values": values}]})
+
+    def replace(self, part: str, parent: str, balloon: str, replacement: str, quantity: str) -> None:
+        self.ok("POST", "/api/group/changes", body={
+            "version_id": "2026-11", "name": NAME, "product": "P-1", "head": "MATERIAL", "kind": "REPLACE",
+            "part": part, "parent": parent, "balloon": balloon, "replacement": replacement, "quantity": quantity})
+
+    def base_rows(self, query: str = "") -> dict[str, dict]:
+        r = self.ok("GET", "/api/group/compare", f"version=2026-11&names={quote(json.dumps([NAME]))}" + query)
+        return {x["product"]: x for x in r["rows"] if x["kind"] == "base"}
+
+    @staticmethod
+    def row_sum(series: dict) -> Decimal:
+        return sum((Decimal(r["amount"]) for r in series["rows"] if r["amount"] is not None), Decimal(0))
+
+    def assert_matches_table(self, products: list[str], query: str = "") -> dict:
+        r = self.analysis(products, query)
+        t = self.table(query)
+        by_product = {p["product"]: p for p in t["products"]}
+        current, after = r["series"]
+        # 試算の無い製品は ③の表に出ないので、現行は compare の元の行（表の現行と同じ値）で
+        rows = self.base_rows(query)
+        for code, p in by_product.items():
+            self.assertEqual(p["current"]["MANUFACTURING"], rows[code]["costs"]["MANUFACTURING"])
+        expected_current = sum((Decimal(rows[c]["costs"]["MANUFACTURING"]) for c in products), Decimal(0))
+        expected_after = sum((Decimal(by_product[c]["trials"][0]["after"]["MANUFACTURING"]) if c in by_product
+                              else Decimal(rows[c]["costs"]["MANUFACTURING"]) for c in products), Decimal(0))
+        self.assertEqual((self.row_sum(current), Decimal(current["total"])), (expected_current, expected_current))
+        self.assertEqual((self.row_sum(after), Decimal(after["total"])), (expected_after, expected_after))
+        # 差の寄与の計は上のタイルの差（試算のある製品の製造原価の差の計）
+        c, = r["contributions"]
+        self.assertEqual(Decimal(c["difference"]), Decimal(t["totals"][NAME]["MANUFACTURING"]["difference"]))
+        self.assertEqual(sum((Decimal(x["difference"]) for x in c["rows"] if x["difference"] is not None), Decimal(0)),
+                         Decimal(c["difference"]))
+        return r
+
+    def test_part_rows_use_rates_and_head_rows_follow(self) -> None:
+        self.set_heads("P-1", PROCESSING="100")
+        r = self.assert_matches_table(["P-1"])
+        self.assertEqual(r["cost"], "manufacturing")
+        current = r["series"][0]
+        rows = {x["key"]: x for x in current["rows"]}
+        self.assertEqual(Decimal(rows["B-1"]["amount"]), 500 * self.RATE)
+        self.assertEqual([x["head"] for x in current["rows"] if x["kind"] == "head"], ["PROCESSING", "AMORTIZATION", "DIRECT"])
+        # 社内加工費・償却費は率を掛け、直接費はそのまま。values は 1台あたりの値
+        self.assertEqual((Decimal(rows["head:PROCESSING"]["amount"]), Decimal(rows["head:AMORTIZATION"]["amount"]),
+                          Decimal(rows["head:DIRECT"]["amount"]), rows["head:AMORTIZATION"]["values"]),
+                         (Decimal(0), 20 * self.RATE, Decimal(15), {"P-1": "20"}))
+        after = {x["key"]: x for x in r["series"][1]["rows"]}
+        self.assertEqual((Decimal(after["head:PROCESSING"]["amount"]), after["head:PROCESSING"]["values"]),
+                         (100 * self.RATE, {"P-1": "100"}))
+        c, = r["contributions"]
+        self.assertEqual([(x["key"], x["kind"], Decimal(x["difference"])) for x in c["rows"]],
+                         [("head:PROCESSING", "head", 100 * self.RATE)])
+
+    def test_several_products_with_part_and_head_changes(self) -> None:
+        self.replace("N-8", "P-1", "3", "N-6B", "2")
+        self.replace("N-6", "S-1", "1", "N-8", "4")
+        self.set_heads("P-1", PROCESSING="40", AMORTIZATION="5", DIRECT="25")
+        self.set_heads("P-2", DIRECT="7")
+        r = self.assert_matches_table(["P-1", "P-2"])
+        after = {x["key"]: x for x in r["series"][1]["rows"]}
+        # P-2 の直接費は現行で未登録（0 として通す）
+        current = {x["key"]: x for x in r["series"][0]["rows"]}
+        self.assertTrue(current["head:DIRECT"]["incomplete"])
+        self.assertEqual((after["head:DIRECT"]["amount"], after["head:DIRECT"]["incomplete"]), ("32", False))
+        self.assertEqual(after["head:AMORTIZATION"]["values"], {"P-1": "5", "P-2": "8"})
+        # 年間台数で数えても同じ式（台数のある製品だけ）
+        self.ok("PUT", "/api/manual/volumes", body={"product": "P-2", "annual": "10"})
+        v = self.analysis(["P-1", "P-2"], "&weight=volume")
+        self.assertEqual(Decimal(v["series"][0]["total"]), 10 * Decimal(self.base_rows()["P-2"]["costs"]["MANUFACTURING"]))
+
+    def test_product_without_trial_counts_current(self) -> None:
+        self.set_heads("P-1", DIRECT="0")
+        r = self.assert_matches_table(["P-1", "P-2"])
+        self.assertEqual(r["series"][1]["without_trial"], 1)
+
+    def test_unregistered_amortization_like_table(self) -> None:
+        self.store.save_version(breakdown_version(), replace=True)  # 償却費・直接費とも未登録
+        self.set_heads("P-1", PROCESSING="10")
+        url = "/api/group/compare/analysis"
+        query = f"version=2026-11&cost=manufacturing&names={quote(json.dumps([NAME]))}&products=P-1"
+        self.assert_error(self.call("GET", url, query), 400, "償却費")
+        self.assert_error(self.call("GET", "/api/group/compare/table", f"version=2026-11&names={quote(NAME)}"), 400, "償却費")
+        r = self.assert_matches_table(["P-1"], "&ignore_amortization=1")
+        rows = {x["key"]: x for x in r["series"][0]["rows"]}
+        self.assertEqual((rows["head:AMORTIZATION"]["amount"], rows["head:AMORTIZATION"]["ignored"]), (None, True))
+
+    def test_drill_scales_parts_without_head_rows(self) -> None:
+        r = self.analysis(["P-1"], f"&parts={quote(json.dumps(['S-1']))}")
+        s, _ = r["series"]
+        self.assertEqual([(x["code"], Decimal(x["amount"])) for x in s["rows"]], [("N-6", 80 * self.RATE)])
+
+    def test_own_material_of_product(self) -> None:
+        v = breakdown_version()
+        v.add_costs([CostRow("P-2", {CostHead.MATERIAL: 30, CostHead.AMORTIZATION: 0, CostHead.DIRECT: 0}),
+                     CostRow("P-1", {CostHead.AMORTIZATION: 0, CostHead.DIRECT: 0})])
+        self.store.save_version(v, replace=True)
+        self.set_heads("P-2", PROCESSING="1")
+        r = self.assert_matches_table(["P-1", "P-2"])
+        heads = [x["head"] for x in r["series"][0]["rows"] if x["kind"] == "head"]
+        self.assertEqual(heads[0], "OWN")
+
+    def test_material_is_default_and_cost_checked(self) -> None:
+        r = self.ok("GET", "/api/group/compare/analysis", "version=2026-11&products=P-1")
+        self.assertEqual((r["cost"], [x["kind"] for x in r["series"][0]["rows"]].count("head")), ("material", 0))
+        self.assert_error(self.call("GET", "/api/group/compare/analysis", "version=2026-11&products=P-1&cost=x"), 400, "cost")
+
+
 class ChildrenIndex(unittest.TestCase):
     def test_children_follow_added_lines(self) -> None:
         v = Version("t")
@@ -1065,6 +1196,11 @@ class ProductRule(unittest.TestCase):
         self.assertIn("/api/group/compare/analysis", compare)
         self.assertIn("openTrialPart", compare)
         self.assertNotIn("cmp-pick", compare)
+        # 分析は製造原価が始めで、製品の費目は②の費目変更の API で入れる。率は API が掛ける
+        self.assertIn('cost: "manufacturing"', compare)
+        self.assertIn('analysisSeg("cost", [["manufacturing", "製造原価"], ["material", "材料費"]])', compare)
+        self.assertIn("/api/group/heads/bulk", compare)
+        self.assertNotIn("1.1433", compare)
 
 
 if __name__ == "__main__":

@@ -1,14 +1,16 @@
 // ③原価を見る: 上に検討案ごとの数字のタイル、左に製品ごとの差の横棒、右に選んだ製品の8費目（式の並び）と変更の一覧。
-// 分析は材料費の内訳（大きい順・差の寄与・使い回し）で、部品の下へ降りられる。
+// 分析は製造原価か材料費の内訳（大きい順・差の寄与・使い回し）で、部品の下へ降りられる。製造原価の時は製品の費目をその場で変えられる。
 // 差・合計は API が Decimal で出したものを使い、ここで数にするのは棒の長さと並べ替えだけ。app.js・screens.js・trial.js の関数を使う。
 "use strict";
 
 // layout は グラフ（chart）・表（table）・分析（analysis）。画面を開いている間は覚える。data・table はそれぞれの API の返事（要る時に読む）
 // 分析: picks は選んだ製品（null は試算のある製品の全部）、by・weight は内訳のまとめ方と数え方、name は差を見る検討案、
-// path は降りた部品の並び（{ codes, label }）、view は 大きい順（size）・差の寄与（diff）・使い回し（reach）、analysis はその API の返事
+// path は降りた部品の並び（{ codes, label }）、view は 大きい順（size）・差の寄与（diff）・使い回し（reach）、analysis はその API の返事。
+// cost は 製造原価（manufacturing）・材料費（material）
 const compareState = {
   query: null, data: null, table: null, layout: "chart", head: "MANUFACTURING", product: null,
   picks: null, by: "code", weight: "unit", name: null, path: [], view: "size", analysis: null, pickerOpen: false,
+  cost: "manufacturing",
 };
 
 async function enterCompare() {
@@ -382,7 +384,7 @@ function compareGrid(t, head) {
   ];
 }
 
-// 分析: 選んだ製品の材料費の内訳（製品の直の子か、降りた部品の直の子）。並び・割合・累積・差・年間は API が出す。
+// 分析: 選んだ製品の製造原価か材料費の内訳（製品の直の子か、降りた部品の直の子）。並び・割合・累積・差・年間は API が出す。
 // 製品の候補はグラフの返事の製品（試算なしも）で、始めは差を見る検討案の試算がある製品の全部
 function analysisProducts() {
   return compareProducts(compareState.data);
@@ -402,8 +404,18 @@ async function loadAnalysis(draw = true) {
   compareState.analysis = products.length ? await api("GET", `/api/group/compare/analysis?${qs({
     version: compareState.query.version, names: JSON.stringify([compareState.name]), products: JSON.stringify(products),
     by: compareState.by, weight: compareState.weight, parts: path.length ? JSON.stringify(path[path.length - 1].codes) : "",
+    cost: compareState.cost, ignore_amortization: compareState.query.ignore_amortization,
   })}`) : null;
   if (draw) drawAnalysis();
+}
+
+// 費目を変えた後: 表・グラフ・分析の返事を読み直して描き直す（選んだ製品・見方はそのまま）
+async function reloadCompare() {
+  compareState.table = null;
+  compareState.data = null;
+  compareState.analysis = null;
+  await loadCompareLayout();
+  drawCompareView();
 }
 
 // reload を外すと読み直さずに描き直すだけ（見方の切り替え）
@@ -485,6 +497,7 @@ function analysisAmount(row) {
 }
 
 function breakdownShare(row) {
+  if (row.ignored) return el("td", { class: "num muted" }, "—");
   const missing = row.amount === null;
   return el("td", {}, el("div", { class: "cmp-bd-share" },
     el("div", { class: "cmp-bd-track" }, row.share ? el("span", { class: "cmp-bd-fill", style: `width:${Math.min(100, Number(row.share))}%` }) : null),
@@ -495,20 +508,49 @@ const analysisHeads = (...more) => ["品番", "名称", "記号・寸法", ...mo
 const analysisTable = (heads, rows) => table(heads, rows.length ? rows
   : [el("tr", {}, el("td", { colspan: heads.length, class: "muted" }, "なし"))], "small cmp-bd-table");
 const nameCells = (r) => [el("td", {}, r.name), el("td", {}, r.specification)];
+const costLabel = (a) => (a.cost === "manufacturing" ? "製造原価" : "材料費");
 
-// 大きい順: 現行の金額の高い順に割合と累積。差を見る検討案の変更後を横に（変更後に無い行は 0）
+// 製品の費目の行（製造原価の時・kind が head）。品番の欄は空で、償却費を 0 として通した時は金額を「—」に
+const isHeadRow = (r) => r.kind === "head";
+const rowCode = (a, r) => (isHeadRow(r) ? el("td", {}) : analysisCode(a, r));
+const rowAmount = (r) => (r.ignored ? el("td", { class: "num muted" }, "—") : analysisAmount(r));
+const rowClass = (r) => (isHeadRow(r) ? "cmp-bd-head" : "");
+
+// 製品の費目の入力欄: 選んだ製品の全部に、検討案の費目変更（1台あたりの値）として入れる。値が1つにそろう時はそれを薄く出す
+const EDITABLE_ANALYSIS_HEADS = new Set(["PROCESSING", "AMORTIZATION", "DIRECT"]);
+function headEdit(a, row) {
+  if (!EDITABLE_ANALYSIS_HEADS.has(row.head) || !compareState.name) return el("td", {});
+  const after = a.series[1]?.rows.find((r) => r.key === row.key) ?? row;
+  const values = [...new Set(Object.values(after.values))];
+  const input = el("input", { inputmode: "decimal", size: 7, class: "trial-bulk-input",
+    placeholder: values.length === 1 && values[0] !== null ? values[0] : "" });
+  const send = () => guarded(async () => {
+    const value = pastedNumber(input.value.trim());
+    if (!value) throw new Error("値を打つ");
+    await api("POST", "/api/group/heads/bulk", { version_id: compareState.query.version, name: compareState.name,
+      head: TRIAL_HEAD, items: a.products.map((product) => ({ product, values: { [row.head]: value } })) });
+    await reloadCompare();
+  });
+  input.addEventListener("keydown", (e) => e.key === "Enter" && send());
+  return el("td", { class: "cmp-bd-edit" }, input, el("button", { type: "button", onclick: send }, "入れる"));
+}
+const rowAction = (a, r) => (isHeadRow(r) ? headEdit(a, r) : swapCell(r));
+
+// 大きい順: 現行の金額の高い順に割合と累積（製造原価の時は部品の後に製品の費目）。差を見る検討案の変更後を横に（変更後に無い行は 0）
 function analysisSize(a) {
   const [s, after] = a.series;
   const later = new Map((after?.rows ?? []).map((r) => [r.key, r]));
-  const rows = s.rows.map((r) => el("tr", {}, analysisCode(a, r), nameCells(r), el("td", { class: "num" }, fmt(r.quantity)),
-    analysisAmount(r), breakdownShare(r), el("td", { class: "num muted" }, r.cumulative ? `${r.cumulative}%` : ""),
-    after ? numTd(later.has(r.key) ? later.get(r.key).amount : "0", { yen: true }) : null, swapCell(r)));
+  const rows = s.rows.map((r) => el("tr", { class: rowClass(r) }, rowCode(a, r), nameCells(r),
+    el("td", { class: "num" }, isHeadRow(r) ? "" : fmt(r.quantity)),
+    rowAmount(r), breakdownShare(r), el("td", { class: "num muted" }, r.cumulative ? `${r.cumulative}%` : ""),
+    after ? (r.ignored ? el("td", { class: "num muted" }, "—")
+      : numTd(later.has(r.key) ? later.get(r.key).amount : "0", { yen: true })) : null, rowAction(a, r)));
   if (rows.length) {
     rows.push(el("tr", { class: "cmp-bd-total" }, el("td", { colspan: 4 }, "計"), numTd(s.total, { yen: true }),
       el("td", { class: s.missing ? "missing" : "muted", colspan: 2 }, s.missing ? `未登録 ${s.missing} 行を除く` : ""),
       after ? numTd(after.total, { yen: true }) : null, el("td", {})));
   }
-  return analysisTable(analysisHeads(numTh("数量"), numTh("材料費"), "割合", numTh("累積"), after ? numTh("変更後") : null)
+  return analysisTable(analysisHeads(numTh("数量"), numTh(costLabel(a)), "割合", numTh("累積"), after ? numTh("変更後") : null)
     .filter((h) => h), rows);
 }
 
@@ -517,12 +559,12 @@ function analysisDiff(a) {
   const c = a.contributions[0];
   const list = c?.rows ?? [];
   const max = Math.max(...list.map((r) => Math.abs(diffNumber(r.difference) ?? 0)), 0) || 1;
-  const rows = list.map((r) => el("tr", {}, analysisCode(a, r), nameCells(r),
+  const rows = list.map((r) => el("tr", { class: rowClass(r) }, rowCode(a, r), nameCells(r),
     numTd(r.current, { yen: true }), numTd(r.after, { yen: true }),
     el("td", { class: `num ${signClass(r.difference)}` },
       r.incomplete && r.difference !== null ? el("span", { class: "tag warn", title: "一部未登録" }, "一部") : null,
       fmt(r.difference, { sign: true, yen: true })),
-    el("td", { class: "cmp-mini" }, diffBar(r.difference, max, "")), swapCell(r)));
+    el("td", { class: "cmp-mini" }, diffBar(r.difference, max, "")), rowAction(a, r)));
   if (rows.length) {
     rows.push(el("tr", { class: "cmp-bd-total" }, el("td", { colspan: 5 }, `計${c.missing ? `（未登録 ${c.missing} 行を除く）` : ""}`),
       el("td", { class: `num ${signClass(c.difference)}` }, fmt(c.difference, { sign: true, yen: true })), el("td", {}), el("td", {})));
@@ -530,20 +572,22 @@ function analysisDiff(a) {
   return analysisTable(analysisHeads(numTh("現行"), numTh("変更後"), numTh("差"), ""), rows);
 }
 
-// 使い回し: 使う製品の多い順（同じなら年間の高い順）。年間は台数を掛けた現行の金額
+// 使い回し: 使う製品の多い順（同じなら年間の高い順）。年間は台数を掛けた現行の金額。製品の費目の行は出さない
 function analysisReach(a) {
   const n = a.products.length;
   const value = (t) => (t === null ? -Infinity : Number(t));
-  const list = [...a.series[0].rows].sort((x, y) => y.products - x.products || value(y.annual) - value(x.annual));
+  const list = a.series[0].rows.filter((r) => !isHeadRow(r))
+    .sort((x, y) => y.products - x.products || value(y.annual) - value(x.annual));
   const rows = list.map((r) => el("tr", {}, analysisCode(a, r), nameCells(r), el("td", { class: "num" }, `${r.products}/${n}`),
     numTd(r.annual, { yen: true }), analysisAmount(r), swapCell(r)));
-  return analysisTable(analysisHeads(numTh("製品数"), numTh("年間"), numTh("材料費")), rows);
+  return analysisTable(analysisHeads(numTh("製品数"), numTh("年間"), numTh(costLabel(a))), rows);
 }
 
 function drawAnalysis() {
   const box = document.getElementById("cmp-an");
   if (!box) return;
   const tools = el("div", { class: "cmp-an-tools" }, analysisPicker(), analysisNameSelect(),
+    analysisSeg("cost", [["manufacturing", "製造原価"], ["material", "材料費"]]),
     analysisSeg("by", [["code", "品番"], ["name", "名称"], ["name_spec", "名称＋記号・寸法"]]),
     analysisSeg("weight", [["unit", "1台ずつ"], ["volume", "年間台数"]]));
   const a = compareState.analysis;

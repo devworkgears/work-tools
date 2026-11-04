@@ -15,7 +15,7 @@ from urllib.parse import quote
 from .api import (XLSX_TYPE, ApiError, Response, _flag, _head, _json_response, _known_codes, _place, _require_known,
                   _record_json, _s, _text_field, _View, scenario_annual, version_label)
 from .comparebook import compare_file_name, compare_workbook
-from .formula import EDITABLE_HEADS, Head
+from .formula import ADJUSTMENT_RATE, EDITABLE_HEADS, INDIRECT_RATE, Breakdown, Head
 from .model import BomLine, CostHead, Version
 from .normalize import to_code
 from .scenario import ChangeKind, ChangeRecord, Scenario
@@ -250,6 +250,11 @@ class Group:
         series の行には products（その行が出た製品の数）と annual（年間台数を掛けた金額・台数が未登録の製品は除いて
         annual_excluded に）を足す。contributions は検討名ごとに 現行 → 変更後 の差を行ごとに、差の大きい順に（差の無い行は除く。
         片方が未登録なら difference は None で後ろ）。部品自身の分（塗装・梱包など）は内訳に出さない。
+
+        cost=manufacturing は製造原価で: 部品の行は 材料費 ×(1＋調整費の率)×(1＋間接費の率)、製品の段（parts なし）では
+        部品の行の後に製品の費目の行（kind＝head・社内加工費・償却費は同じ率を掛け、直接費はそのまま。製品自身の材料費があれば
+        その行も）を足し、行の計を③の表の製造原価にそろえる。償却費の未登録は③の表と同じ（ignore_amortization が無ければ 400、
+        付ければ 0 として通し、償却費の行の金額は None）。費目の行の values は製品ごとの 1台あたりの値（率を掛ける前）。
         """
         version = self._version(params)
         names = _names(params.get("names"))
@@ -267,12 +272,20 @@ class Group:
         weight = (params.get("weight") or "unit").strip()
         if weight not in ("unit", "volume"):
             raise ApiError(400, f"数え方（weight）は unit・volume のどちらか: {weight}")
+        cost = (params.get("cost") or "material").strip()
+        if cost not in ("material", "manufacturing"):
+            raise ApiError(400, f"原価（cost）は material・manufacturing のどちらか: {cost}")
+        ignore = _flag(params.get("ignore_amortization"))
+        factor = (1 + ADJUSTMENT_RATE) * (1 + INDIRECT_RATE) if cost == "manufacturing" else Decimal(1)
+        with_heads = cost == "manufacturing" and not level
         volumes = {code: v.annual for code in products if (v := version.volume(code)) is not None}
         weights = ({code: Decimal(1) for code in products} if weight == "unit"
                    else {code: volumes[code] for code in products if code in volumes})
         structure = _Structure(version)
-        view = _View(Scenario("", products[0], f"{products[0]}#", version, CostHead.MATERIAL,
-                              self.store.load_scope_policy()), "bulk", CostHead.MATERIAL, False)
+        policy = self.store.load_scope_policy()
+        view = _View(Scenario("", products[0], f"{products[0]}#", version, CostHead.MATERIAL, policy),
+                     "bulk", CostHead.MATERIAL, False, ignore_amortization=ignore)
+        failed: list[str] = []
 
         def parts_of(code: str, scenario: Scenario | None) -> _Parts:
             if not level:
@@ -280,27 +293,55 @@ class Group:
             entries = scenario.root_entries() if scenario else [(code, Decimal(1), True, None)]
             return _level_parts(structure, code, entries, level)
 
-        def series_of(name: str | None, parts: dict[str, _Parts], without_trial: int) -> dict[str, Any]:
-            s = _breakdown_series(name, view, version, by, weights, parts, without_trial)
-            annual = _breakdown_series(name, view, version, by, {c: volumes[c] for c in weights if c in volumes},
-                                       parts, 0)
+        def own_of(code: str, name: str | None, scenario: Scenario | None, parts: _Parts) -> tuple[Breakdown, Decimal]:
+            """③の表と同じ見方の製品の8費目と、部品の行に出ない製品自身の材料費（表の材料費小計 − 部品の行の計）。"""
+            if scenario is None:
+                b = view.breakdown(code)
+            else:
+                trial = _View(scenario, "diff", CostHead.MATERIAL, False, ignore_amortization=ignore)
+                b = trial.breakdown(trial.root)
+            if not ignore and b.value(Head.AMORTIZATION) is None:
+                failed.append(code if name is None else f"{code}（{name}）")
+            material = b.value(Head.MATERIAL)
+            return b, Decimal(0) if material is None else material - _known_material(view, parts)
+
+        def series_of(name: str | None, parts: dict[str, _Parts], without_trial: int,
+                      owns: dict[str, tuple[Breakdown, Decimal]]) -> dict[str, Any]:
+            def heads(w: dict[str, Decimal]) -> list[dict[str, Any]]:
+                return _head_rows(w, owns, factor, ignore) if with_heads else []
+
+            s = _breakdown_series(name, view, version, by, weights, parts, without_trial, factor, heads(weights))
+            by_volume = {c: volumes[c] for c in weights if c in volumes}
+            annual = _breakdown_series(name, view, version, by, by_volume, parts, 0, factor, heads(by_volume))
             amounts = {r["key"]: r["amount"] for r in annual["rows"]}
             counts = _key_products(version, by, {c: parts[c] for c in weights})
             for r in s["rows"]:
-                r["products"] = counts.get(r["key"], 0)
+                r["products"] = len(weights) if r["kind"] == "head" else counts.get(r["key"], 0)
                 r["annual"] = amounts.get(r["key"])
                 r["has_children"] = any(c in structure.children for c in r["codes"])
             return s
 
+        def owns_of(name: str | None, scenarios: dict[str, Scenario], parts: dict[str, _Parts]
+                    ) -> dict[str, tuple[Breakdown, Decimal]]:
+            if not with_heads:
+                return {}
+            return {code: own_of(code, name if code in scenarios else None, scenarios.get(code), rows)
+                    for code, rows in parts.items()}
+
         current = {code: parts_of(code, None) for code in weights}
-        series = [series_of(None, current, 0)]
+        current_owns = owns_of(None, {}, current)
+        series = [series_of(None, current, 0, current_owns)]
         for name in names:
             scenario_ids = self._scenarios(version, name)
-            parts = {code: (parts_of(code, self.store.load_scenario(scenario_ids[code], version))
-                            if code in scenario_ids else current[code]) for code in weights}
-            series.append(series_of(name, parts, sum(1 for code in weights if code not in scenario_ids)))
+            scenarios = {code: self.store.load_scenario(scenario_ids[code], version)
+                         for code in weights if code in scenario_ids}
+            parts = {code: (parts_of(code, scenarios[code]) if code in scenarios else current[code]) for code in weights}
+            owns = {**current_owns, **owns_of(name, scenarios, {c: parts[c] for c in scenarios})} if with_heads else {}
+            series.append(series_of(name, parts, sum(1 for code in weights if code not in scenario_ids), owns))
+        if failed:
+            raise ApiError(400, "償却費を出せない（未登録あり）: " + "、".join(dict.fromkeys(failed)))
         return _json_response({
-            "version_id": version.version_id, "by": by, "weight": weight,
+            "version_id": version.version_id, "by": by, "weight": weight, "cost": cost, "ignore_amortization": ignore,
             "parts": [{"code": c, "name": self._name(version, c)} for c in level],
             "products": list(weights), "excluded": [c for c in products if c not in weights],
             "annual_excluded": [c for c in weights if c not in volumes],
@@ -1026,7 +1067,7 @@ def _contribution(current: dict[str, Any], after: dict[str, Any]) -> dict[str, A
         if difference == 0 or (a and b and x is None and y is None and a["quantity"] == b["quantity"]):
             continue
         codes = sorted(set((a or {}).get("codes", [])) | set((b or {}).get("codes", [])))
-        rows.append({"key": key, "code": first["code"], "codes": codes,
+        rows.append({"key": key, "kind": first["kind"], "head": first.get("head"), "code": first["code"], "codes": codes,
                      "name": first["name"], "specification": first["specification"],
                      "has_children": bool((a or {}).get("has_children") or (b or {}).get("has_children")),
                      "current": "0" if a is None else a["amount"], "after": "0" if b is None else b["amount"],
@@ -1040,9 +1081,49 @@ def _contribution(current: dict[str, Any], after: dict[str, Any]) -> dict[str, A
             "missing": len(rows) - len(known), "rows": rows}
 
 
+def _known_material(view: _View, parts: _Parts) -> Decimal:
+    """1台分の直の子の材料費の計（未登録は除く）。"""
+    total = Decimal(0)
+    for row in parts.values():
+        for code, qty in row["terms"].items():
+            cost = view.cost(code, CostHead.MATERIAL) if qty else None
+            if cost is not None:
+                total += qty * cost
+    return total
+
+
+# 製品の費目の行（製造原価の時）。OWN は部品の行に出ない製品自身の材料費で、書き換えない
+_OWN_MATERIAL = "OWN"
+_OWN_MATERIAL_LABEL = "製品自身の材料費"
+
+
+def _head_rows(weights: dict[str, Decimal], owns: dict[str, tuple[Breakdown, Decimal]], factor: Decimal,
+               ignore: bool) -> list[dict[str, Any]]:
+    """製品ごとの費目を重みを掛けて足した行。社内加工費・償却費・製品自身の材料費は factor を掛け、直接費はそのまま。
+    償却費・直接費の未登録は 0 として通して incomplete に（ignore なら償却費の行の金額は None）。"""
+    rows = []
+    residuals = {c: owns[c][1] for c in weights}
+    heads: list[tuple[str, str]] = [(_OWN_MATERIAL, _OWN_MATERIAL_LABEL)] if any(residuals.values()) else []
+    heads += [(h.name, h.value) for h in EDITABLE_HEADS]
+    for head, label in heads:
+        raw = {c: residuals[c] if head == _OWN_MATERIAL else owns[c][0].value(Head[head]) for c in weights}
+        ignored = ignore and head == Head.AMORTIZATION.name
+        rate = Decimal(1) if head == Head.DIRECT.name else factor
+        amount = None if ignored else sum((w * rate * (raw[c] or Decimal(0)) for c, w in weights.items()), Decimal(0))
+        rows.append({"kind": "head", "key": f"head:{head}", "head": head, "code": "", "codes": [], "name": label,
+                     "specification": "", "quantity": None, "amount": amount, "missing": 0,
+                     "incomplete": not ignored and any(v is None for v in raw.values()),
+                     "ignored": ignored, "values": {c: _s(v) for c, v in raw.items()}})
+    return rows
+
+
 def _breakdown_series(name: str | None, view: _View, version: Version, by: str, weights: dict[str, Decimal],
-                      parts: dict[str, _Parts], without_trial: int) -> dict[str, Any]:
-    """製品ごとの直の子を重み（weights）を掛けてまとめ方 by の行に足し、金額の高い順に割合と累積の割合を付ける。"""
+                      parts: dict[str, _Parts], without_trial: int, factor: Decimal = Decimal(1),
+                      heads: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """製品ごとの直の子を重み（weights）を掛けてまとめ方 by の行に足し、金額の高い順に割合と累積の割合を付ける。
+
+    factor は部品の行の金額に掛ける率（製造原価で見る時）。heads（製品の費目の行）は部品の行の後に置き、計・割合に含める。
+    """
     key_of = BREAKDOWN_KEYS[by]
     groups: dict[str, dict[str, Any]] = {}
     for product, w in weights.items():
@@ -1068,19 +1149,21 @@ def _breakdown_series(name: str | None, view: _View, version: Version, by: str, 
                 g["incomplete"] |= view.incomplete(code, CostHead.MATERIAL)
             g["missing"] += missing
             if found:
-                g["amount"] = (g["amount"] or Decimal(0)) + w * known
-    rows = sorted(groups.values(), key=lambda g: (g["amount"] is None, -(g["amount"] or 0), g["code"]))
+                g["amount"] = (g["amount"] or Decimal(0)) + w * known * factor
+    rows = sorted(groups.values(), key=lambda g: (g["amount"] is None, -(g["amount"] or 0), g["code"])) + (heads or [])
     total = sum((g["amount"] for g in rows if g["amount"] is not None), Decimal(0))
     found = any(g["amount"] is not None for g in rows)
     running = Decimal(0)
+    # 率を掛けると 571.6500 のように桁が増えるので、その時だけ末尾の 0 を落とす（材料費の時の値の形は変えない）
+    tidy = (lambda x: x if x is None else x.normalize()) if factor != 1 else (lambda x: x)
     for g in rows:
         g["codes"].sort()
         if g["amount"] is not None:
             running += g["amount"]
         g["share"] = None if g["amount"] is None or not total else _share(g["amount"], total)
         g["cumulative"] = None if g["amount"] is None or not total else _share(running, total)
-        g["quantity"], g["amount"] = _s(g["quantity"]), _s(g["amount"])
-    return {"name": name, "total": _s(total) if found else None, "missing": sum(1 for g in rows if g["missing"]),
+        g["quantity"], g["amount"] = _s(g["quantity"]), _s(tidy(g["amount"]))
+    return {"name": name, "total": _s(tidy(total)) if found else None, "missing": sum(1 for g in rows if g["missing"]),
             "without_trial": without_trial, "rows": rows}
 
 

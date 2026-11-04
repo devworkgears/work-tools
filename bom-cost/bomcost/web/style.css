@@ -342,6 +342,10 @@ table.cmp-bd-table .num { text-align: right; }
 .cmp-bd-track { height: 10px; background: var(--bg); border: 1px solid var(--line); border-radius: 2px; overflow: hidden; }
 .cmp-bd-fill { display: block; height: 100%; background: var(--series-0); }
 table.cmp-bd-table tr.cmp-bd-total td { font-weight: 600; border-top: 2px solid var(--line); }
+table.cmp-bd-table tr.cmp-bd-head td { background: var(--bg); }
+table.cmp-bd-table tr:not(.cmp-bd-head) + tr.cmp-bd-head td { border-top: 2px solid var(--line); }
+.cmp-bd-edit { white-space: nowrap; }
+.cmp-bd-edit input { margin-right: 4px; }
 @media (max-width: 860px) {
   .cmp-split { grid-template-columns: 1fr; }
   .cmp-bars { max-height: none; }
