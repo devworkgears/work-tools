@@ -405,9 +405,23 @@ function rowChange(changes, node) {
     ?? changes.find((c) => (c.kind === "REMOVE" || (c.kind === "REPLACE" && c.parent === null)) && c.part === node.code);
 }
 
+// 親子に重なる所は変えられない: 変えた部品の中（inside: 親 → 変えた部品）と、中を変えた部品（outer: 品番 → 中の場所）。
+// locks は /api/group/changes の製品ごとの値
+function placeLock(locks, parent, code) {
+  if (locks && Object.hasOwn(locks.outer, code)) return { kind: "outer", by: locks.outer[code] };
+  if (locks && parent != null && Object.hasOwn(locks.inside, parent)) return { kind: "inside", by: locks.inside[parent] };
+  return null;
+}
+const lockTag = (lock) => (lock.kind === "outer"
+  ? el("span", { class: "tag", title: `${lock.by} を変更済み` }, "中を変更済み")
+  : el("span", { class: "tag" }, `${lock.by} を変更済み`));
+const lockedButton = (lock) => [el("button", { type: "button", disabled: true }, "変更"), " ", lockTag(lock)];
+
 // 構成の行の［変更］（置換・削除・員数変更・追加）か、変えた行なら［取り消す］
 function rowButton(ctx, node, change) {
   if (change) return changedButtons(change);
+  const lock = placeLock(ctx.locks, node.parent, node.code);
+  if (lock) return lockedButton(lock);
   const usage = node.usage && !String(node.usage).startsWith("-") && !/^0*(\.0*)?$/.test(node.usage) ? node.usage : "1";
   const placeQty = node.quantity && !String(node.quantity).startsWith("-") ? node.quantity : "1";
   return changeButton(ctx.product, () => [placeReplaceOp(node.parent, node.balloon, node.code, placeQty),
@@ -433,7 +447,8 @@ function trialNodeRow(ctx, node, path, depth) {
   }
   return el(
     "tr",
-    { class: `group-node ${change ? `trial-changed ${CHANGE_CLASS[change.kind]}` : ""}` },
+    { class: `group-node ${change ? `trial-changed ${CHANGE_CLASS[change.kind]}`
+      : placeLock(ctx.locks, node.parent, node.code) ? "trial-done" : ""}` },
     el("td", { class: "num" }, node.balloon ?? ""),
     el("td", { style: `padding-left:${6 + depth * 18}px` }, twistyCell(path, node.has_children), code),
     el("td", {}, name), el("td", {}, specification),
@@ -491,7 +506,7 @@ function trialPairRows(ctx, node, path, depth, gone) {
   const left = pairCells(node, depth, twistyCell(path, node.has_children), false);
   if (gone) return el("tr", { class: "group-node chg-remove" }, left, emptyCells(), el("td", {}, ""));
   const change = rowChange(ctx.changes, node);
-  const cls = `group-node ${change ? CHANGE_CLASS[change.kind] : ""}`;
+  const cls = `group-node ${change ? CHANGE_CLASS[change.kind] : placeLock(ctx.locks, node.parent, node.code) ? "trial-done" : ""}`;
   const button = el("td", {}, rowButton(ctx, node, change));
   if (!change) return el("tr", { class: cls }, left, pairCells(node, depth, null, true), button);
   if (change.kind === "REMOVE") return el("tr", { class: cls }, left, emptyCells(), button);
@@ -529,9 +544,9 @@ function layoutSeg() {
 }
 
 // 開いた製品の中身: 変えた所に印を付けた版の構成（一覧か左右）。行の［変更］と下の［追加］から変える
-async function trialProductPanel(t, product, changes, colspan) {
+async function trialProductPanel(t, product, changes, colspan, locks) {
   const root = await trialTree(t, product);
-  const ctx = { t, product, changes };
+  const ctx = { t, product, changes, locks };
   if (trialChangedOnly.has(product)) {
     for (const path of [...trialOpen]) if (path.startsWith(`${product}/`)) trialOpen.delete(path);
     await openChangedPaths(ctx, root, product);
@@ -576,8 +591,8 @@ function partCodeBlock(parts) {
     rows.length ? rows : [el("tr", {}, el("td", { colspan: 7 }, "なし"))])];
 }
 
-// 場所を置換・員数変更した製品×部品は、同じ場所を2回変えられないので、まとめての置換に選べない
-const placeChanged = (r) => r.place_changes.length > 0;
+// 場所を置換・員数変更した製品×部品は、同じ場所を2回変えられないので、まとめての置換に選べない。親子に重なる所（locked）も
+const placeChanged = (r) => r.place_changes.length > 0 || r.locked !== null;
 
 function partBlock(parts) {
   if (trialPartsLayout === "code") return partCodeBlock(parts);
@@ -587,7 +602,7 @@ function partBlock(parts) {
   const boxes = parts.rows.map((r) => {
     if (placeChanged(r)) trialChecked.delete(checkKey(r));
     const box = el("input", { type: "checkbox", checked: trialChecked.has(checkKey(r)), disabled: placeChanged(r),
-      title: placeChanged(r) ? `${r.place_changes.map((c) => c.label).join("・")}済み` : null });
+      title: r.place_changes.length ? `${r.place_changes.map((c) => c.label).join("・")}済み` : null });
     box.addEventListener("change", () => { if (box.checked) trialChecked.add(checkKey(r)); else trialChecked.delete(checkKey(r)); });
     return box;
   });
@@ -596,8 +611,8 @@ function partBlock(parts) {
     box.checked = all.checked;
     if (all.checked) trialChecked.add(checkKey(parts.rows[i])); else trialChecked.delete(checkKey(parts.rows[i]));
   }));
-  const changedTags = (r) => r.place_changes.filter((c) => c.kind !== "REPLACE")
-    .map((c) => el("span", { class: `tag ${CHANGE_CLASS[c.kind]}` }, `${c.label}済み`));
+  const changedTags = (r) => [...r.place_changes.filter((c) => c.kind !== "REPLACE")
+    .map((c) => el("span", { class: `tag ${CHANGE_CLASS[c.kind]}` }, `${c.label}済み`)), ...(r.locked ? [lockTag(r.locked)] : [])];
   const partRows = parts.rows.map((r, i) => el(
     "tr",
     { class: placeChanged(r) ? "trial-done" : "" },
@@ -608,7 +623,8 @@ function partBlock(parts) {
     numTd(r.usage),
     el("td", {}, r.replaced_by.length || changedTags(r).length
       ? [r.replaced_by.map((c) => el("span", { class: "tag add" }, `→ ${c}`)), changedTags(r)] : "—"),
-    el("td", {}, changeButton(r.product, () => [replaceOp(r.part, r.usage)])),
+    el("td", {}, r.locked ? el("button", { type: "button", disabled: true }, "変更")
+      : changeButton(r.product, () => [replaceOp(r.part, r.usage)])),
   ));
   const bulk = el("tr", {}, el("td", { colspan: 8 },
     changeButton(null, () => [bulkReplaceOp()], { label: "選んだ所を置換", send: (change) => trialBulk(parts.rows, change) })));
@@ -704,7 +720,7 @@ async function productTable(t, p, changes, heads) {
         return [numTd(h.current[head.id], { yen: true }), after, el("td", {}, grid[r][c])];
       }),
     ));
-    if (open) rows.push(await trialProductPanel(t, x.code, own, colspan));
+    if (open) rows.push(await trialProductPanel(t, x.code, own, colspan, changes.locks[x.code]));
   }
   const top = el("tr", {}, el("th", { rowspan: 2 }, "製品"), el("th", { rowspan: 2 }, "名称"),
     el("th", { rowspan: 2, class: "num" }, "変更"), el("th", { rowspan: 2, class: "num" }, `差（${p.head_label}）`),

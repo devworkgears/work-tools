@@ -469,12 +469,16 @@ class Group:
         only = (params.get("product") or "").strip()
         only = to_code(only) if only else None
         rows: list[dict[str, Any]] = []
+        locks: dict[str, dict[str, dict[str, str]]] = {}
         total = Decimal(0)
         missing = 0
         for product, sid in sorted(self._scenarios(version, name).items()):
             if only is not None and product != only:
                 continue
             scenario = self.store.load_scenario(sid, version)
+            inside, outer = scenario.locks()
+            if inside or outer:
+                locks[product] = {"inside": inside, "outer": outer}
             for recorded, records in zip(_batches(scenario.history), replayed_batches(scenario, head)):
                 row = _batch_json(records)
                 row["sequence"], row["batch"] = recorded[0].sequence, recorded[0].batch
@@ -502,6 +506,8 @@ class Group:
                 "count": len(rows),
                 "difference": _s(total),
                 "missing_count": missing,  # 変更前か変更後が未登録で、合計に入れなかった行の数
+                # 製品 → 変えられなくなった所（inside: 親 → 変えた部品・outer: 品番 → 中で変えた場所。Scenario.locks）
+                "locks": locks,
             }
         )
 
@@ -869,8 +875,11 @@ class Group:
         for product in codes:
             changed: dict[str, list[str]] = {}
             placed: dict[str, dict[str, str]] = {}  # 部品 → 場所を変えた種類（置換・員数変更）。同じ場所は2回変えられない
+            inside: dict[str, str] = {}
+            outer: dict[str, str] = {}
             if product in scenario_ids:
                 scenario = self.store.load_scenario(scenario_ids[product], version)
+                inside, outer = scenario.locks()
                 for change in scenario.changes:
                     if change.kind is ChangeKind.REPLACE and change.replacement is not None:
                         changed.setdefault(change.part, []).append(change.replacement)
@@ -894,6 +903,7 @@ class Group:
                         "usage": _s(usage),
                         "replaced_by": changed.get(part, []),
                         "place_changes": [{"kind": k, "label": v} for k, v in placed.get(part, {}).items()],
+                        "locked": _locked(version, structure, product, part, inside, outer),
                         "scenario_id": scenario_ids.get(product),
                     }
                 )
@@ -1449,6 +1459,15 @@ def _places(version: Version, structure: _Structure, product: str, part: str) ->
         places.extend((parent, line.balloon, line.quantity)
                       for line in version.children(parent, by_balloon=True) if line.child == part)
     return places
+
+
+def _locked(version: Version, structure: _Structure, product: str, part: str,
+            inside: dict[str, str], outer: dict[str, str]) -> dict[str, str] | None:
+    """製品×部品の行の部品を、親子に重なるので変えられないなら {kind: inside・outer, by: 変えた部品か中の場所}。"""
+    if part in outer:
+        return {"kind": "outer", "by": outer[part]}
+    parent = next((p for p, _, _ in _places(version, structure, product, part) if p in inside), None)
+    return None if parent is None else {"kind": "inside", "by": inside[parent]}
 
 
 def _amortization_missing(codes: list[str]) -> str:

@@ -238,7 +238,13 @@ class Scenario:
         volume: NumberLike | None = None,
         allocation: Allocation | None = None,
     ) -> ChangeRecord:
-        """volume（試算の製品の年間台数）と allocation（型費の載せ方）は、履歴に前提として残すだけ。"""
+        """volume（試算の製品の年間台数）と allocation（型費の載せ方）は、履歴に前提として残すだけ。
+
+        部品とその中の場所を両方変える変更は ValueError（nesting_conflict）。
+        """
+        reason = self.nesting_conflict(change)
+        if reason is not None:
+            raise ValueError(reason)
         before = self.calculate().total
         after = self.calculate(changes=self.changes + (change,)).total
         record = ChangeRecord(
@@ -271,15 +277,64 @@ class Scenario:
         recorded_at = recorded_at or datetime.now()
         batch = len(self._history) + 1
         records = []
-        for change in changes:
-            record = self.apply(change, recorded_at, volume, allocation)
-            record = ChangeRecord(**{**record.__dict__, "batch": batch})
-            self._history[-1] = record
-            records.append(record)
+        kept = list(self._history)
+        try:
+            for change in changes:
+                record = self.apply(change, recorded_at, volume, allocation)
+                record = ChangeRecord(**{**record.__dict__, "batch": batch})
+                self._history[-1] = record
+                records.append(record)
+        except Exception:
+            self._history = kept
+            raise
         return tuple(records)
 
     def replaced_locations(self) -> set[tuple[str, str | None, str]]:
         return {c.location for c in self.changes if c.location is not None}
+
+    def locks(self, changes: tuple[Change, ...] | None = None) -> tuple[dict[str, str], dict[str, str]]:
+        """変更（省けば履歴の全部）で、もう変えられなくなった所。
+
+        1つ目は 親の品番 → 変えた部品: その親の下の場所は変えられない（変えた部品とその中の組立品）。
+        2つ目は 品番 → 中で変えた場所の名前: その品番は変えられない（場所の親とその上の組立品）。
+        場所の変更は版の構成の使用数で倍率を取るので（root_entries）、両方変えると原価が誤る。
+        """
+        inside: dict[str, str] = {}
+        outer: dict[str, str] = {}
+        below: dict[str, set[str]] = {}
+
+        def under(code: str) -> set[str]:
+            if code not in below:
+                below[code] = {code, *usage_per_unit(self.version, code)}
+            return below[code]
+
+        for change in self.changes if changes is None else changes:
+            if change.kind in _PART_CHANGES:
+                for code in under(change.part):
+                    inside.setdefault(code, change.part)
+            if change.location is not None:
+                for code in (self.base, *usage_per_unit(self.version, self.base)):
+                    if change.parent in under(code):
+                        outer.setdefault(code, _label(change))
+            elif change.kind in _PART_CHANGES:
+                # 場所なしの変更は製品の中のどこにあっても効くので、その部品の上の組立品も変えられない
+                for code in (self.base, *usage_per_unit(self.version, self.base)):
+                    if code != change.part and change.part in under(code):
+                        outer.setdefault(code, _label(change))
+        return inside, outer
+
+    def nesting_conflict(self, change: Change, changes: tuple[Change, ...] | None = None) -> str | None:
+        """change を changes（省けば履歴の全部）に足すと部品とその中の場所を両方変えるなら、断る理由の文。"""
+        inside, outer = self.locks(changes)
+        if change.location is not None and change.parent in inside or (
+                change.location is None and change.kind in _PART_CHANGES
+                and inside.get(change.part, change.part) != change.part):
+            done = inside[change.parent or change.part]
+            return f"{done} を変えたので、その中の {_label(change)} は変えられない（親子に重なる・先に {done} の変更を外す）"
+        if change.kind in _PART_CHANGES and change.part in outer:
+            done = outer[change.part]
+            return f"{done} を変えたので、{_label(change)} は変えられない（親子に重なる・先に {done} の変更を外す）"
+        return None
 
     def undo(self) -> ChangeRecord | None:
         """最後の操作を取り消す（まとまりなら丸ごと）。取り消した行の最後の1行を返す。"""
@@ -334,6 +389,15 @@ class Scenario:
         return VersionComparison(
             version_a.version_id, version_b.version_id, head, lines, result_a.total, result_b.total
         )
+
+
+_PART_CHANGES = (ChangeKind.REMOVE, ChangeKind.REPLACE, ChangeKind.SET_QUANTITY)  # 部品そのものを変える変更
+
+
+def _label(change: Change) -> str:
+    if change.parent is None:
+        return change.part
+    return f"{change.parent} の {change.part}" if change.balloon is None else f"{change.parent} の #{change.balloon} {change.part}"
 
 
 def _amount(quantity: Decimal, unit: Decimal | None) -> Decimal | None:

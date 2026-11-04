@@ -526,6 +526,11 @@ class Api:
             scenario.head = _head(body["head"], scenario.head)
         if body.get("name") not in (None, ""):
             scenario.name = _text_field(body, "name", "試算の名前")
+        changes = scenario.changes
+        for i, change in enumerate(changes):
+            reason = scenario.nesting_conflict(change, changes[:i])
+            if reason is not None:
+                raise ApiError(400, f"版 {scenario.version.version_id} の構成では、{reason}")
         scenario.calculate()
         self.store.save_scenario(scenario)
         return _json_response(self._summary(scenario))
@@ -574,14 +579,12 @@ class Api:
             done = next((c for c in scenario.changes if c.location == location), None)
             if done is not None:
                 raise ApiError(400, f"{label} はもう{done.kind.value}した（同じ場所は1回だけ変えられる）")
-            # 場所の変更は元の版の使用数で倍率を取るので、親子にまたがる2つの変更は原価が誤る
-            below = lambda code: {code, *usage_per_unit(scenario.version, code)}
-            for done_parent, _, done_part in scenario.replaced_locations():
-                if parent in below(done_part) or done_parent in below(part):
-                    raise ApiError(400, f"{label} は変更済みの {done_parent} の {done_part} と親子に重なる（先に取り消す）")
         elif len(pairs) > 1:
             raise ApiError(400, "代わりの部品を複数入れるには親品番（parent）が要る")
         changes = [Change(kind, part, qty, code, parent, balloon) for code, qty in pairs]
+        reason = scenario.nesting_conflict(changes[0])
+        if reason is not None:
+            raise ApiError(400, reason)
         scenario.apply_batch(changes, volume=annual)
 
     @staticmethod
