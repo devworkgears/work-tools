@@ -209,6 +209,8 @@ tr.chg-remove td { background: var(--chg-remove); }
 tr.chg-add td { background: var(--chg-add); }
 tr.chg-qty td { background: var(--chg-qty); }
 tr.chg-head td { background: var(--chg-head); }
+.tag.chg-qty { background: var(--chg-qty); color: var(--accent); }
+tr.trial-done td { color: var(--muted); }
 .trial-layout { margin: 2px 0 4px; }
 table.small .pair-split { border-left: 2px solid var(--line); }
 tr.pair-sides th { font-weight: 600; color: inherit; }

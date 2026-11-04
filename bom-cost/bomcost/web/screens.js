@@ -19,6 +19,7 @@ const screenState = {
   pending: [], // 取り込む一覧
   noteEditing: null, // メモを直している版の ID
   warningOpen: null, // { version_id, info }: 開いている版の警告
+  importedVersion: null, // この画面を開いてから直近に取り込んだ版
 };
 
 // 共通 -------------------------------------------------------------------
@@ -37,7 +38,7 @@ function versionOptions(select, opts = {}) {
 }
 
 function scenarioOptions(select, opts = {}) {
-  options(select, state.scenarios.map((s) => [s.scenario_id, `${s.name}（${s.base} 土台・${versionLabel(s.version_id)}）`]), opts);
+  options(select, state.scenarios.map((s) => [s.scenario_id, `${s.name}（製品 ${s.base}・${versionLabel(s.version_id)}）`]), opts);
 }
 
 async function loadCodes(versionId) {
@@ -137,7 +138,9 @@ function setFlow(flow) {
 function manualDefaultDev() {
   const ids = { group: "group-version", trial: "trial-version", compare: "cmp-version", lookup: "look-version",
     part: "part-version", change: "change-new-version", product: "version-select" };
-  const version = document.getElementById(ids[screenState.screen])?.value || state.summary?.scenario.version_id;
+  // 版の欄の無い画面（取込・版管理など）からは、直近に取り込んだ版
+  const version = document.getElementById(ids[screenState.screen])?.value || screenState.importedVersion
+    || state.summary?.scenario.version_id;
   return state.versions.find((v) => v.version_id === version)?.dev_number || "";
 }
 
@@ -274,7 +277,7 @@ async function drawPart() {
     "p",
     { class: "premise-line" },
     `前提: ${versionLabel(p.version_id)}・費目 ${p.head_label}・台数 ${p.volumes.map((x) => `${x.product} ${x.kind}`).join(" / ") || "—"}・載せ方 ${p.allocation_label}`
-      + `・構成 ${p.scenario_name ? `試算「${p.scenario_name}」` : "版"}・${p.reference}・償却費除外`,
+      + `・構成 ${p.scenario_name ? `試算「${p.scenario_name}」` : "版"}・${p.reference}・償却費は登録値（型費は含めない）`,
   );
   const unknown = v.unknown_volume.length
     ? el("p", { class: "missing" }, `年間台数なし: ${v.unknown_volume.join("・")}`)
@@ -409,8 +412,9 @@ async function renderManual(data) {
     await renderManual(Array.isArray(result) ? null : result);
     showMessage("保存しました。", "info");
   });
-  const del = (path) => () => {
-    if (confirm("消しますか？")) send("DELETE", dev ? `${path}&${qs({ dev_number: dev })}` : path);
+  // what は消す物（確認の文に出す）
+  const del = (path, what) => () => {
+    if (confirm(`${what} を${dev || "共通"}から消しますか？`)) send("DELETE", dev ? `${path}&${qs({ dev_number: dev })}` : path);
   };
   // BOM に入った登録の印（計算は BOM の値を使う）
   const inBom = (code) => {
@@ -423,6 +427,7 @@ async function renderManual(data) {
     screenState.manualDev = e.target.value;
     screenState.editing = {};
     screenState.masterCheck = null;
+    showMessage("");
     guarded(() => renderManual());
   } });
   options(devSelect, [["", "共通"], ...m.dev_numbers.map((d) => [d, d])], { value: dev });
@@ -438,7 +443,8 @@ async function renderManual(data) {
     m.heads.map((h) => numTd(i.costs[h.id], { yen: true })),
     el("td", {},
       el("button", { type: "button", onclick: edit(i.role, { code: i.code, name: i.name, specification: i.specification, kind: i.kind, ...i.costs, original: { code: i.code } }) }, "直す"),
-      el("button", { type: "button", onclick: del(`/api/manual/items?${qs({ code: i.code })}`) }, "消す")),
+      el("button", { type: "button", onclick: del(`/api/manual/items?${qs({ code: i.code })}`,
+        `${i.role === "product" ? "製品" : "部品"} ${i.code}${i.name ? ` ${i.name}` : ""}`) }, "消す")),
   ];
   const itemForm = (role) => {
     const code = el("input", { value: val(role, "code"), placeholder: "例 X-610" });
@@ -479,7 +485,7 @@ async function renderManual(data) {
       el("td", {}, v.product, " ", inBom(v.product)), numTd(v.annual), el("td", {}, v.kind),
       el("td", {},
         el("button", { type: "button", onclick: edit("volume", { ...v, original: { product: v.product } }) }, "直す"),
-        el("button", { type: "button", onclick: del(`/api/manual/volumes?${qs({ product: v.product })}`) }, "消す")),
+        el("button", { type: "button", onclick: del(`/api/manual/volumes?${qs({ product: v.product })}`, `${v.product} の年間台数`) }, "消す")),
     ))),
     el("div", { class: "form-row" }, field("製品の品番", volProduct), field("年間台数", volAnnual),
       el("button", { type: "button", class: "primary", onclick: () => send("PUT", "/api/manual/volumes", { product: volProduct.value, annual: volAnnual.value, original: screenState.editing.volume?.original }) }, saveLabel)),
@@ -494,7 +500,7 @@ async function renderManual(data) {
       el("td", {}, x.part), numTd(x.amount, { yen: true }), numTd(x.years), numTd(x.annual_amount, { yen: true }),
       el("td", {},
         el("button", { type: "button", onclick: edit("mold", { ...x, original: { part: x.part } }) }, "直す"),
-        el("button", { type: "button", onclick: del(`/api/molds?${qs({ part: x.part })}`) }, "消す")),
+        el("button", { type: "button", onclick: del(`/api/molds?${qs({ part: x.part })}`, `${x.part} の型費`) }, "消す")),
     ))),
     el("div", { class: "form-row" }, field("部品の品番", moldPart), field("型費（円）", moldAmount), field("償却年数", moldYears),
       el("button", { type: "button", class: "primary", onclick: () => send("PUT", "/api/molds", { part: moldPart.value, amount: moldAmount.value, years: moldYears.value, original: screenState.editing.mold?.original }) }, saveLabel)),
@@ -510,7 +516,7 @@ async function renderManual(data) {
       el("td", {}, t.part), el("td", {}, t.product), numTd(t.quantity), el("td", {}, t.replaced_part || "—"),
       el("td", {},
         el("button", { type: "button", onclick: edit("reuse", { ...t, original: { part: t.part, product: t.product } }) }, "直す"),
-        el("button", { type: "button", onclick: del(`/api/reuse?${qs({ part: t.part, product: t.product })}`) }, "消す")),
+        el("button", { type: "button", onclick: del(`/api/reuse?${qs({ part: t.part, product: t.product })}`, `${t.part} の流用先 ${t.product}`) }, "消す")),
     ))),
     el("div", { class: "form-row" }, field("部品", reusePart), field("流用先", reuseProduct), field("使用数", reuseQty), field("古い部品", reuseOld),
       el("button", { type: "button", class: "primary", onclick: () => send("PUT", "/api/reuse", {
@@ -531,7 +537,7 @@ async function renderManual(data) {
       el("td", {}, `${r.new_part}${r.new_balloon ? `（${r.new_balloon}）` : ""}`),
       el("td", {},
         el("button", { type: "button", onclick: edit("map", { ...r, original: r }) }, "直す"),
-        el("button", { type: "button", onclick: del(`/api/partmaps?${qs(r)}`) }, "消す")),
+        el("button", { type: "button", onclick: del(`/api/partmaps?${qs(r)}`, `対応表の ${r.old_part} → ${r.new_part}`) }, "消す")),
     ))),
     el("div", { class: "form-row" },
       field("元の製品", mapInputs.old_product), field("新しい製品", mapInputs.new_product),
@@ -554,6 +560,7 @@ async function renderManual(data) {
   const current = tabs.find(([key]) => key === screenState.manualTab) || tabs[0];
   const pick = (key) => () => {
     screenState.manualTab = key;
+    showMessage("");  // 「保存しました。」などは前のタブの話なので消す
     renderManual(screenState.manual);
   };
   document.getElementById("manual-body").replaceChildren(
@@ -596,9 +603,9 @@ function masterBookBar(dev) {
     renderManual(screenState.manual);
   };
   return el("div", { class: "form-row mreg-book" },
-    el("button", { type: "button", onclick: open }, "① Excel で開く"),
+    el("button", { type: "button", class: "primary", onclick: open }, "① Excel で開く"),
     el("span", { class: "muted", "aria-hidden": "true" }, "→"),
-    el("button", { type: "button", class: "primary", onclick: check }, `② ${dev || "共通"}に取り込む`),
+    el("button", { type: "button", onclick: check }, `② ${dev || "共通"}に取り込む`),
     el("button", { type: "button", "aria-pressed": String(!!screenState.masterFileShown), onclick: toggleFile }, "別のファイル"),
     screenState.masterFileShown ? field("ファイル", screenState.masterFile) : null);
 }
@@ -662,23 +669,9 @@ async function previewFile(sheet) {
   document.getElementById("import-sheet-label").hidden = !data.sheets.length;
   options(sheetSelect, data.sheets.map((s) => [s, s]), { value: data.sheet });
   const tableSelect = document.getElementById("import-table");
-  options(tableSelect, data.tables.map((t) => [t.id, `${t.label}${t.saved ? "（保存した対応づけあり）" : ""}`]), { value: data.suggested || guessTable(data) || tableSelect.value });
+  // 保存した対応づけが無いときは、見出しの当たり（API が見出しの名前と別名で当てる）がいちばん強い表を仮に選ぶ
+  options(tableSelect, data.tables.map((t) => [t.id, `${t.label}${t.saved ? "（保存した対応づけあり）" : ""}`]), { value: data.suggested || data.guessed || tableSelect.value });
   drawMapping();
-}
-
-// 保存した対応づけが無いときは、見出しの名前で当たる項目がいちばん多い表を仮に選ぶ
-function guessTable(data) {
-  let best = null;
-  let bestScore = 0;
-  for (const t of data.tables) {
-    const score = t.fields.filter((f) => guessHeader(f, data.headers)).length;
-    if (score > bestScore) { best = t.id; bestScore = score; }
-  }
-  return best;
-}
-
-function guessHeader(field, headers) {
-  return headers.find((h) => h === field.label) || headers.find((h) => h && (h.includes(field.label) || field.label.includes(h))) || "";
 }
 
 function drawMapping() {
@@ -689,7 +682,7 @@ function drawMapping() {
   const tableDef = d.tables.find((t) => t.id === document.getElementById("import-table").value) || d.tables[0];
   const selects = {};
   const rows = tableDef.fields.map((f) => {
-    const chosen = tableDef.saved ? tableDef.saved[f.name] || "" : guessHeader(f, d.headers);
+    const chosen = (tableDef.saved ?? tableDef.guess)[f.name] || "";
     const select = el("select", {});
     options(select, d.headers.filter(Boolean).map((h) => [h, h]), { blank: "（使わない）", value: chosen });
     if (!chosen) select.value = "";
@@ -710,6 +703,7 @@ function drawMapping() {
         screenState.pending.push({
           filename: d.filename, content: p.content, sheet: d.sheet, table: tableDef.id, tableLabel: tableDef.label,
           columns: Object.fromEntries(Object.entries(selects).filter(([, s]) => s.value).map(([k, s]) => [k, s.value])),
+          fieldLabels: Object.fromEntries(tableDef.fields.map((f) => [f.name, f.label])),
         });
         screenState.preview = null;
         document.getElementById("import-file").value = "";
@@ -728,7 +722,7 @@ function drawPending() {
   box.replaceChildren(table(["ファイル", "表", "対応づけ", ""], screenState.pending.map((f, i) => el("tr", {},
     el("td", {}, `${f.filename}${f.sheet ? `（${f.sheet}）` : ""}`),
     el("td", {}, f.tableLabel),
-    el("td", { class: "muted" }, Object.entries(f.columns).map(([k, v]) => `${k}←${v}`).join("・")),
+    el("td", { class: "muted" }, Object.entries(f.columns).map(([k, v]) => `${f.fieldLabels[k] ?? k}←${v}`).join("・")),
     el("td", {}, el("button", { type: "button", onclick: () => { screenState.pending.splice(i, 1); drawPending(); } }, "外す")),
   ))));
 }
@@ -777,8 +771,21 @@ async function runImport() {
     warningList(result.warnings),
   );
   await refreshLists();
+  followImported(result.version_id);
   syncCostOnly();
   await showScreen("versions");  // 取り込んだ結果は版管理の画面の上に出す
+}
+
+// 各画面の版の欄の既定を、いま取り込んだ版にする（利用者が選び直した欄は除く）。マスタ登録の開発番号も manualDefaultDev が追う
+const FOLLOW_VERSION_SELECTS = ["group-version", "trial-version", "cmp-version", "part-version", "change-old-version",
+  "change-new-version", "look-version"];
+
+function followImported(versionId) {
+  screenState.importedVersion = versionId;
+  for (const id of FOLLOW_VERSION_SELECTS) {
+    const select = document.getElementById(id);
+    if (!select.dataset.picked) versionOptions(select, { value: versionId });
+  }
 }
 
 function warningList(warnings) {
@@ -922,6 +929,11 @@ function wireScreens() {
   document.getElementById("import-run").addEventListener("click", () => guarded(runImport));
   document.getElementById("import-dev-number").addEventListener("change", fillDevName);
   document.getElementById("import-dev-number").addEventListener("input", syncCostOnly);
+  // 利用者が選び直した版の欄は、取り込んだ後も変えない
+  for (const id of FOLLOW_VERSION_SELECTS) {
+    const select = document.getElementById(id);
+    select.addEventListener("change", () => { select.dataset.picked = "1"; });
+  }
 }
 
 wireScreens();

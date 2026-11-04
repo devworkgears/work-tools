@@ -75,7 +75,7 @@ async function trialUndo(change) {
 // 部品の絞り込みでチェックした製品×部品を、まとめて同じ部品に置換する（1つでも通らなければ何も入らない）
 async function trialBulk(rows, change) {
   const items = rows.filter((r) => trialChecked.has(checkKey(r))).map((r) => ({ product: r.product, part: r.part }));
-  if (!items.length) throw new Error("置換する所を選ぶ");
+  if (!items.length) throw new Error("置換する行にチェックを入れてください。");
   const t = trialOpened;
   await api("POST", "/api/group/changes/bulk", { version_id: t.version, name: t.name, head: TRIAL_HEAD, items, ...change });
   trialChecked.clear();
@@ -235,17 +235,8 @@ function sortedChildren(children) {
 // 開くのは同時に1つ。表を描き直すと閉じる
 let trialForm = null;
 
-// 候補から選んだ・打ち込んだ品番が品目にあれば、その時点で右の簡易照会に出す
-const codeInput = (value = "") => {
-  const input = el("input", { list: "code-list-2", placeholder: "品番", value, size: 10 });
-  input.addEventListener("input", () => {
-    const code = input.value.trim();
-    if (code && !unknownCode(input) && document.getElementById("trial-lookup")?.dataset.code !== code) {
-      guarded(() => openTrialLookup(code));
-    }
-  });
-  return input;
-};
+// 品番の欄。右の簡易照会は品番を押した時だけ開く（打っただけでは開かない）
+const codeInput = (value = "") => el("input", { list: "code-list-2", placeholder: "品番", value, size: 10 });
 const qtyInput = (value, placeholder) => el("input", { value, placeholder, inputmode: "decimal", size: 4 });
 
 // 操作: { label, text: 文の部品, inputs: 文の中の欄, change: () => API へ送る変更, code?: 品番の欄（無ければ登録して使う） }
@@ -584,28 +575,38 @@ function partCodeBlock(parts) {
     rows.length ? rows : [el("tr", {}, el("td", { colspan: 7 }, "なし"))])];
 }
 
+// 場所を置換・員数変更した製品×部品は、同じ場所を2回変えられないので、まとめての置換に選べない
+const placeChanged = (r) => r.place_changes.length > 0;
+
 function partBlock(parts) {
   if (trialPartsLayout === "code") return partCodeBlock(parts);
-  const all = el("input", { type: "checkbox", title: "全部",
-    checked: parts.rows.length > 0 && parts.rows.every((r) => trialChecked.has(checkKey(r))) });
+  const open = parts.rows.filter((r) => !placeChanged(r));
+  const all = el("input", { type: "checkbox", title: "全部", disabled: !open.length,
+    checked: open.length > 0 && open.every((r) => trialChecked.has(checkKey(r))) });
   const boxes = parts.rows.map((r) => {
-    const box = el("input", { type: "checkbox", checked: trialChecked.has(checkKey(r)) });
+    if (placeChanged(r)) trialChecked.delete(checkKey(r));
+    const box = el("input", { type: "checkbox", checked: trialChecked.has(checkKey(r)), disabled: placeChanged(r),
+      title: placeChanged(r) ? `${r.place_changes.map((c) => c.label).join("・")}済み` : null });
     box.addEventListener("change", () => { if (box.checked) trialChecked.add(checkKey(r)); else trialChecked.delete(checkKey(r)); });
     return box;
   });
   all.addEventListener("change", () => boxes.forEach((box, i) => {
+    if (box.disabled) return;
     box.checked = all.checked;
     if (all.checked) trialChecked.add(checkKey(parts.rows[i])); else trialChecked.delete(checkKey(parts.rows[i]));
   }));
+  const changedTags = (r) => r.place_changes.filter((c) => c.kind !== "REPLACE")
+    .map((c) => el("span", { class: `tag ${CHANGE_CLASS[c.kind]}` }, `${c.label}済み`));
   const partRows = parts.rows.map((r, i) => el(
     "tr",
-    {},
+    { class: placeChanged(r) ? "trial-done" : "" },
     el("td", {}, boxes[i]),
     el("td", {}, trialCode(r.product), ` ${r.product_name}`),
     el("td", {}, trialCode(r.part)),
     el("td", {}, r.part_name), el("td", {}, r.part_specification),
     numTd(r.usage),
-    el("td", {}, r.replaced_by.length ? r.replaced_by.map((c) => el("span", { class: "tag add" }, `→ ${c}`)) : "—"),
+    el("td", {}, r.replaced_by.length || changedTags(r).length
+      ? [r.replaced_by.map((c) => el("span", { class: "tag add" }, `→ ${c}`)), changedTags(r)] : "—"),
     el("td", {}, changeButton(r.product, () => [replaceOp(r.part, r.usage)])),
   ));
   const bulk = el("tr", {}, el("td", { colspan: 8 },
@@ -674,7 +675,7 @@ async function productTable(t, p, changes, heads) {
     const items = p.products.map((x, r) => ({ product: x.code,
       values: Object.fromEntries(grid[r].map((input, c) => [heads.heads[c].id, input.value.trim()]).filter(([, v]) => v)) }))
       .filter((x) => Object.keys(x.values).length);
-    if (!items.length) throw new Error("変える値を打つ");
+    if (!items.length) throw new Error("変える費目の値を入れてください。");
     await api("POST", "/api/group/heads/bulk", { version_id: t.version, name: t.name, head: TRIAL_HEAD, items });
     trialHeadValues.clear();
     await drawTrial();
@@ -722,14 +723,16 @@ function changeLog(changes, headLabel) {
     el("td", {}, trialCode(c.product), ` ${c.product_name}`),
     el("td", {}, `${c.kind_label}${c.heads.length ? ` ${c.heads.map((h) => h.label).join("・")}` : ""}${c.balloon ? ` #${c.balloon}` : ""}`),
     el("td", {}, trialCode(c.part)), el("td", {}, c.part_name), el("td", {}, c.part_specification || ""),
-    el("td", {}, joinReplacements(c, (r) => trialCode(r.code))),
-    el("td", {}, joinReplacements(c, (r) => r.name || "—")),
-    el("td", {}, joinReplacements(c, (r) => c.replacement_specifications?.[r.code] || "—")),
+    // 費目変更は員数でなく、変えた費目と値を置換先の欄に
+    c.kind === "SET_HEAD" ? el("td", { colspan: 3 }, headValues(c).join("・")) : [
+      el("td", {}, joinReplacements(c, (r) => trialCode(r.code))),
+      el("td", {}, joinReplacements(c, (r) => r.name || "—")),
+      el("td", {}, joinReplacements(c, (r) => c.replacement_specifications?.[r.code] || "—"))],
     el("td", { class: "num" }, c.kind === "REPLACE" ? joinReplacements(c, (r) => fmt(r.quantity))
-      : c.kind === "SET_HEAD" ? c.heads.map((h) => fmt(h.value, { yen: true })).join("・") : fmt(c.quantity)),
+      : c.kind === "SET_HEAD" ? "" : fmt(c.quantity)),
     el("td", { class: `num ${signClass(c.difference)}` }, fmt(c.difference, { sign: true, missing: "—", yen: true })),
     el("td", {}, changedButtons(c))));
-  const heads = ["製品", "操作", "部品", "名称", "記号・寸法", "置換先", "置換先の名称", "置換先の記号・寸法",
+  const heads = ["製品", "操作", "部品", "名称", "記号・寸法", "置換先・費目の値", "置換先の名称", "置換先の記号・寸法",
     numTh("員数"), numTh(`差（${headLabel}）`), ""];
   const sum = changes.missing_count < changes.count ? changes.difference : null; // 全部未登録なら合計は出せない
   const total = el("tr", { class: "trial-total" },

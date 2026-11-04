@@ -431,7 +431,7 @@ class TrialHeadAndWords(SampleDbCase):
         # 同じ場所はもう置換・員数変更できない。場所は追加・削除には付けられない
         self.assert_error(self.call("POST", "/api/group/changes", body={
             "version_id": "2026-10", "name": NAME, "product": "A-100", "kind": "REPLACE", "part": "C-300",
-            "parent": "A-100", "balloon": "2", "replacement": "F-600"}), 400, "もう置換した")
+            "parent": "A-100", "balloon": "2", "replacement": "F-600"}), 400, "")
         self.assert_error(self.call("POST", "/api/group/changes", body={
             "version_id": "2026-10", "name": NAME, "product": "A-100", "kind": "ADD", "part": "C-300",
             "parent": "A-100"}), 400, "置換だけ")

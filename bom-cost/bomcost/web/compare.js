@@ -500,7 +500,8 @@ function breakdownShare(row) {
   if (row.ignored) return el("td", { class: "num muted" }, "—");
   const missing = row.amount === null;
   return el("td", {}, el("div", { class: "cmp-bd-share" },
-    el("div", { class: "cmp-bd-track" }, row.share ? el("span", { class: "cmp-bd-fill", style: `width:${Math.min(100, Number(row.share))}%` }) : null),
+    // 割合が負（抜く部品など）の行は棒を出さない
+    el("div", { class: "cmp-bd-track" }, Number(row.share) > 0 ? el("span", { class: "cmp-bd-fill", style: `width:${Math.min(100, Number(row.share))}%` }) : null),
     el("span", { class: `num ${missing ? "missing" : ""}` }, missing ? "分母外" : `${row.share ?? "—"}%`)));
 }
 
@@ -526,7 +527,7 @@ function headEdit(a, row) {
     placeholder: values.length === 1 && values[0] !== null ? values[0] : "" });
   const send = () => guarded(async () => {
     const value = pastedNumber(input.value.trim());
-    if (!value) throw new Error("値を打つ");
+    if (!value) throw new Error("値を入れてください。");
     await api("POST", "/api/group/heads/bulk", { version_id: compareState.query.version, name: compareState.name,
       head: TRIAL_HEAD, items: a.products.map((product) => ({ product, values: { [row.head]: value } })) });
     await reloadCompare();
@@ -536,15 +537,25 @@ function headEdit(a, row) {
 }
 const rowAction = (a, r) => (isHeadRow(r) ? headEdit(a, r) : swapCell(r));
 
-// 大きい順: 現行の金額の高い順に割合と累積（製造原価の時は部品の後に製品の費目）。差を見る検討案の変更後を横に（変更後に無い行は 0）
+// 大きい順: 現行の金額の高い順に割合と累積（製造原価の時は部品の後に製品の費目）。差を見る検討案の変更後を横に（変更後に無い行は 0）。
+// 変更後にだけある行（置換・追加で入った部品）は現行を 0 として部品の行の後ろに足す（変更後の列の和が計になる）
 function analysisSize(a) {
   const [s, after] = a.series;
   const later = new Map((after?.rows ?? []).map((r) => [r.key, r]));
-  const rows = s.rows.map((r) => el("tr", { class: rowClass(r) }, rowCode(a, r), nameCells(r),
-    el("td", { class: "num" }, isHeadRow(r) ? "" : fmt(r.quantity)),
-    rowAmount(r), breakdownShare(r), el("td", { class: "num muted" }, r.cumulative ? `${r.cumulative}%` : ""),
+  const keys = new Set(s.rows.map((r) => r.key));
+  const fresh = (after?.rows ?? []).filter((r) => !keys.has(r.key));
+  const line = (r, now) => el("tr", { class: rowClass(r) }, rowCode(a, r), nameCells(r),
+    el("td", { class: "num" }, isHeadRow(r) ? "" : fmt(now ? r.quantity : "0")),
+    now ? rowAmount(r) : numTd("0", { yen: true }), now ? breakdownShare(r) : el("td", {}),
+    el("td", { class: "num muted" }, now && r.cumulative ? `${r.cumulative}%` : ""),
     after ? (r.ignored ? el("td", { class: "num muted" }, "—")
-      : numTd(later.has(r.key) ? later.get(r.key).amount : "0", { yen: true })) : null, rowAction(a, r)));
+      : numTd(later.has(r.key) ? later.get(r.key).amount : "0", { yen: true })) : null, rowAction(a, r));
+  const rows = [
+    ...s.rows.filter((r) => !isHeadRow(r)).map((r) => line(r, true)),
+    ...fresh.filter((r) => !isHeadRow(r)).map((r) => line(r, false)),
+    ...s.rows.filter(isHeadRow).map((r) => line(r, true)),
+    ...fresh.filter(isHeadRow).map((r) => line(r, false)),
+  ];
   if (rows.length) {
     rows.push(el("tr", { class: "cmp-bd-total" }, el("td", { colspan: 4 }, "計"), numTd(s.total, { yen: true }),
       el("td", { class: s.missing ? "missing" : "muted", colspan: 2 }, s.missing ? `未登録 ${s.missing} 行を除く` : ""),

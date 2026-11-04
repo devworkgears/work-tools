@@ -58,7 +58,7 @@ async function drawGroup() {
 
 async function createTrials() {
   const name = document.getElementById("group-name").value.trim();
-  if (!name) throw new Error("検討案が空");
+  if (!name) throw new Error("検討案の名前を入れてください。");
   if (!groupShown) throw new Error("先に絞り込む");
   const r = await api("POST", "/api/group/scenarios", {
     version_id: groupShown.version, name, head: TRIAL_HEAD, q: groupShown.q,

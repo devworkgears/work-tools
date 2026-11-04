@@ -339,7 +339,7 @@ class Group:
             owns = {**current_owns, **owns_of(name, scenarios, {c: parts[c] for c in scenarios})} if with_heads else {}
             series.append(series_of(name, parts, sum(1 for code in weights if code not in scenario_ids), owns))
         if failed:
-            raise ApiError(400, "償却費を出せない（未登録あり）: " + "、".join(dict.fromkeys(failed)))
+            raise ApiError(400, _amortization_missing(list(dict.fromkeys(failed))))
         return _json_response({
             "version_id": version.version_id, "by": by, "weight": weight, "cost": cost, "ignore_amortization": ignore,
             "parts": [{"code": c, "name": self._name(version, c)} for c in level],
@@ -399,7 +399,9 @@ class Group:
             scenario_ids = {n: self._scenarios(version, n) for n in names}
             for code in shown:
                 product_name = self._name(version, code)
-                base = self._compare_row(bulk, code, code, product_name, None, None, ignore, failed)
+                # 償却費の未登録を咎めるのは選んだ検討案の試算がある製品だけ（ほかは 0 として通して一部未登録に）
+                chosen = any(code in scenario_ids[n] for n in names)
+                base = self._compare_row(bulk, code, code, product_name, None, None, ignore, failed if chosen else [])
                 base["specification"] = version.items[code].specification if code in version.items else ""
                 rows.append(base)
                 for n in names:
@@ -414,7 +416,7 @@ class Group:
                         row["changes"] = [_batch_json(records) for records in replayed_batches(scenario)]
                     rows.append(row)
         if failed:
-            raise ApiError(400, "償却費を出せない（未登録あり）: " + "、".join(failed))
+            raise ApiError(400, _amortization_missing(failed))
         return version, names, ignore, codes, limit, rows
 
     @staticmethod
@@ -735,11 +737,14 @@ class Group:
         truncated = False
         for product in codes:
             changed: dict[str, list[str]] = {}
+            placed: dict[str, dict[str, str]] = {}  # 部品 → 場所を変えた種類（置換・員数変更）。同じ場所は2回変えられない
             if product in scenario_ids:
                 scenario = self.store.load_scenario(scenario_ids[product], version)
                 for change in scenario.changes:
                     if change.kind is ChangeKind.REPLACE and change.replacement is not None:
                         changed.setdefault(change.part, []).append(change.replacement)
+                    if change.location is not None:
+                        placed.setdefault(change.part, {})[change.kind.name] = change.kind.value
             hits = [(p, u) for p, u in structure.usage(product).items()
                     if p != product and _matches((p, self._name(version, p)), needle)]
             # 品番が語で始まる部品を上に（中ほどの一致も消さない）
@@ -757,6 +762,7 @@ class Group:
                         "part_specification": version.items[part].specification if part in version.items else "",
                         "usage": _s(usage),
                         "replaced_by": changed.get(part, []),
+                        "place_changes": [{"kind": k, "label": v} for k, v in placed.get(part, {}).items()],
                         "scenario_id": scenario_ids.get(product),
                     }
                 )
@@ -963,6 +969,28 @@ BREAKDOWN_KEYS: dict[str, Callable[[str, str, str], str]] = {
 _Parts = dict[str, dict[str, Any]]
 
 
+def _spread_removals(structure: _Structure, product: str, entries: list[tuple[str, Decimal, bool, str | None]]
+                     ) -> list[tuple[str, Decimal, bool, str | None]]:
+    """場所の無い抜く行（品番ごとの削除・場所の無い置換の元の部品）を、版の構成でその品番が入る場所の親へ、
+    場所ごとの使用数の割合で分ける（全部を抜くと、どの場所も 0 になる）。数量の計は変えない。
+    構成に無い品番と、使用数の計が 0 の品番はそのまま（製品の直下で増減する）。"""
+    usage = structure.usage(product)
+    spread: list[tuple[str, Decimal, bool, str | None]] = []
+    for code, qty, is_base, parent in entries:
+        shares: dict[str, Decimal] = {}
+        if not is_base and parent is None and qty < 0:
+            for p in dict.fromkeys([product, *usage]):
+                for line in structure.children.get(p, ()):
+                    if line.child == code:
+                        shares[p] = shares.get(p, Decimal(0)) + usage.get(p, Decimal(1)) * line.quantity
+        total = sum(shares.values(), Decimal(0))
+        if not total:
+            spread.append((code, qty, is_base, parent))
+            continue
+        spread.extend((code, qty * share / total, False, p) for p, share in shares.items() if share)
+    return spread
+
+
 def _base_parts(structure: _Structure, product: str) -> _Parts:
     return {line.child: {"quantity": line.quantity, "terms": {line.child: line.quantity}}
             for line in structure.children.get(product, ())}
@@ -980,7 +1008,7 @@ def _trial_parts(structure: _Structure, scenario: Scenario) -> _Parts:
         row["terms"][code] = row["terms"].get(code, Decimal(0)) + amount
 
     kids = structure.children.get(product, ())
-    for code, qty, is_base, parent in scenario.root_entries():
+    for code, qty, is_base, parent in _spread_removals(structure, product, scenario.root_entries()):
         if is_base:
             for line in kids:
                 add(line.child, qty * line.quantity, line.child, qty * line.quantity)
@@ -1010,6 +1038,7 @@ def _level_parts(structure: _Structure, product: str, entries: list[tuple[str, D
     """
     parts: _Parts = {}
     base = structure.usage(product)
+    entries = _spread_removals(structure, product, entries)
 
     def add(child: str, quantity: Decimal, code: str, amount: Decimal) -> None:
         row = parts.setdefault(child, {"quantity": Decimal(0), "terms": {}})
@@ -1289,6 +1318,10 @@ def _places(version: Version, structure: _Structure, product: str, part: str) ->
         places.extend((parent, line.balloon, line.quantity)
                       for line in version.children(parent, by_balloon=True) if line.child == part)
     return places
+
+
+def _amortization_missing(codes: list[str]) -> str:
+    return "償却費が未登録: " + "、".join(codes) + "（［償却費を無視］で見られる）"
 
 
 def _int_field(body: dict[str, Any], key: str, label: str) -> int:

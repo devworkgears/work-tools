@@ -8,6 +8,7 @@ import codecs
 import csv
 import io
 import sys
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -23,23 +24,24 @@ class FieldSpec:
     name: str
     label: str
     required: bool
+    aliases: tuple[str, ...] = ()  # 列の自動の対応づけで label と同じに扱う、よく使う別の見出し
 
 
 # どの表に、どの項目があるか（name はモックの中の名前・label は画面とエラーに出す名前）
 TABLE_FIELDS: dict[str, tuple[FieldSpec, ...]] = {
     "item": (
-        FieldSpec("code", "品番", True),
-        FieldSpec("name", "名称", True),
+        FieldSpec("code", "品番", True, ("品目番号", "部品番号")),
+        FieldSpec("name", "名称", True, ("品名", "品目名", "部品名")),
         FieldSpec("specification", "記号・寸法", False),
         FieldSpec("kind", "区分", False),
         FieldSpec("lifecycle", "状態", False),
-        FieldSpec("has_children", "子部品の有無", False),
+        FieldSpec("has_children", "子部品の有無", False, ("子部品有無",)),
     ),
     "bom_line": (
         FieldSpec("parent", "親品番", True),
         FieldSpec("level", "レベル", False),
         FieldSpec("child", "子品番", True),
-        FieldSpec("quantity", "数量", True),
+        FieldSpec("quantity", "数量", True, ("員数", "個数")),
         FieldSpec("balloon", "風船番号", False),
     ),
     "cost": (
@@ -53,10 +55,46 @@ TABLE_FIELDS: dict[str, tuple[FieldSpec, ...]] = {
         FieldSpec("processing", CostHead.PROCESSING.value, False),
     ),
     "volume": (
-        FieldSpec("product", "製品の品番", True),
-        FieldSpec("annual", "年間台数", True),
+        FieldSpec("product", "製品の品番", True, ("製品品番", "製品")),
+        FieldSpec("annual", "年間台数", True, ("年間生産台数", "年間数量", "台数")),
     ),
 }
+
+
+def _fold_header(text: str) -> str:
+    """見出しの比べ方: 全角半角・大文字小文字・空白の違いを見ない。"""
+    return "".join(unicodedata.normalize("NFKC", text).casefold().split())
+
+
+def guess_columns(table: str, headers: Iterable[Any]) -> tuple[dict[str, str], int]:
+    """項目ごとに当たりそうな見出しと、当たりの強さの計（表の種類を選ぶ目安）。
+
+    見出しが項目の名前か別名と同じ（_fold_header で比べる）なら強く当て（2）、無ければ名前を含む・名前に含まれる見出しを弱く当てる（1）。
+    1つの見出しは1つの項目にだけ当てる。
+    """
+    present = [h for h in normalize_headers(headers) if h]
+    folded = {h: _fold_header(h) for h in present}
+    columns: dict[str, str] = {}
+    score = 0
+    used: set[str] = set()
+    fields = TABLE_FIELDS[table]
+    for f in fields:
+        names = {_fold_header(x) for x in (f.label, *f.aliases)}
+        hit = next((h for h in present if h not in used and folded[h] in names), None)
+        if hit is not None:
+            columns[f.name] = hit
+            used.add(hit)
+            score += 2
+    for f in fields:
+        if f.name in columns:
+            continue
+        label = _fold_header(f.label)
+        hit = next((h for h in present if h not in used and (label in folded[h] or folded[h] in label)), None)
+        if hit is not None:
+            columns[f.name] = hit
+            used.add(hit)
+            score += 1
+    return columns, score
 
 COST_FIELDS: dict[str, CostHead] = {
     "material": CostHead.MATERIAL,

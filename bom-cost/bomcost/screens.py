@@ -20,6 +20,7 @@ from .importer import (
     MissingColumnsError,
     Table,
     VersionImport,
+    guess_columns,
     read_table_bytes,
     xlsx_sheet_names,
 )
@@ -201,12 +202,15 @@ class Screens:
         result = []
         for table_id, fields in TABLE_FIELDS.items():
             saved = self.store.find_column_map(headers, table_id)
+            guess, score = guess_columns(table_id, headers)
             result.append(
                 {
                     "id": table_id,
                     "label": TABLE_LABELS[table_id],
                     "fields": [{"name": f.name, "label": f.label, "required": f.required} for f in fields],
                     "saved": None if saved is None else dict(saved.columns),
+                    "guess": guess,  # 保存した対応づけが無い時に仮に当てる見出し（項目の name → 見出し）
+                    "guess_score": score,
                 }
             )
         return result
@@ -228,6 +232,8 @@ class Screens:
                 "sample": [[_cell(v) for v in row] for row in table.rows[:SAMPLE_ROWS]],
                 "tables": tables,
                 "suggested": next((t["id"] for t in tables if t["saved"] is not None), None),
+                # 保存した対応づけが無い時に仮に選ぶ表（見出しの当たりがいちばん強い表・当たりが無ければ None）
+                "guessed": max(tables, key=lambda t: t["guess_score"])["id"] if any(t["guess_score"] for t in tables) else None,
             }
         )
 
@@ -913,6 +919,8 @@ class Screens:
                     "scenario_name": None if scenario is None else scenario.name,
                     "reference": "参考値",
                     "amortization_excluded": True,
+                    # 製品の償却費は登録値を式に入れる（③の［償却費を無視］は 0 とするので、登録があれば製造原価が違う）
+                    "amortization_basis": "registered",
                 },
             }
         )

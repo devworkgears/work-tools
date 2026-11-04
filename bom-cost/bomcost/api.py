@@ -571,8 +571,9 @@ class Api:
                 raise ApiError(400, f"親 {parent} は土台 {scenario.base} の構成に無い")
             if scenario.location_quantity(location) == 0:
                 raise ApiError(400, f"{label} は版 {scenario.version.version_id} の構成に無い")
-            if location in scenario.replaced_locations():
-                raise ApiError(400, f"{label} はもう置換した（員数変更も含む）")
+            done = next((c for c in scenario.changes if c.location == location), None)
+            if done is not None:
+                raise ApiError(400, f"{label} はもう{done.kind.value}した（同じ場所は1回だけ変えられる）")
             # 場所の変更は元の版の使用数で倍率を取るので、親子にまたがる2つの変更は原価が誤る
             below = lambda code: {code, *usage_per_unit(scenario.version, code)}
             for done_parent, _, done_part in scenario.replaced_locations():
