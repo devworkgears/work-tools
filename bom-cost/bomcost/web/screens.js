@@ -1,4 +1,4 @@
-// 画面の2段目: 型費配賦・積上げ見積・マスタ登録・BOM 取込と版管理。app.js の el・fmt・money・api・guarded を使う。
+// 画面の2段目: 型費配賦・積上げ見積・マスタ登録・データ取込・版管理。app.js の el・fmt・money・api・guarded を使う。
 // 原価は API が出した Decimal の文字列をそのまま出し、ここでは計算しない。
 "use strict";
 
@@ -17,7 +17,6 @@ const screenState = {
   masterCheck: null, // { body, result }: 取り込みの確認
   preview: null, // { file, content, data }
   pending: [], // 取り込む一覧
-  importTab: "run", // BOM 取込・版管理で選んでいるタブ
   noteEditing: null, // メモを直している版の ID
   warningOpen: null, // { version_id, info }: 開いている版の警告
 };
@@ -103,7 +102,7 @@ function numTd(text, opts) {
 
 // 画面の切り替え -----------------------------------------------------------
 
-const SCREENS = { product: "main-layout", group: "screen-group", trial: "screen-trial", compare: "screen-compare", part: "screen-part", change: "screen-change", final: "screen-final", manual: "screen-manual", lookup: "screen-lookup", import: "screen-import" };
+const SCREENS = { product: "main-layout", group: "screen-group", trial: "screen-trial", compare: "screen-compare", part: "screen-part", change: "screen-change", final: "screen-final", manual: "screen-manual", lookup: "screen-lookup", import: "screen-import", versions: "screen-versions" };
 
 // モード（差し替え・積み上げ・確定）ごとの画面。共通の画面（取込・マスタ・照会）はどのモードでも開け、モードを変えない。
 // 選んだモードはこのブラウザに覚える（読めない時は差し替え）
@@ -168,7 +167,7 @@ async function showScreen(name) {
   else if (name === "change") await enterChange();
   else if (name === "manual") await renderManual();
   else if (name === "lookup") await enterLookup();
-  else if (name === "import") await enterImport();
+  else if (name === "versions") await drawVersions();
 }
 
 // 型費配賦 --------------------------------------------------------------
@@ -636,7 +635,7 @@ function masterCheckPanel() {
   ]);
 }
 
-// BOM 取込・版管理 --------------------------------------------------------------
+// データ取込・版管理 ------------------------------------------------------------
 
 function readAsBase64(file) {
   return new Promise((resolve, reject) => {
@@ -645,21 +644,6 @@ function readAsBase64(file) {
     reader.onerror = () => reject(new Error(`${file.name} を読めない`));
     reader.readAsDataURL(file);
   });
-}
-
-function showImportTab(key) {
-  screenState.importTab = key;
-  for (const b of document.querySelectorAll("#import-tabs button")) {
-    b.classList.toggle("on", b.dataset.tab === key);
-    b.setAttribute("aria-selected", String(b.dataset.tab === key));
-  }
-  document.getElementById("import-pane-run").hidden = key !== "run";
-  document.getElementById("import-pane-list").hidden = key !== "list";
-}
-
-async function enterImport() {
-  showImportTab(screenState.importTab);
-  await drawVersions();
 }
 
 function closableTitle(text, onClose) {
@@ -719,7 +703,7 @@ function drawMapping() {
     el("h3", {}, `先頭 ${d.sample.length} 行`),
     el("div", { class: "table-scroll sample" }, sample),
     el("div", { class: "form-row" }, el("button", {
-      type: "button", class: "primary",
+      type: "button",
       onclick: () => {
         const missing = tableDef.fields.filter((f) => f.required && !selects[f.name].value).map((f) => f.label);
         if (missing.length) { showMessage(`必須の列が対応づいていない: ${missing.join("・")}`); return; }
@@ -792,10 +776,9 @@ async function runImport() {
     result.cost_only ? el("p", {}, `写した検討案 ${result.copied_scenarios} 件`) : null,
     warningList(result.warnings),
   );
-  showImportTab("list");
   await refreshLists();
   syncCostOnly();
-  await drawVersions();
+  await showScreen("versions");  // 取り込んだ結果は版管理の画面の上に出す
 }
 
 function warningList(warnings) {
@@ -939,7 +922,6 @@ function wireScreens() {
   document.getElementById("import-run").addEventListener("click", () => guarded(runImport));
   document.getElementById("import-dev-number").addEventListener("change", fillDevName);
   document.getElementById("import-dev-number").addEventListener("input", syncCostOnly);
-  document.querySelectorAll("#import-tabs button").forEach((b) => b.addEventListener("click", () => showImportTab(b.dataset.tab)));
 }
 
 wireScreens();

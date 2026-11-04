@@ -1,12 +1,14 @@
 // ③原価を見る: 上に検討案ごとの数字のタイル、左に製品ごとの差の横棒、右に選んだ製品の8費目（式の並び）と変更の一覧。
-// 差・合計は API が Decimal で出したものを使い、ここで数にするのは棒の長さと並べ替えだけ。app.js・screens.js の関数を使う。
+// 分析は材料費の内訳（大きい順・差の寄与・使い回し）で、部品の下へ降りられる。
+// 差・合計は API が Decimal で出したものを使い、ここで数にするのは棒の長さと並べ替えだけ。app.js・screens.js・trial.js の関数を使う。
 "use strict";
 
-// layout は グラフ（chart）か 表（table）。画面を開いている間は覚える。data・table はそれぞれの API の返事（要る時に読む）
-// picked は表でチェックした製品（材料費の内訳を出す）、by・weight は内訳のまとめ方と数え方、breakdown はその API の返事
+// layout は グラフ（chart）・表（table）・分析（analysis）。画面を開いている間は覚える。data・table はそれぞれの API の返事（要る時に読む）
+// 分析: picks は選んだ製品（null は試算のある製品の全部）、by・weight は内訳のまとめ方と数え方、name は差を見る検討案、
+// path は降りた部品の並び（{ codes, label }）、view は 大きい順（size）・差の寄与（diff）・使い回し（reach）、analysis はその API の返事
 const compareState = {
   query: null, data: null, table: null, layout: "chart", head: "MANUFACTURING", product: null,
-  picked: new Set(), by: "code", weight: "unit", breakdown: null,
+  picks: null, by: "code", weight: "unit", name: null, path: [], view: "size", analysis: null, pickerOpen: false,
 };
 
 async function enterCompare() {
@@ -37,20 +39,23 @@ async function drawCompareTable() {
   compareState.data = null;
   compareState.table = null;
   compareState.product = null;
-  compareState.picked = new Set();
-  compareState.breakdown = null;
+  compareState.picks = null;
+  compareState.name = names[0];
+  compareState.path = [];
+  compareState.analysis = null;
   await Promise.all([loadCompareLayout(), loadCodeNames(version)]);
   drawCompareView();
 }
 
-// 表の返事は上の段の年間効果額にも使うので、グラフの時も読む
+// 表の返事は上の段の年間効果額にも使うので、グラフの時も読む。分析は製品の候補（試算なしも）にグラフの返事を使う
 async function loadCompareLayout() {
   const query = qs(compareState.query);
-  const chart = compareState.layout === "chart";
+  const needData = compareState.layout !== "table";
   [compareState.table, compareState.data] = await Promise.all([
     compareState.table ?? api("GET", `/api/group/compare/table?${query}`),
-    chart ? compareState.data ?? api("GET", `/api/group/compare?${query}`) : compareState.data,
+    needData ? compareState.data ?? api("GET", `/api/group/compare?${query}`) : compareState.data,
   ]);
+  if (compareState.layout === "analysis" && !compareState.analysis) await loadAnalysis(false);
 }
 
 // 償却費の欄から、その検討案の試算を選んで型費配賦を開く。部品はその製品で置換・追加した最初の部品
@@ -106,7 +111,7 @@ function compareLayoutSeg() {
       drawCompareView();
     }),
   }, label);
-  return el("div", { class: "seg cmp-layout" }, button("chart", "グラフ"), button("table", "表"));
+  return el("div", { class: "seg cmp-layout" }, button("chart", "グラフ"), button("table", "表"), button("analysis", "分析"));
 }
 
 // 製品ごとに、元の行と検討名 → 新の行をまとめる（API の並びのまま）
@@ -136,6 +141,12 @@ const CMP_KEY_HEADS = new Set(["MATERIAL", "MANUFACTURING"]);
 const cmpHeadClass = (head) => (CMP_KEY_HEADS.has(head) ? "cmp-key" : "cmp-minor");
 
 function drawCompareView() {
+  if (compareState.layout === "analysis") {
+    document.getElementById("cmp-body").replaceChildren(compareHeadline(compareState.table),
+      el("div", { class: "cmp-tools" }, compareLayoutSeg()), el("section", { class: "cmp-an", id: "cmp-an" }));
+    drawAnalysis();
+    return;
+  }
   const isTable = compareState.layout === "table";
   const r = isTable ? compareState.table : compareState.data;
   const head = compareState.head;
@@ -145,9 +156,7 @@ function drawCompareView() {
   const tools = el("div", { class: "cmp-tools" }, compareLayoutSeg(), el("label", {}, "費目 ", headSelect));
   if (isTable) {
     tools.append(el("button", { type: "button", onclick: () => guarded(exportCompareXlsx) }, "Excel に書き出す"));
-    document.getElementById("cmp-body").replaceChildren(compareHeadline(r), tools, ...compareGrid(r, head),
-      el("section", { class: "cmp-bd", id: "cmp-bd" }));
-    drawBreakdown();
+    document.getElementById("cmp-body").replaceChildren(compareHeadline(r), tools, ...compareGrid(r, head));
     return;
   }
 
@@ -319,10 +328,7 @@ function compareGrid(t, head) {
   for (const p of t.products) {
     const span = 1 + p.trials.length * 4;
     rows.push(el("tr", { class: "cmp-grid-first" },
-      el("td", { rowspan: span }, el("label", { class: "cmp-pick" }, el("input", {
-        type: "checkbox", checked: compareState.picked.has(p.product),
-        onchange: (e) => guarded(() => pickCompareProduct(p.product, e.target.checked)),
-      }), codeSpan(t.version_id, p.product))),
+      el("td", { rowspan: span }, codeSpan(t.version_id, p.product)),
       el("td", { rowspan: span }, p.product_name, el("div", { class: `cmp-grid-volume ${p.volume === null ? "missing" : ""}` },
         p.volume === null ? "年間台数 未登録" : `年間 ${fmt(p.volume)} 台`)),
       el("td", { rowspan: span }, p.specification),
@@ -376,86 +382,188 @@ function compareGrid(t, head) {
   ];
 }
 
-// 材料費の内訳: 表でチェックした製品の直の子を、まとめ方ごとに金額の高い順に。検討案があれば変更後を横に並べる。
-// 行の並びは現行の順で、変更後だけにある行は後ろに足す。割合の分母は未登録を除いた合計（API が出す）
-async function pickCompareProduct(code, on) {
-  if (on) compareState.picked.add(code);
-  else compareState.picked.delete(code);
-  await loadBreakdown();
+// 分析: 選んだ製品の材料費の内訳（製品の直の子か、降りた部品の直の子）。並び・割合・累積・差・年間は API が出す。
+// 製品の候補はグラフの返事の製品（試算なしも）で、始めは差を見る検討案の試算がある製品の全部
+function analysisProducts() {
+  return compareProducts(compareState.data);
 }
 
-async function loadBreakdown() {
-  const products = compareState.table?.products.map((p) => p.product).filter((c) => compareState.picked.has(c)) ?? [];
-  const { version, names } = compareState.query;
-  compareState.breakdown = products.length ? await api("GET", `/api/group/compare/breakdown?${qs({
-    version, names, products: JSON.stringify(products), by: compareState.by, weight: compareState.weight,
+function analysisPicks() {
+  if (!compareState.picks) {
+    compareState.picks = new Set(analysisProducts().filter((p) => p.trials[compareState.name]).map((p) => p.code));
+  }
+  return compareState.picks;
+}
+
+async function loadAnalysis(draw = true) {
+  const picks = analysisPicks();
+  const products = analysisProducts().map((p) => p.code).filter((c) => picks.has(c));
+  const path = compareState.path;
+  compareState.analysis = products.length ? await api("GET", `/api/group/compare/analysis?${qs({
+    version: compareState.query.version, names: JSON.stringify([compareState.name]), products: JSON.stringify(products),
+    by: compareState.by, weight: compareState.weight, parts: path.length ? JSON.stringify(path[path.length - 1].codes) : "",
   })}`) : null;
-  drawBreakdown();
+  if (draw) drawAnalysis();
 }
 
-function breakdownSeg(key, options) {
+// reload を外すと読み直さずに描き直すだけ（見方の切り替え）
+function analysisSeg(key, options, reload = true) {
   return el("div", { class: "seg" }, options.map(([value, label]) => el("button", {
     type: "button", class: compareState[key] === value ? "on" : "",
-    onclick: () => guarded(async () => { compareState[key] = value; await loadBreakdown(); }),
+    onclick: () => guarded(async () => {
+      compareState[key] = value;
+      if (reload) await loadAnalysis();
+      else drawAnalysis();
+    }),
   }, label)));
 }
 
+function analysisPicker() {
+  const products = analysisProducts();
+  const picks = analysisPicks();
+  const set = (codes, on) => guarded(async () => {
+    for (const c of codes) {
+      if (on) picks.add(c);
+      else picks.delete(c);
+    }
+    await loadAnalysis();
+  });
+  const all = el("input", { type: "checkbox", checked: products.length > 0 && products.every((p) => picks.has(p.code)),
+    onchange: (e) => set(products.map((p) => p.code), e.target.checked) });
+  return el("details", { class: "cmp-an-picker", open: compareState.pickerOpen,
+    ontoggle: (e) => { compareState.pickerOpen = e.target.open; } },
+  el("summary", {}, `製品 ${picks.size}/${products.length} ▼`),
+  el("div", { class: "cmp-an-menu" }, el("label", {}, all, " 全部"),
+    products.map((p) => el("label", {}, el("input", { type: "checkbox", checked: picks.has(p.code),
+      onchange: (e) => set([p.code], e.target.checked) }), ` ${p.code} `, el("span", { class: "muted" }, p.name)))));
+}
+
+function analysisNameSelect() {
+  const names = JSON.parse(compareState.query.names);
+  if (names.length < 2) return null;
+  return el("label", {}, "検討案 ", el("select", {
+    onchange: (e) => guarded(async () => { compareState.name = e.target.value; await loadAnalysis(); }),
+  }, names.map((n) => el("option", { value: n, selected: n === compareState.name }, n))));
+}
+
+// 降りた所: 製品 › 部品 › … 。押すとその段へ戻る
+function analysisCrumbs() {
+  const path = compareState.path;
+  const go = (n) => guarded(async () => { compareState.path = path.slice(0, n); await loadAnalysis(); });
+  const crumb = (label, n) => (n === path.length ? el("b", {}, label)
+    : el("button", { type: "button", class: "look-link", onclick: () => go(n) }, label));
+  return el("div", { class: "cmp-an-crumbs" },
+    path.length ? el("button", { type: "button", onclick: () => go(path.length - 1) }, "← 戻る") : null,
+    crumb("製品", 0), path.map((p, i) => [" › ", crumb(p.label, i + 1)]));
+}
+
+function drillAnalysis(row) {
+  const label = row.codes.length > 1 ? row.name || row.code : `${row.code} ${row.name}`.trim();
+  compareState.path = [...compareState.path, { codes: row.codes, label }];
+  return guarded(loadAnalysis);
+}
+
+// 品番の欄。子のある品目は押すとその下の内訳へ
+function analysisCode(a, row) {
+  const many = row.codes.length > 1;
+  const text = many ? `${row.codes[0]} 他${row.codes.length - 1}` : row.code;
+  return el("td", { title: many ? row.codes.join("・") : codeTitle(a.version_id, row.code) }, row.has_children
+    ? el("button", { type: "button", class: "look-link", onclick: () => drillAnalysis(row) }, text) : text);
+}
+
+// ②の製品×部品の表示へ、その部品で探した状態で移る（名称でまとめた行は名称で探す）
+function swapCell(row) {
+  const word = row.codes.length > 1 ? row.name || row.code : row.code;
+  return el("td", {}, el("button", { type: "button",
+    onclick: () => guarded(() => openTrialPart(compareState.query.version, compareState.name, word)) }, "②で差し替える"));
+}
+
+function analysisAmount(row) {
+  const td = numTd(row.amount, { yen: true });
+  if (row.amount !== null && (row.missing || row.incomplete)) td.prepend(el("span", { class: "tag warn", title: "一部未登録" }, "一部"));
+  return td;
+}
+
 function breakdownShare(row) {
-  const missing = row?.amount === null;
-  if (!row) return el("td", {});
+  const missing = row.amount === null;
   return el("td", {}, el("div", { class: "cmp-bd-share" },
     el("div", { class: "cmp-bd-track" }, row.share ? el("span", { class: "cmp-bd-fill", style: `width:${Math.min(100, Number(row.share))}%` }) : null),
     el("span", { class: `num ${missing ? "missing" : ""}` }, missing ? "分母外" : `${row.share ?? "—"}%`)));
 }
 
-function drawBreakdown() {
-  const box = document.getElementById("cmp-bd");
+const analysisHeads = (...more) => ["品番", "名称", "記号・寸法", ...more, ""];
+const analysisTable = (heads, rows) => table(heads, rows.length ? rows
+  : [el("tr", {}, el("td", { colspan: heads.length, class: "muted" }, "なし"))], "small cmp-bd-table");
+const nameCells = (r) => [el("td", {}, r.name), el("td", {}, r.specification)];
+
+// 大きい順: 現行の金額の高い順に割合と累積。差を見る検討案の変更後を横に（変更後に無い行は 0）
+function analysisSize(a) {
+  const [s, after] = a.series;
+  const later = new Map((after?.rows ?? []).map((r) => [r.key, r]));
+  const rows = s.rows.map((r) => el("tr", {}, analysisCode(a, r), nameCells(r), el("td", { class: "num" }, fmt(r.quantity)),
+    analysisAmount(r), breakdownShare(r), el("td", { class: "num muted" }, r.cumulative ? `${r.cumulative}%` : ""),
+    after ? numTd(later.has(r.key) ? later.get(r.key).amount : "0", { yen: true }) : null, swapCell(r)));
+  if (rows.length) {
+    rows.push(el("tr", { class: "cmp-bd-total" }, el("td", { colspan: 4 }, "計"), numTd(s.total, { yen: true }),
+      el("td", { class: s.missing ? "missing" : "muted", colspan: 2 }, s.missing ? `未登録 ${s.missing} 行を除く` : ""),
+      after ? numTd(after.total, { yen: true }) : null, el("td", {})));
+  }
+  return analysisTable(analysisHeads(numTh("数量"), numTh("材料費"), "割合", numTh("累積"), after ? numTh("変更後") : null)
+    .filter((h) => h), rows);
+}
+
+// 差の寄与: 現行 → 変更後 の差を行ごとに、差の大きい順
+function analysisDiff(a) {
+  const c = a.contributions[0];
+  const list = c?.rows ?? [];
+  const max = Math.max(...list.map((r) => Math.abs(diffNumber(r.difference) ?? 0)), 0) || 1;
+  const rows = list.map((r) => el("tr", {}, analysisCode(a, r), nameCells(r),
+    numTd(r.current, { yen: true }), numTd(r.after, { yen: true }),
+    el("td", { class: `num ${signClass(r.difference)}` },
+      r.incomplete && r.difference !== null ? el("span", { class: "tag warn", title: "一部未登録" }, "一部") : null,
+      fmt(r.difference, { sign: true, yen: true })),
+    el("td", { class: "cmp-mini" }, diffBar(r.difference, max, "")), swapCell(r)));
+  if (rows.length) {
+    rows.push(el("tr", { class: "cmp-bd-total" }, el("td", { colspan: 5 }, `計${c.missing ? `（未登録 ${c.missing} 行を除く）` : ""}`),
+      el("td", { class: `num ${signClass(c.difference)}` }, fmt(c.difference, { sign: true, yen: true })), el("td", {}), el("td", {})));
+  }
+  return analysisTable(analysisHeads(numTh("現行"), numTh("変更後"), numTh("差"), ""), rows);
+}
+
+// 使い回し: 使う製品の多い順（同じなら年間の高い順）。年間は台数を掛けた現行の金額
+function analysisReach(a) {
+  const n = a.products.length;
+  const value = (t) => (t === null ? -Infinity : Number(t));
+  const list = [...a.series[0].rows].sort((x, y) => y.products - x.products || value(y.annual) - value(x.annual));
+  const rows = list.map((r) => el("tr", {}, analysisCode(a, r), nameCells(r), el("td", { class: "num" }, `${r.products}/${n}`),
+    numTd(r.annual, { yen: true }), analysisAmount(r), swapCell(r)));
+  return analysisTable(analysisHeads(numTh("製品数"), numTh("年間"), numTh("材料費")), rows);
+}
+
+function drawAnalysis() {
+  const box = document.getElementById("cmp-an");
   if (!box) return;
-  const b = compareState.breakdown;
-  const head = el("div", { class: "cmp-bd-head" }, el("h3", {}, "材料費の内訳"),
-    breakdownSeg("by", [["code", "品番"], ["name", "名称"], ["name_spec", "名称＋記号・寸法"]]),
-    breakdownSeg("weight", [["unit", "1台ずつ"], ["volume", "年間台数"]]));
-  if (!b) {
-    box.replaceChildren(head, el("p", { class: "muted" }, "表で製品をチェック"));
+  const tools = el("div", { class: "cmp-an-tools" }, analysisPicker(), analysisNameSelect(),
+    analysisSeg("by", [["code", "品番"], ["name", "名称"], ["name_spec", "名称＋記号・寸法"]]),
+    analysisSeg("weight", [["unit", "1台ずつ"], ["volume", "年間台数"]]));
+  const a = compareState.analysis;
+  if (!a) {
+    box.replaceChildren(tools, el("p", { class: "muted" }, "製品を選ぶ"));
     return;
   }
-  const multi = b.series.length > 2;
-  const keys = [...new Set(b.series.flatMap((s) => s.rows.map((r) => r.key)))];
-  const bySeries = b.series.map((s) => new Map(s.rows.map((r) => [r.key, r])));
-  const pick = (key) => bySeries.map((m) => m.get(key)).find((r) => r);
-  const amountTd = (row) => {
-    if (!row) return el("td", { class: "num muted" }, "—");
-    const td = numTd(row.amount, { yen: true });
-    if (row.amount !== null && (row.missing || row.incomplete)) td.prepend(el("span", { class: "tag warn", title: "一部未登録" }, "一部"));
-    return td;
-  };
-  const rows = keys.map((key) => {
-    const first = pick(key);
-    const codes = first.codes.length > 1 ? `${first.codes[0]} 他${first.codes.length - 1}` : first.code;
-    return el("tr", {},
-      el("td", { title: first.codes.join("・") }, b.by === "code" ? codeSpan(b.version_id, first.code) : codes),
-      el("td", {}, first.name), el("td", {}, first.specification),
-      bySeries.map((m, i) => {
-        const row = m.get(key);
-        return [el("td", { class: "num" }, row ? fmt(row.quantity) : "—"), amountTd(row), breakdownShare(row),
-          i === 0 ? el("td", { class: "num muted" }, row?.cumulative ? `${row.cumulative}%` : "") : null];
-      }));
-  });
-  const label = (s) => (s.name === null ? "現行" : multi ? `変更後（${s.name}）` : "変更後");
-  const heads = ["品番", "名称", "記号・寸法", ...b.series.flatMap((s, i) => [
-    numTh(i === 0 ? "数量" : `数量（${label(s)}）`), numTh(label(s)), el("th", {}, "割合"), i === 0 ? numTh("累積") : null,
-  ].filter((h) => h))];
-  rows.push(el("tr", { class: "cmp-bd-total" }, el("td", { colspan: 3 }, "計"), b.series.map((s, i) => [
-    el("td", {}), numTd(s.total, { yen: true }),
-    el("td", { class: s.missing ? "missing" : "muted" }, s.missing ? `未登録 ${s.missing} 行を除く` : ""),
-    i === 0 ? el("td", {}) : null])));
+  const after = a.series[1];
   const notes = [
-    `${b.products.length} 製品`,
-    b.excluded.length ? `台数未登録 ${b.excluded.length} 製品を除く` : null,
-    ...b.series.filter((s) => s.without_trial).map((s) => `${s.name}: 試算なし ${s.without_trial}（現行で数える）`),
+    `${a.products.length} 製品`,
+    a.excluded.length ? `台数未登録 ${a.excluded.length} 製品を除く` : null,
+    after?.without_trial ? `試算なし ${after.without_trial}（現行で数える）` : null,
+    compareState.view === "reach" && a.annual_excluded.length ? `年間は台数未登録 ${a.annual_excluded.length} 製品を除く` : null,
   ].filter((x) => x);
-  box.replaceChildren(head, el("div", { class: "cmp-bd-notes muted" }, notes.join("・")),
-    el("div", { class: "table-scroll" }, table(heads, rows, "small cmp-bd-table")));
+  const views = { size: analysisSize, diff: analysisDiff, reach: analysisReach };
+  box.replaceChildren(tools, analysisCrumbs(),
+    el("div", { class: "cmp-an-tools" },
+      analysisSeg("view", [["size", "大きい順"], ["diff", "差の寄与"], ["reach", "使い回し"]], false),
+      el("span", { class: "cmp-bd-notes muted" }, notes.join("・"))),
+    el("div", { class: "table-scroll" }, views[compareState.view](a)));
 }
 
 function wireCompare() {

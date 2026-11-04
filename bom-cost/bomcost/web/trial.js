@@ -14,6 +14,13 @@ async function openTrial(version, name) {
   await showScreen("trial");
 }
 
+// ③の分析の行から、その検討案を開いて製品×部品の表示で部品を探した状態で移る
+async function openTrialPart(version, name, part) {
+  trialMode = "part";
+  trialPart = part;
+  await openTrial(version, name);
+}
+
 async function enterTrial() {
   if (trialResume) {
     trialResume = false;

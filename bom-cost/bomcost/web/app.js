@@ -181,7 +181,7 @@ async function init() {
   state.tableColumns = state.meta.table_columns.map((c) => c.key);
   await loadLists();
   if (!state.versions.length) {
-    await showScreen("import");  // 版が無ければ BOM 取込・版管理から
+    await showScreen("import");  // 版が無ければデータ取込から
     showMessage("版なし", "info");
     return;
   }

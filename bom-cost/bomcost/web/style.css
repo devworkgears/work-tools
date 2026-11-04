@@ -320,10 +320,22 @@ td.cmp-key, th.cmp-key, tr.cmp-key > td { background-image: linear-gradient(var(
 .cmp-minor.pos, .cmp-minor .pos { --cmp-ink: var(--bad); }
 .cmp-minor.missing, .cmp-minor .missing { --cmp-ink: var(--warn); }
 .cmp-grid-mark { margin-left: 2px; color: var(--warn); font-size: 11px; vertical-align: super; cursor: help; }
-.cmp-pick { display: flex; align-items: center; gap: 4px; cursor: pointer; white-space: nowrap; }
-.cmp-bd { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; margin-top: 12px; }
-.cmp-bd-head { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
-.cmp-bd-head h3 { margin: 4px 0; }
+/* ③の分析: 製品の選び・まとめ方・数え方、降りた所、見方の切り替えと表 */
+.cmp-an { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
+.cmp-an-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 4px 0; }
+.cmp-an-tools label { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); }
+.cmp-an-picker { position: relative; }
+.cmp-an-picker summary {
+  list-style: none; border: 1px solid var(--line); background: #fff; border-radius: 4px; padding: 4px 10px; cursor: pointer;
+}
+.cmp-an-picker summary::-webkit-details-marker { display: none; }
+.cmp-an-menu {
+  position: absolute; top: calc(100% + 2px); left: 0; z-index: 10; display: grid; gap: 2px; min-width: 16em;
+  max-height: 50vh; overflow: auto; padding: 6px 8px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 4px;
+}
+.cmp-an-tools .cmp-an-menu label { color: var(--text); font-size: 13px; white-space: nowrap; }
+.cmp-an-crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 8px 0 4px; }
 .cmp-bd-notes { font-size: 12px; margin: 4px 0; }
 table.cmp-bd-table .num { text-align: right; }
 .cmp-bd-share { display: grid; grid-template-columns: 120px 4.5em; gap: 6px; align-items: center; }

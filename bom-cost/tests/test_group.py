@@ -907,6 +907,83 @@ class CompareBreakdown(EmptyDbCase):
         self.assert_error(self.call("GET", url, "version=2026-11&products=P-1&weight=x"), 400, "weight")
 
 
+class CompareAnalysis(EmptyDbCase):
+    """③の分析（compare/analysis）: 内訳＋使い回しの広さ・部品の下へ降りる・差の寄与。版は CompareBreakdown と同じ。"""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.store.save_version(breakdown_version())
+
+    def analysis(self, products: list[str], query: str = "") -> dict:
+        return self.ok("GET", "/api/group/compare/analysis",
+                       f"version=2026-11&products={quote(json.dumps(products))}" + query)
+
+    def change(self, part: str, parent: str, balloon: str, replacement: str, quantity: str) -> None:
+        self.ok("POST", "/api/group/changes", body={
+            "version_id": "2026-11", "name": NAME, "product": "P-1", "head": "MATERIAL", "kind": "REPLACE",
+            "part": part, "parent": parent, "balloon": balloon, "replacement": replacement, "quantity": quantity})
+
+    def test_rows_match_breakdown_and_add_reach(self) -> None:
+        r = self.analysis(["P-1", "P-2"])
+        b = self.ok("GET", "/api/group/compare/breakdown", f"version=2026-11&products={quote(json.dumps(['P-1', 'P-2']))}")
+        self.assertEqual([(x["key"], x["amount"], x["cumulative"]) for x in r["series"][0]["rows"]],
+                         [(x["key"], x["amount"], x["cumulative"]) for x in b["series"][0]["rows"]])
+        rows = {x["code"]: x for x in r["series"][0]["rows"]}
+        self.assertEqual((rows["B-1"]["products"], rows["N-6"]["products"]), (2, 1))
+        self.assertEqual((rows["S-1"]["has_children"], rows["B-1"]["has_children"]), (True, False))
+        # 台数が未登録なら年間は出さない
+        self.assertEqual((rows["B-1"]["annual"], r["annual_excluded"], r["parts"], r["contributions"]),
+                         (None, ["P-1", "P-2"], [], []))
+        self.ok("PUT", "/api/manual/volumes", body={"product": "P-2", "annual": "10"})
+        rows = {x["code"]: x for x in self.analysis(["P-1", "P-2"])["series"][0]["rows"]}
+        # 年間は台数のある P-2 だけ: 板 10×2×500、ねじ N-6B 10×5×12。1台ずつの金額はそのまま
+        self.assertEqual((rows["B-1"]["annual"], rows["N-6B"]["annual"], rows["S-1"]["annual"], rows["B-1"]["amount"]),
+                         ("10000", "600", None, "1500"))
+
+    def test_drill_into_part(self) -> None:
+        r = self.analysis(["P-1", "P-2"], f"&parts={quote(json.dumps(['S-1']))}")
+        self.assertEqual(r["parts"], [{"code": "S-1", "name": "組立"}])
+        s, = r["series"]
+        # S-1 は P-1 にだけ 2 個: 中の N-6 は 2×4＝8 個・80
+        self.assertEqual([(x["code"], x["quantity"], x["amount"], x["products"]) for x in s["rows"]], [("N-6", "8", "80", 1)])
+        self.assertEqual(s["total"], "80")
+        self.assert_error(self.call("GET", "/api/group/compare/analysis", "version=2026-11&products=P-1&parts=Z-9"), 400, "Z-9")
+
+    def test_contribution_of_trial(self) -> None:
+        # 直下の N-8 ×2 → N-6B ×2、組立 S-1 の中の N-6 ×4 → N-8 ×4
+        self.change("N-8", "P-1", "3", "N-6B", "2")
+        self.change("N-6", "S-1", "1", "N-8", "4")
+        names = f"&names={quote(json.dumps([NAME]))}"
+        c, = self.analysis(["P-1"], names)["contributions"]
+        # 未登録の U-1 は変えていないので出さない。合計は ③の材料費の差（714 − 650）
+        self.assertEqual((c["name"], c["difference"], c["missing"]), (NAME, "64", 0))
+        self.assertEqual([(x["code"], x["current"], x["after"], x["difference"]) for x in c["rows"]],
+                         [("S-1", "80", "160", "80"), ("N-8", "40", "0", "-40"), ("N-6B", "0", "24", "24")])
+        # S-1 の下に降りると、差は中の N-6 → N-8 から出る（計は S-1 の行の差と同じ）
+        c, = self.analysis(["P-1"], names + f"&parts={quote(json.dumps(['S-1']))}")["contributions"]
+        self.assertEqual([(x["code"], x["difference"]) for x in c["rows"]], [("N-8", "160"), ("N-6", "-80")])
+        self.assertEqual(c["difference"], "80")
+
+    def test_change_deeper_than_level_goes_to_its_child(self) -> None:
+        m = CostHead.MATERIAL
+        v = Version("2026-12")
+        v.add_items([Item("P", "製品", "2"), Item("A", "組立A", "1"), Item("B", "組立B", "1"),
+                     Item("C", "部品C", "1"), Item("D", "部品D", "1")])
+        v.add_bom_lines([BomLine("P", "1", "A", 2), BomLine("A", "1", "B", 3), BomLine("B", "1", "C", 1)])
+        v.add_costs([CostRow("C", {m: 10}), CostRow("D", {m: 30})])
+        self.store.save_version(v)
+        self.ok("POST", "/api/group/changes", body={
+            "version_id": "2026-12", "name": NAME, "product": "P", "head": "MATERIAL", "kind": "REPLACE",
+            "part": "C", "parent": "B", "balloon": "1", "replacement": "D", "quantity": "1"})
+        r = self.ok("GET", "/api/group/compare/analysis",
+                    f"version=2026-12&products=P&names={quote(NAME)}&parts=A")
+        current, after = r["series"]
+        # A の直の子 B は 2×3＝6 個: 現行 6×10、変更後は B の中の C → D で 6×30
+        self.assertEqual([(x["code"], x["quantity"], x["amount"]) for x in current["rows"]], [("B", "6", "60")])
+        self.assertEqual([(x["code"], x["quantity"], x["amount"]) for x in after["rows"]], [("B", "6", "180")])
+        self.assertEqual([(x["code"], x["difference"]) for x in r["contributions"][0]["rows"]], [("B", "120")])
+
+
 class ChildrenIndex(unittest.TestCase):
     def test_children_follow_added_lines(self) -> None:
         v = Version("t")
@@ -974,6 +1051,20 @@ class ProductRule(unittest.TestCase):
         self.assertIn("/api/group/compare/table/xlsx", compare)
         self.assertIn("Excel に書き出す", compare)
         self.assertIn("cmp-grid-volume", css)
+
+    def test_analysis_and_import_screens(self) -> None:
+        index = static_response("/").body.decode("utf-8")
+        compare = static_response("/compare.js").body.decode("utf-8")
+        # 取込と版管理は帯の別のボタンで、画面の中のタブは無い
+        self.assertIn('data-screen="import"', index)
+        self.assertIn('data-screen="versions"', index)
+        self.assertIn('id="screen-versions"', index)
+        self.assertNotIn("import-tabs", index)
+        # ③の内訳は表のチェックでなく分析で（②へ部品を探した状態で移る）
+        self.assertIn('button("analysis", "分析")', compare)
+        self.assertIn("/api/group/compare/analysis", compare)
+        self.assertIn("openTrialPart", compare)
+        self.assertNotIn("cmp-pick", compare)
 
 
 if __name__ == "__main__":

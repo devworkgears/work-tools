@@ -149,6 +149,7 @@ class Group:
             ("GET", r"/api/group/compare/table", self.compare_table),
             ("GET", r"/api/group/compare/table/xlsx", self.compare_table_xlsx),
             ("GET", r"/api/group/compare/breakdown", self.compare_breakdown),
+            ("GET", r"/api/group/compare/analysis", self.compare_analysis),
         ]
 
     # 比べる ------------------------------------------------------------------
@@ -241,6 +242,71 @@ class Group:
                                             sum(1 for code in weights if code not in scenario_ids)))
         return _json_response({"version_id": version.version_id, "by": by, "weight": weight,
                                "products": list(weights), "excluded": excluded, "series": series})
+
+    def compare_analysis(self, params: dict[str, str]) -> Response:
+        """③の分析: compare/breakdown と同じ問い合わせの内訳に、使い回しの広さと差の寄与を添える。
+
+        parts（部品の品番の並び）を付けると、製品の直の子でなくその部品の直の子の内訳（製品ごとの部品の使用数を掛ける）。
+        series の行には products（その行が出た製品の数）と annual（年間台数を掛けた金額・台数が未登録の製品は除いて
+        annual_excluded に）を足す。contributions は検討名ごとに 現行 → 変更後 の差を行ごとに、差の大きい順に（差の無い行は除く。
+        片方が未登録なら difference は None で後ろ）。部品自身の分（塗装・梱包など）は内訳に出さない。
+        """
+        version = self._version(params)
+        names = _names(params.get("names"))
+        products = [to_code(c) for c in _names(params.get("products"))]
+        if not products:
+            raise ApiError(400, "製品（products）が空")
+        for code in products:
+            _require_known(version, code, "製品")
+        level = [to_code(c) for c in _names(params.get("parts"))]
+        for code in level:
+            _require_known(version, code, "部品")
+        by = (params.get("by") or "code").strip()
+        if by not in BREAKDOWN_KEYS:
+            raise ApiError(400, f"まとめ方（by）は {'・'.join(BREAKDOWN_KEYS)} のどれか: {by}")
+        weight = (params.get("weight") or "unit").strip()
+        if weight not in ("unit", "volume"):
+            raise ApiError(400, f"数え方（weight）は unit・volume のどちらか: {weight}")
+        volumes = {code: v.annual for code in products if (v := version.volume(code)) is not None}
+        weights = ({code: Decimal(1) for code in products} if weight == "unit"
+                   else {code: volumes[code] for code in products if code in volumes})
+        structure = _Structure(version)
+        view = _View(Scenario("", products[0], f"{products[0]}#", version, CostHead.MATERIAL,
+                              self.store.load_scope_policy()), "bulk", CostHead.MATERIAL, False)
+
+        def parts_of(code: str, scenario: Scenario | None) -> _Parts:
+            if not level:
+                return _trial_parts(structure, scenario) if scenario else _base_parts(structure, code)
+            entries = scenario.root_entries() if scenario else [(code, Decimal(1), True, None)]
+            return _level_parts(structure, code, entries, level)
+
+        def series_of(name: str | None, parts: dict[str, _Parts], without_trial: int) -> dict[str, Any]:
+            s = _breakdown_series(name, view, version, by, weights, parts, without_trial)
+            annual = _breakdown_series(name, view, version, by, {c: volumes[c] for c in weights if c in volumes},
+                                       parts, 0)
+            amounts = {r["key"]: r["amount"] for r in annual["rows"]}
+            counts = _key_products(version, by, {c: parts[c] for c in weights})
+            for r in s["rows"]:
+                r["products"] = counts.get(r["key"], 0)
+                r["annual"] = amounts.get(r["key"])
+                r["has_children"] = any(c in structure.children for c in r["codes"])
+            return s
+
+        current = {code: parts_of(code, None) for code in weights}
+        series = [series_of(None, current, 0)]
+        for name in names:
+            scenario_ids = self._scenarios(version, name)
+            parts = {code: (parts_of(code, self.store.load_scenario(scenario_ids[code], version))
+                            if code in scenario_ids else current[code]) for code in weights}
+            series.append(series_of(name, parts, sum(1 for code in weights if code not in scenario_ids)))
+        return _json_response({
+            "version_id": version.version_id, "by": by, "weight": weight,
+            "parts": [{"code": c, "name": self._name(version, c)} for c in level],
+            "products": list(weights), "excluded": [c for c in products if c not in weights],
+            "annual_excluded": [c for c in weights if c not in volumes],
+            "series": series,
+            "contributions": [_contribution(series[0], s) for s in series[1:]],
+        })
 
     def _table_data(self, params: dict[str, str]) -> tuple[Version, dict[str, Any]]:
         version, names, ignore, codes, limit, rows = self._compare_rows(params, with_changes=False)
@@ -891,6 +957,87 @@ def _trial_parts(structure: _Structure, scenario: Scenario) -> _Parts:
             if share:
                 add(child, Decimal(0), code, qty * share / total)
     return {c: r for c, r in parts.items() if any(r["terms"].values())}
+
+
+def _level_parts(structure: _Structure, product: str, entries: list[tuple[str, Decimal, bool, str | None]],
+                 level: list[str]) -> _Parts:
+    """製品の中の部品（level）の直の子を、製品1台あたりの数量で（_trial_parts と同じ当て方を1段下で）。
+
+    entries は Scenario.root_entries の形（現行は製品 ×1 だけ）。場所の無い行は、その品目の下に部品があれば
+    部品の使用数だけ部品の子を足す。場所つきの変更は、場所の親が部品ならその子の行そのものを増減し、
+    部品の下にあれば部品を通る使用数の割合で、場所の親を含む部品の直の子へ分けて足す。
+    """
+    parts: _Parts = {}
+    base = structure.usage(product)
+
+    def add(child: str, quantity: Decimal, code: str, amount: Decimal) -> None:
+        row = parts.setdefault(child, {"quantity": Decimal(0), "terms": {}})
+        row["quantity"] += quantity
+        row["terms"][code] = row["terms"].get(code, Decimal(0)) + amount
+
+    for node in level:
+        kids = structure.children.get(node, ())
+        for code, qty, _, parent in entries:
+            if parent == node:
+                add(code, qty, code, qty)
+                continue
+            flow = qty * (Decimal(1) if code == node else structure.usage(code).get(node, Decimal(0)))
+            if flow:
+                for line in kids:
+                    add(line.child, flow * line.quantity, line.child, flow * line.quantity)
+                continue
+            inside = structure.usage(node).get(parent, Decimal(0)) if parent is not None else Decimal(0)
+            if not inside or not base.get(parent):
+                continue
+            through = qty * base.get(node, Decimal(0)) / base[parent]  # 場所の親のうち部品を通る分
+            for line in kids:
+                share = line.quantity * (Decimal(1) if line.child == parent
+                                         else structure.usage(line.child).get(parent, Decimal(0)))
+                if share:
+                    add(line.child, Decimal(0), code, through * share)
+    return {c: r for c, r in parts.items() if any(r["terms"].values())}
+
+
+def _key_products(version: Version, by: str, parts: dict[str, _Parts]) -> dict[str, int]:
+    """まとめ方 by の行ごとに、その行が出た製品の数。"""
+    key_of = BREAKDOWN_KEYS[by]
+    counts: Counter[str] = Counter()
+    for rows in parts.values():
+        keys = set()
+        for child in rows:
+            item = version.items.get(child)
+            keys.add(key_of(child, "", "") if item is None else key_of(child, item.name, item.specification))
+        counts.update(keys)
+    return dict(counts)
+
+
+def _contribution(current: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
+    """現行と変更後の内訳の行を鍵で突き合わせ、差（片方に無い行は 0 とする）の絶対値の大きい順に。差の無い行は除く。"""
+    before = {r["key"]: r for r in current["rows"]}
+    later = {r["key"]: r for r in after["rows"]}
+    rows = []
+    for key in list(before) + [k for k in later if k not in before]:
+        a, b = before.get(key), later.get(key)
+        first = a or b
+        x = Decimal(0) if a is None else None if a["amount"] is None else Decimal(a["amount"])
+        y = Decimal(0) if b is None else None if b["amount"] is None else Decimal(b["amount"])
+        difference = None if x is None or y is None else y - x
+        # 差が 0 の行と、両方とも未登録で数量も同じ（変えていない）行は除く
+        if difference == 0 or (a and b and x is None and y is None and a["quantity"] == b["quantity"]):
+            continue
+        codes = sorted(set((a or {}).get("codes", [])) | set((b or {}).get("codes", [])))
+        rows.append({"key": key, "code": first["code"], "codes": codes,
+                     "name": first["name"], "specification": first["specification"],
+                     "has_children": bool((a or {}).get("has_children") or (b or {}).get("has_children")),
+                     "current": "0" if a is None else a["amount"], "after": "0" if b is None else b["amount"],
+                     "difference": difference,
+                     "incomplete": any(r is not None and (r["missing"] or r["incomplete"]) for r in (a, b))})
+    rows.sort(key=lambda r: (r["difference"] is None, -abs(r["difference"] or 0), r["code"]))
+    known = [r["difference"] for r in rows if r["difference"] is not None]
+    for r in rows:
+        r["difference"] = _s(r["difference"])
+    return {"name": after["name"], "difference": _s(sum(known, Decimal(0))),
+            "missing": len(rows) - len(known), "rows": rows}
 
 
 def _breakdown_series(name: str | None, view: _View, version: Version, by: str, weights: dict[str, Decimal],

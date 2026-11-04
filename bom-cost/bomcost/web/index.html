@@ -16,7 +16,8 @@
   </div>
   <nav class="screen-nav" id="screen-seg" aria-label="画面">
     <div class="seg">
-      <button type="button" data-screen="import">BOM 取込・版管理</button>
+      <button type="button" data-screen="import">データ取込</button>
+      <button type="button" data-screen="versions">版管理</button>
       <button type="button" data-screen="manual">マスタ登録</button>
       <button type="button" data-screen="lookup">品目照会</button>
     </div>
@@ -222,11 +223,7 @@
 </main>
 
 <main class="screen" id="screen-import" hidden>
-  <div class="seg manual-tabs" id="import-tabs" role="tablist">
-    <button type="button" role="tab" data-tab="run" class="on" aria-selected="true">取込</button>
-    <button type="button" role="tab" data-tab="list" aria-selected="false">版の一覧</button>
-  </div>
-  <section class="panel" id="import-pane-run">
+  <section class="panel">
     <div class="panel-head"><h2>BOM 取込（CSV・Excel）</h2></div>
     <div class="form-row">
       <label>ファイル <input type="file" id="import-file" accept=".csv,.xlsx,.xlsm"></label>
@@ -246,7 +243,10 @@
       </div>
     </div>
   </section>
-  <section class="panel" id="import-pane-list" hidden>
+</main>
+
+<main class="screen" id="screen-versions" hidden>
+  <section class="panel">
     <div class="panel-head"><h2>版の一覧</h2></div>
     <div id="import-result" class="screen-body"></div>
     <div id="version-list" class="screen-body"></div>
