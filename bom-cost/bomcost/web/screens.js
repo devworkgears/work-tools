@@ -5,6 +5,7 @@
 const MAX_FILE_BYTES = 16 * 1024 * 1024; // サーバーの上限と同じ
 const screenState = {
   screen: "group",
+  flow: "swap", // モード（FLOW_SCREENS のキー）
   allocation: "BY_USAGE",
   allocations: [],
   manual: null,
@@ -102,7 +103,37 @@ function numTd(text, opts) {
 
 // 画面の切り替え -----------------------------------------------------------
 
-const SCREENS = { product: "main-layout", group: "screen-group", trial: "screen-trial", compare: "screen-compare", part: "screen-part", change: "screen-change", manual: "screen-manual", lookup: "screen-lookup", import: "screen-import" };
+const SCREENS = { product: "main-layout", group: "screen-group", trial: "screen-trial", compare: "screen-compare", part: "screen-part", change: "screen-change", final: "screen-final", manual: "screen-manual", lookup: "screen-lookup", import: "screen-import" };
+
+// モード（差し替え・積み上げ・確定）ごとの画面。共通の画面（取込・マスタ・照会）はどのモードでも開け、モードを変えない。
+// 選んだモードはこのブラウザに覚える（読めない時は差し替え）
+const FLOW_SCREENS = { swap: ["group", "trial", "compare", "product", "part"], stack: ["change"], final: ["final"] };
+const FLOW_KEY = "bomcost.flow";
+const flowScreen = { swap: "group", stack: "change", final: "final" }; // モードを選んだ時に開く画面（差し替えは最後に見た手順）
+
+function savedFlow() {
+  try {
+    const flow = localStorage.getItem(FLOW_KEY);
+    return flow in FLOW_SCREENS ? flow : "swap";
+  } catch {
+    return "swap";
+  }
+}
+
+function flowOf(name) {
+  return Object.keys(FLOW_SCREENS).find((flow) => FLOW_SCREENS[flow].includes(name)) ?? null;
+}
+
+function setFlow(flow) {
+  screenState.flow = flow;
+  setSeg("flow-seg", "flow", flow);
+  for (const n of document.querySelectorAll("[data-flow-of]")) n.hidden = n.dataset.flowOf !== flow;
+  try {
+    localStorage.setItem(FLOW_KEY, flow);
+  } catch {
+    // 覚えられなくても画面は動く
+  }
+}
 
 function manualDefaultDev() {
   const ids = { group: "group-version", trial: "trial-version", compare: "cmp-version", lookup: "look-version",
@@ -118,6 +149,9 @@ async function showScreen(name) {
     screenState.masterCheck = null;
   }
   screenState.screen = name;
+  const flow = flowOf(name);
+  if (flow) setFlow(flow);
+  if (flow === "swap" && name !== "part") flowScreen.swap = name;
   setSeg("screen-seg", "screen", name);
   const more = document.getElementById("screen-more");
   more.open = false;
@@ -139,7 +173,35 @@ async function showScreen(name) {
 
 // 型費配賦 --------------------------------------------------------------
 
+let partReturn = null; // 型費配賦を開いた元の画面（trial・compare）。帯から開いた時は null
+
+// ②③から、部品・版・試算を選んだ状態で型費配賦を開く（part が空なら品番の欄は前のまま）
+async function openPart({ part, version, scenarioId, from }) {
+  await refreshLists();
+  await showScreen("part");
+  partReturn = from;
+  drawPartBack();
+  document.getElementById("part-version").value = version;
+  document.getElementById("part-scenario").value = String(scenarioId ?? "");
+  const head = document.getElementById("part-head");
+  if ([...head.options].some((o) => o.value === TRIAL_HEAD)) head.value = TRIAL_HEAD;
+  await loadCodes(version);
+  const code = document.getElementById("part-code");
+  if (part) code.value = part;
+  document.getElementById("part-body").replaceChildren();
+  if (code.value.trim()) await drawPart();
+  else code.focus();
+}
+
+function drawPartBack() {
+  const back = document.getElementById("part-back");
+  back.hidden = !partReturn;
+  back.textContent = partReturn === "compare" ? "← ③原価を見る" : "← ②部品・費目を変える";
+}
+
 async function enterPart() {
+  partReturn = null;
+  drawPartBack();
   const version = document.getElementById("part-version");
   const scenario = document.getElementById("part-scenario");
   versionOptions(version, { value: version.value || state.summary?.scenario.version_id });
@@ -849,6 +911,13 @@ function versionDeleteBox() {
 
 function wireScreens() {
   document.querySelectorAll("#screen-seg button").forEach((b) => b.addEventListener("click", () => guarded(() => showScreen(b.dataset.screen))));
+  setFlow(savedFlow());
+  document.querySelectorAll("#flow-seg button").forEach((b) => b.addEventListener("click", () => guarded(() => showScreen(flowScreen[b.dataset.flow]))));
+  // 元の画面は開いたままの中身で戻す（②は開いた製品の行も閉じない）
+  document.getElementById("part-back").addEventListener("click", () => guarded(() => {
+    if (partReturn === "trial") trialResume = true;
+    return showScreen(partReturn);
+  }));
   // その他のメニューは外を押すと閉じる
   document.addEventListener("click", (e) => {
     const more = document.getElementById("screen-more");

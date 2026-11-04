@@ -6,6 +6,7 @@
 
 let trialOpened = null; // 開いた { version, name }。選び直しても［開く］までは前の検討案へ変更を送る
 let trialPending = null; // ①製品を選ぶの画面から開く検討案
+let trialResume = false; // 型費配賦から戻る時は描いてある中身をそのまま見せる
 
 // ①製品を選ぶの画面の検討案の行から、その検討案を開いた状態で移る
 async function openTrial(version, name) {
@@ -14,6 +15,10 @@ async function openTrial(version, name) {
 }
 
 async function enterTrial() {
+  if (trialResume) {
+    trialResume = false;
+    if (trialOpened) return;
+  }
   const version = document.getElementById("trial-version");
   const pending = trialPending;
   trialPending = null;
@@ -381,6 +386,17 @@ function changeText(c) {
 }
 
 const undoButton = (change) => el("button", { type: "button", onclick: () => guarded(() => trialUndo(change)) }, "取り消す");
+
+// 置換・追加で入れた部品ごとに、その部品・版・この製品の試算を選んで型費配賦を開くボタン
+function moldButtons(change) {
+  const codes = change.kind === "ADD" ? [change.part] : change.kind === "REPLACE" ? change.replacements.map((r) => r.code) : [];
+  return codes.map((code) => el("button", { type: "button", title: `${code} の型費配賦`,
+    onclick: () => guarded(() => openPart({ part: code, version: trialOpened.version, scenarioId: change.scenario_id, from: "trial" })) },
+  codes.length > 1 ? `型費 ${code}` : "型費配賦"));
+}
+
+// 変えた行の操作: 取り消すと、入れた部品の型費配賦
+const changedButtons = (change) => [undoButton(change), moldButtons(change)];
 const CHANGE_CLASS = { REPLACE: "chg-replace", REMOVE: "chg-remove", ADD: "chg-add", SET_QUANTITY: "chg-qty", SET_HEAD: "chg-head" };
 
 // 構成の行に当たる変更: その場所の置換・員数変更、なければその品番の削除・場所なしの置換
@@ -392,7 +408,7 @@ function rowChange(changes, node) {
 
 // 構成の行の［変更］（置換・削除・員数変更・追加）か、変えた行なら［取り消す］
 function rowButton(ctx, node, change) {
-  if (change) return undoButton(change);
+  if (change) return changedButtons(change);
   const usage = node.usage && !String(node.usage).startsWith("-") && !/^0*(\.0*)?$/.test(node.usage) ? node.usage : "1";
   const placeQty = node.quantity && !String(node.quantity).startsWith("-") ? node.quantity : "1";
   return changeButton(ctx.product, () => [placeReplaceOp(node.parent, node.balloon, node.code, placeQty),
@@ -454,7 +470,7 @@ function addedRows(changes) {
     el("td", {}, c.part_name ?? ""), el("td", {}, c.part_specification || ""),
     el("td", { class: "num" }, fmt(c.quantity)),
     el("td", {}, c.part_kind ?? ""),
-    el("td", {}, undoButton(c)),
+    el("td", {}, changedButtons(c)),
   ));
 }
 
@@ -494,7 +510,7 @@ function addedPairRows(changes) {
   return rootExtras(changes).map((c) => el("tr", { class: `group-node ${CHANGE_CLASS[c.kind]}` },
     Array.from({ length: PAIR_COLS }, () => el("td", {}, "")),
     pairCells({ balloon: null, code: c.part, name: c.part_name, specification: c.part_specification, quantity: c.quantity, kind: c.part_kind }, 0, null, true),
-    el("td", {}, undoButton(c))));
+    el("td", {}, changedButtons(c))));
 }
 
 function sortTh(key, label, num, cls = "") {
@@ -705,7 +721,7 @@ function changeLog(changes, headLabel) {
     el("td", { class: "num" }, c.kind === "REPLACE" ? joinReplacements(c, (r) => fmt(r.quantity))
       : c.kind === "SET_HEAD" ? c.heads.map((h) => fmt(h.value, { yen: true })).join("・") : fmt(c.quantity)),
     el("td", { class: `num ${signClass(c.difference)}` }, fmt(c.difference, { sign: true, missing: "—", yen: true })),
-    el("td", {}, undoButton(c))));
+    el("td", {}, changedButtons(c))));
   const heads = ["製品", "操作", "部品", "名称", "記号・寸法", "置換先", "置換先の名称", "置換先の記号・寸法",
     numTh("員数"), numTh(`差（${headLabel}）`), ""];
   const sum = changes.missing_count < changes.count ? changes.difference : null; // 全部未登録なら合計は出せない

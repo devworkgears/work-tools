@@ -43,13 +43,42 @@ async function drawCompareTable() {
   drawCompareView();
 }
 
+// 表の返事は上の段の年間効果額にも使うので、グラフの時も読む
 async function loadCompareLayout() {
   const query = qs(compareState.query);
-  if (compareState.layout === "table") {
-    compareState.table ??= await api("GET", `/api/group/compare/table?${query}`);
-  } else {
-    compareState.data ??= await api("GET", `/api/group/compare?${query}`);
-  }
+  const chart = compareState.layout === "chart";
+  [compareState.table, compareState.data] = await Promise.all([
+    compareState.table ?? api("GET", `/api/group/compare/table?${query}`),
+    chart ? compareState.data ?? api("GET", `/api/group/compare?${query}`) : compareState.data,
+  ]);
+}
+
+// 償却費の欄から、その検討案の試算を選んで型費配賦を開く。部品はその製品で置換・追加した最初の部品
+async function compareToPart(version, name, product, scenarioId) {
+  const changes = await api("GET", `/api/group/changes?${qs({ version, name, product, head: TRIAL_HEAD })}`);
+  const c = changes.rows.find((x) => x.kind === "ADD" || (x.kind === "REPLACE" && x.replacements.length));
+  await openPart({ part: c ? (c.kind === "ADD" ? c.part : c.replacements[0].code) : "", version, scenarioId, from: "compare" });
+}
+
+function moldLink(td, version, name, product, scenarioId) {
+  td.replaceChildren(el("button", { type: "button", class: "look-link", title: "型費配賦",
+    onclick: () => guarded(() => compareToPart(version, name, product, scenarioId)) }, ...td.childNodes));
+  return td;
+}
+
+// 上の段: 検討案ごとの製造原価の差（1台あたりを製品で足した値）と年間効果額の合計。未登録で除いた製品の数を添える
+function compareHeadline(t) {
+  const value = (text) => (text === null ? el("span", { class: "missing" }, "未登録")
+    : el("span", { class: signClass(text) }, fmt(text, { sign: true, yen: true })));
+  const note = (count) => (count ? `未登録 ${count} 製品を除く` : null);
+  return el("div", { class: "cmp-tiles cmp-headline" }, t.names.map((n) => {
+    const d = t.totals[n].MANUFACTURING;
+    const e = t.effect_totals[n].MANUFACTURING;
+    return el("div", { class: "tile-row" },
+      t.names.length > 1 ? el("div", { class: "tile-name" }, el("i", { class: `swatch ${seriesClass(t, n)}` }), n) : null,
+      tile("差（1台あたり・製造原価）", value(d.difference), note(d.excluded)),
+      tile("年間効果額（製造原価）", value(e.effect), note(e.excluded)));
+  }));
 }
 
 // ファイル名は API の Content-Disposition（filename*）から取る。api() は応答の見出しを返さないので fetch を直に使う
@@ -116,7 +145,7 @@ function drawCompareView() {
   const tools = el("div", { class: "cmp-tools" }, compareLayoutSeg(), el("label", {}, "費目 ", headSelect));
   if (isTable) {
     tools.append(el("button", { type: "button", onclick: () => guarded(exportCompareXlsx) }, "Excel に書き出す"));
-    document.getElementById("cmp-body").replaceChildren(tools, ...compareGrid(r, head),
+    document.getElementById("cmp-body").replaceChildren(compareHeadline(r), tools, ...compareGrid(r, head),
       el("section", { class: "cmp-bd", id: "cmp-bd" }));
     drawBreakdown();
     return;
@@ -136,6 +165,7 @@ function drawCompareView() {
     compareBars(r, withTrial, head));
   const right = el("section", { class: "cmp-right", id: "cmp-detail" });
   document.getElementById("cmp-body").replaceChildren(
+    compareHeadline(compareState.table),
     tools,
     compareTiles(r, head),
     el("div", { class: "cmp-split" }, left, right),
@@ -165,8 +195,9 @@ function compareTiles(r, head) {
   }));
 }
 
-function tile(label, value) {
-  return el("div", { class: "tile" }, el("div", { class: "tile-label" }, label), el("div", { class: "tile-value" }, value));
+function tile(label, value, note = null) {
+  return el("div", { class: "tile" }, el("div", { class: "tile-label" }, label), el("div", { class: "tile-value" }, value),
+    note ? el("div", { class: "tile-note" }, note) : null);
 }
 
 // 0 を中心に左（下がる）・右（上がる）へ伸ばす。max は棒の長さの基準（絶対値の最大）
@@ -235,7 +266,9 @@ function drawCompareDetail() {
       const d = p.trials[n].differences[h.id];
       const diff = cell(d, h.id, { sign: true });
       if (signClass(d) && !isIgnored(r, h.id)) diff.classList.add(signClass(d));
-      return [cell(p.trials[n].costs[h.id], h.id), diff];
+      const after = cell(p.trials[n].costs[h.id], h.id);
+      if (h.id === "AMORTIZATION") moldLink(after, r.version_id, n, p.code, p.trials[n].scenario_id);
+      return [after, diff];
     }),
     el("td", { class: "cmp-mini" }, names.map((n) =>
       diffBar(isIgnored(r, h.id) ? null : p.trials[n].differences[h.id], max, seriesClass(r, n))))));
@@ -301,7 +334,10 @@ function compareGrid(t, head) {
       const partial = tr.incomplete;
       rows.push(
         el("tr", {}, label("変更後", tr.name),
-          t.heads.map((h) => cell(tr.after[h.id], h.id, { excluded: ex(h.id), partial }))),
+          t.heads.map((h) => {
+            const td = cell(tr.after[h.id], h.id, { excluded: ex(h.id), partial });
+            return h.id === "AMORTIZATION" ? moldLink(td, t.version_id, tr.name, p.product, tr.scenario_id) : td;
+          })),
         el("tr", {}, label("差", tr.name),
           t.heads.map((h) => cell(tr.difference[h.id], h.id, { sign: true, excluded: ex(h.id), partial }))),
         el("tr", {}, label("差%", tr.name), t.heads.map((h) => cell(tr.percent[h.id], h.id,

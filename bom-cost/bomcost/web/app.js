@@ -186,7 +186,7 @@ async function init() {
     return;
   }
   if (state.scenarios.length) await selectScenario(state.scenarios[0].scenario_id);
-  await showScreen("group");  // 版があれば①製品を選ぶ
+  await showScreen(flowScreen[screenState.flow]);  // 版があれば覚えたモードの画面（差し替えなら①製品を選ぶ）
 }
 
 // 版の表示「D-123 新型ユニット（第2版）」。v は版 ID か版の行（開発番号・名称・版の番号を持つもの）
