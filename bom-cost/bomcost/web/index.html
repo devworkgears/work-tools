@@ -17,11 +17,11 @@
     </div>
     <span class="nav-sep" aria-hidden="true"></span>
     <span class="nav-flow">設計変更シミュレーション：</span>
-    <button type="button" class="step on" data-screen="group">①対象製品</button>
+    <button type="button" class="step on" data-screen="group">①製品を選ぶ</button>
     <span class="muted" aria-hidden="true">→</span>
-    <button type="button" class="step" data-screen="trial">②構成変更</button>
+    <button type="button" class="step" data-screen="trial">②部品・費目を変える</button>
     <span class="muted" aria-hidden="true">→</span>
-    <button type="button" class="step" data-screen="compare">③原価比較</button>
+    <button type="button" class="step" data-screen="compare">③原価を見る</button>
     <span class="nav-sep" aria-hidden="true"></span>
     <details class="nav-more" id="screen-more">
       <summary>その他 ▼</summary>
@@ -104,7 +104,7 @@
 <main class="screen" id="screen-group">
   <section class="panel">
     <div class="panel-head">
-      <h2>①対象製品</h2>
+      <h2>①製品を選ぶ</h2>
     </div>
     <div class="form-row">
       <label>版 <select id="group-version"></select></label>
@@ -124,14 +124,12 @@
 <main class="screen" id="screen-trial" hidden>
   <section class="panel">
     <div class="panel-head">
-      <h2>②構成変更</h2>
+      <h2>②部品・費目を変える</h2>
     </div>
     <div class="form-row">
       <label>版 <select id="trial-version"></select></label>
       <label>検討案 <select id="trial-name"></select></label>
-      <button type="button" class="primary" id="trial-open">開く</button>
-      <label>部品 <input id="trial-part" placeholder="例: ねじ M6"></label>
-      <button type="button" id="trial-part-show">絞り込む</button>
+      <button type="button" id="trial-open">開く</button>
     </div>
     <div id="trial-body" class="screen-body"></div>
   </section>
@@ -140,7 +138,7 @@
 <main class="screen" id="screen-compare" hidden>
   <section class="panel">
     <div class="panel-head">
-      <h2>③原価比較</h2>
+      <h2>③原価を見る</h2>
     </div>
     <div class="form-row">
       <label>版 <select id="cmp-version"></select></label>

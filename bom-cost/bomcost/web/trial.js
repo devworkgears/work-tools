@@ -1,12 +1,13 @@
-// ②構成変更: 検討案を開き、その検討案の試算がある製品を並べて、行の中に開いた版の構成で置換・削除・追加、
-// 部品の名前で絞った製品×部品の行を置換（選んだ所をまとめても）する。原価は③原価比較で見る。
+// ②部品・費目を変える: 検討案を開き、その検討案の試算がある製品を1つの表に並べる。行に製品の費目の欄（まとめて送る）、
+// 行を開くと版の構成で置換・削除・員数変更・追加。表は部品の名前で探した製品×部品の行（選んだ所をまとめて置換）にも切り替える。
+// 変更の記録は画面の下に留める。原価は③原価を見るで見る。
 // 差は製造原価（TRIAL_HEAD・group.js）。app.js・screens.js・compare.js の関数を使う。
 "use strict";
 
 let trialOpened = null; // 開いた { version, name }。選び直しても［開く］までは前の検討案へ変更を送る
-let trialPending = null; // ①対象製品の画面から開く検討案
+let trialPending = null; // ①製品を選ぶの画面から開く検討案
 
-// ①対象製品の画面の検討案の行から、その検討案を開いた状態で移る
+// ①製品を選ぶの画面の検討案の行から、その検討案を開いた状態で移る
 async function openTrial(version, name) {
   trialPending = { version, name };
   await showScreen("trial");
@@ -42,6 +43,7 @@ async function openSelectedTrial() {
   closeTrialLookup();
   trialOpen.clear();
   trialChecked.clear();
+  trialHeadValues.clear();
   await drawTrial();
 }
 
@@ -69,7 +71,7 @@ async function trialBulk(rows, change) {
   await drawTrial();
 }
 
-// ③原価比較へ、今の版と検討案を選んだ状態で移る（compare.js の入口を使う）
+// ③原価を見るへ、今の版と検討案を選んだ状態で移る（compare.js の入口を使う）
 async function trialToCompare() {
   const t = trialOpened;
   await showScreen("compare");
@@ -511,25 +513,9 @@ function layoutSeg() {
   return el("div", { class: "seg trial-layout" }, button("list", "一覧"), button("pair", "左右"));
 }
 
-// 製品自身の費目（社内加工費・償却費・直接費）の現行・変更後と、書き換える欄（送ると費目変更の1行になる）
-async function trialHeadsBlock(t, product) {
-  const h = await api("GET", `/api/group/heads?${qs({ version: t.version, name: t.name, product })}`);
-  const labels = new Map(h.heads.map((x) => [x.id, x.label]));
-  const rows = h.editable.map((id) => {
-    const input = el("input", { inputmode: "decimal", size: 8, value: h.after[id] ?? "", placeholder: "未登録" });
-    const send = () => guarded(() => trialChange(product, { kind: "SET_HEAD", part: product, target_head: id, quantity: input.value.trim() }));
-    input.addEventListener("keydown", (e) => e.key === "Enter" && send());
-    return el("tr", {}, el("td", {}, labels.get(id)), numTd(h.current[id], { yen: true }), numTd(h.after[id], { yen: true }),
-      el("td", {}, input, " ", el("button", { type: "button", onclick: send }, "変える")));
-  });
-  return el("div", { class: "trial-heads" },
-    el("div", { class: "trial-changes-head" }, "変更後の費目"),
-    table(["費目", numTh("現行"), numTh("変更後"), ""], rows));
-}
-
-// 開いた製品の中身: この製品の変更（1回の操作ごと）と、製品の費目と、変えた所に印を付けた版の構成（一覧か左右）
-async function trialProductPanel(t, product, changes) {
-  const [root, costHeads] = await Promise.all([trialTree(t, product), trialHeadsBlock(t, product)]);
+// 開いた製品の中身: 変えた所に印を付けた版の構成（一覧か左右）。行の［変更］と下の［追加］から変える
+async function trialProductPanel(t, product, changes, colspan) {
+  const root = await trialTree(t, product);
   const ctx = { t, product, changes };
   if (trialChangedOnly.has(product)) {
     for (const path of [...trialOpen]) if (path.startsWith(`${product}/`)) trialOpen.delete(path);
@@ -539,22 +525,14 @@ async function trialProductPanel(t, product, changes) {
   const pair = trialLayout === "pair";
   await addTrialChildren(rows, ctx, root, product, 0, pair ? trialPairRows : trialNodeRow);
   rows.push(...(pair ? addedPairRows(changes) : addedRows(changes)));
-  const changeRows = changes.map((c) => el("tr", { class: CHANGE_CLASS[c.kind] },
-    el("td", {}, changeText(c)),
-    el("td", { class: `num ${signClass(c.difference)}` }, fmt(c.difference, { sign: true, missing: "—", yen: true })),
-    el("td", {}, undoButton(c))));
-  const addRow = el("tr", {}, el("td", { colspan: 3 }, changeButton(product, () => [addOp(product)], { label: "追加" })));
   const heads = pair ? [...structureHeads(), ...structureHeads("pair-split"), ""] : [...structureHeads(), ""];
   const sides = pair ? el("tr", { class: "pair-sides" },
     el("th", { colspan: PAIR_COLS }, "現行"), el("th", { colspan: PAIR_COLS, class: "pair-split" }, "変更後"), el("th", {}, "")) : null;
-  const structure = table(heads, rows.length ? rows : [el("tr", {}, el("td", { colspan: heads.length, class: "muted" }, "なし"))]);
+  const addRow = el("tr", { class: "trial-add" }, el("td", { colspan: heads.length },
+    changeButton(product, () => [addOp(product)], { label: "追加" })));
+  const structure = table(heads, [...(rows.length ? rows : [el("tr", {}, el("td", { colspan: heads.length, class: "muted" }, "なし"))]), addRow]);
   if (sides) structure.querySelector("thead").prepend(sides);
-  return el("tr", { class: "trial-open" }, el("td", { colspan: 4 },
-    el("div", { class: "trial-changes" },
-      el("div", { class: "trial-changes-head" }, "この製品の変更"),
-      el("table", { class: "small" }, el("tbody", {},
-        changeRows.length ? changeRows : el("tr", {}, el("td", { colspan: 3, class: "muted" }, "なし")), addRow))),
-    costHeads,
+  return el("tr", { class: "trial-open" }, el("td", { colspan },
     el("div", { class: "trial-structure-tools" }, layoutSeg(),
       el("button", { type: "button", "aria-pressed": String(trialChangedOnly.has(product)),
         onclick: () => toggleChangedOnly(product) }, "変更した所だけ")),
@@ -569,6 +547,8 @@ function partLayoutSeg() {
     }, label)));
 }
 
+const partTitle = (parts) => el("h3", {}, `部品「${parts.part}」（${parts.rows.length} 件${parts.truncated ? "（上限）" : ""}）`);
+
 function partCodeBlock(parts) {
   const rows = parts.rows.map((r) => el("tr", {},
     el("td", {}, trialCode(r.part)), el("td", {}, r.part_name), el("td", {}, r.part_specification),
@@ -577,9 +557,8 @@ function partCodeBlock(parts) {
     el("td", {}, changeButton(null, () => [bulkReplaceOp()], {
       label: "全部の場所を置換", send: (change) => trialReplaceCode(r.part, change),
     }))));
-  return [el("h3", {}, `部品「${parts.part}」（${parts.rows.length} 件${parts.truncated ? "（上限）" : ""}）`),
-    partLayoutSeg(), table(["品番", "名称", "記号・寸法", "製品数", "場所数", "置換先", ""],
-      rows.length ? rows : [el("tr", {}, el("td", { colspan: 7 }, "なし"))])];
+  return [partTitle(parts), table(["品番", "名称", "記号・寸法", "製品数", "場所数", "置換先", ""],
+    rows.length ? rows : [el("tr", {}, el("td", { colspan: 7 }, "なし"))])];
 }
 
 function partBlock(parts) {
@@ -609,28 +588,52 @@ function partBlock(parts) {
   const bulk = el("tr", {}, el("td", { colspan: 8 },
     changeButton(null, () => [bulkReplaceOp()], { label: "選んだ所を置換", send: (change) => trialBulk(parts.rows, change) })));
   return [
-    el("h3", {}, `部品「${parts.part}」（${parts.rows.length} 件${parts.truncated ? "（上限）" : ""}）`),
-    partLayoutSeg(),
+    partTitle(parts),
     table([el("th", {}, all), "製品", "部品", "名称", "記号・寸法", numTh("使用数（個/台）"), "置換先", ""],
       partRows.length ? [...partRows, bulk] : [el("tr", {}, el("td", { colspan: 8, class: "muted" }, "なし"))]),
   ];
 }
 
-let trialView = "product"; // product＝製品ごと・all＝全製品の変更を1つの表で・heads＝全製品の費目をまとめて変える
-function trialViewSeg() {
-  const button = (value, label) => el("button", { type: "button", class: trialView === value ? "on" : "",
-    onclick: () => { trialView = value; guarded(drawTrial); } }, label);
-  return el("div", { class: "seg trial-view" }, button("product", "製品ごと"), button("all", "全製品の変更"),
-    button("heads", "製品の費目"));
+// 表の見せ方: product＝製品の行・part＝部品で探した製品×部品の行
+let trialMode = "product";
+let trialPart = ""; // 製品×部品で探す部品の言葉
+let trialLogOpen = true; // 変更の記録を開いておくか
+// 製品の費目の欄に打った値（「製品\t費目」）。製品の行を開いて描き直しても残し、送ったら消す
+const trialHeadValues = new Map();
+
+function trialModeSeg() {
+  const button = (value, label) => el("button", { type: "button", class: trialMode === value ? "on" : "",
+    onclick: () => { trialMode = value; guarded(drawTrial); } }, label);
+  return el("div", { class: "seg" }, button("product", "製品"), button("part", "製品×部品"));
+}
+
+function partSearch() {
+  const input = el("input", { id: "trial-part", placeholder: "例: ねじ M6", value: trialPart });
+  const search = () => { trialPart = input.value.trim(); guarded(drawTrial); };
+  input.addEventListener("keydown", (e) => e.key === "Enter" && search());
+  return [el("label", { class: "trial-part" }, "部品 ", input), el("button", { type: "button", onclick: search }, "探す"), partLayoutSeg()];
 }
 
 // Excel から貼った値（タブと改行で区切った表）の1つの値。桁区切り・円の記号・空白は外す
 const pastedNumber = (text) => text.replace(/[,，¥￥\s]/g, "");
 
-// 全製品の費目（現行・変更後）と入力欄。打った所だけを製品ごとに1回の費目変更（まとめて取り消せる）で入れる
-async function headsBulkBlock(t) {
-  const data = await api("GET", `/api/group/heads/all?${qs({ version: t.version, name: t.name })}`);
-  const grid = data.rows.map(() => data.heads.map(() => el("input", { inputmode: "decimal", size: 7, class: "trial-bulk-input" })));
+function headInput(product, head) {
+  const key = `${product}\t${head}`;
+  const input = el("input", { inputmode: "decimal", size: 7, class: "trial-bulk-input", value: trialHeadValues.get(key) ?? "" });
+  input.addEventListener("input", () => {
+    if (input.value.trim()) trialHeadValues.set(key, input.value);
+    else trialHeadValues.delete(key);
+  });
+  return input;
+}
+
+// 製品の表: 行ごとに差と、製品の費目（社内加工費・償却費・直接費）の現行・変更後・入力欄。行を押すと下に版の構成が開く。
+// 費目は打った所だけを製品ごとに1回の費目変更（まとめて取り消せる）で入れる
+async function productTable(t, p, changes, heads) {
+  const byProduct = new Map();
+  for (const c of changes.rows) byProduct.set(c.product, [...(byProduct.get(c.product) ?? []), c]);
+  const headRows = new Map(heads.rows.map((r) => [r.product, r]));
+  const grid = p.products.map((x) => (headRows.has(x.code) ? heads.heads.map((h) => headInput(x.code, h.id)) : []));
   // 貼った所から下（タブがあれば右へも）の欄へ順に入れる。1つの値だけなら普通に貼る
   grid.forEach((line, r) => line.forEach((input, c) => input.addEventListener("paste", (e) => {
     const lines = (e.clipboardData?.getData("text/plain") ?? "").replace(/\r/g, "").split("\n");
@@ -639,35 +642,59 @@ async function headsBulkBlock(t) {
     e.preventDefault();
     lines.forEach((text, i) => text.split("\t").forEach((value, j) => {
       const target = grid[r + i]?.[c + j];
-      if (target) target.value = pastedNumber(value);
+      if (!target) return;
+      target.value = pastedNumber(value);
+      target.dispatchEvent(new Event("input"));
     }));
   })));
   const send = () => guarded(async () => {
-    const items = data.rows.map((row, r) => ({ product: row.product,
-      values: Object.fromEntries(data.heads.map((h, c) => [h.id, grid[r][c].value.trim()]).filter(([, v]) => v)) }))
+    const items = p.products.map((x, r) => ({ product: x.code,
+      values: Object.fromEntries(grid[r].map((input, c) => [heads.heads[c].id, input.value.trim()]).filter(([, v]) => v)) }))
       .filter((x) => Object.keys(x.values).length);
     if (!items.length) throw new Error("変える値を打つ");
     await api("POST", "/api/group/heads/bulk", { version_id: t.version, name: t.name, head: TRIAL_HEAD, items });
+    trialHeadValues.clear();
     await drawTrial();
   });
-  const rows = data.rows.map((row, r) => el("tr", {},
-    el("td", {}, trialCode(row.product), ` ${row.product_name}`),
-    data.heads.flatMap((h, c) => {
-      const after = numTd(row.after[h.id], { yen: true });
-      if (row.after[h.id] !== row.current[h.id]) after.classList.add("trial-bulk-changed");
-      return [numTd(row.current[h.id], { yen: true }), after, el("td", {}, grid[r][c])];
-    })));
-  const top = el("tr", {}, el("th", { rowspan: 2 }, "製品"),
-    data.heads.map((h) => el("th", { colspan: 3, class: "trial-bulk-group" }, h.label)));
-  const sub = el("tr", {}, data.heads.flatMap(() => [numTh("現行"), numTh("変更後"), el("th", {}, "入力")]));
-  const body = rows.length ? rows : [el("tr", {}, el("td", { colspan: 1 + data.heads.length * 3, class: "muted" }, "なし"))];
-  return [el("h3", {}, `製品の費目（${data.rows.length} 製品）`),
-    el("div", { class: "table-scroll" }, el("table", { class: "small trial-bulk" }, el("thead", {}, top, sub), el("tbody", {}, body))),
-    el("div", { class: "trial-bulk-foot" }, el("button", { type: "button", class: "primary", onclick: send }, "まとめて変える"))];
+  const colspan = 4 + heads.heads.length * 3;
+  const rows = [];
+  for (const [r, x] of p.products.entries()) {
+    const own = byProduct.get(x.code) ?? [];
+    const h = headRows.get(x.code);
+    const open = trialOpen.has(x.code);
+    rows.push(el(
+      "tr",
+      { class: `trial-product${open ? " on" : ""}`, "aria-expanded": String(open),
+        onclick: (e) => !e.target.closest("button, input") && toggleTrial(x.code) },
+      el("td", {}, el("span", { class: "group-twisty" }, open ? "▼" : "▶"), trialCode(x.code)),
+      el("td", {}, x.name),
+      el("td", { class: "num" }, String(own.length)),
+      el("td", { class: `num ${signClass(x.difference)}`,
+        title: own.map((c) => `${c.text}　${fmt(c.difference, { sign: true, missing: "—", yen: true })}`).join("\n") },
+        fmt(x.difference, { sign: true, missing: "—", yen: true })),
+      heads.heads.flatMap((head, c) => {
+        if (!h) return [el("td", {}), el("td", {}), el("td", {})];
+        const after = numTd(h.after[head.id], { yen: true });
+        if (h.after[head.id] !== h.current[head.id]) after.classList.add("trial-bulk-changed");
+        return [numTd(h.current[head.id], { yen: true }), after, el("td", {}, grid[r][c])];
+      }),
+    ));
+    if (open) rows.push(await trialProductPanel(t, x.code, own, colspan));
+  }
+  const top = el("tr", {}, el("th", { rowspan: 2 }, "製品"), el("th", { rowspan: 2 }, "名称"),
+    el("th", { rowspan: 2, class: "num" }, "変更"), el("th", { rowspan: 2, class: "num" }, `差（${p.head_label}）`),
+    heads.heads.map((h) => el("th", { colspan: 3, class: "trial-bulk-group" }, h.label)));
+  const sub = el("tr", {}, heads.heads.flatMap(() => [numTh("現行"), numTh("変更後"), el("th", {}, "入力")]));
+  const body = rows.length ? rows : [el("tr", {}, el("td", { colspan, class: "muted" }, "なし"))];
+  return {
+    send,
+    table: el("div", { class: "table-scroll" },
+      el("table", { class: "small trial-bulk trial-products" }, el("thead", {}, top, sub), el("tbody", {}, body))),
+  };
 }
 
-// 全製品の変更（1回の操作ごとに1行）。置換先は代わりの部品ごとに「・」で並べる
-function allChangesBlock(p, changes) {
+// 変更の記録（全製品・1回の操作ごとに1行）。置換先は代わりの部品ごとに「・」で並べる。画面の下に留めて、畳める
+function changeLog(changes, headLabel) {
   const rows = changes.rows.map((c) => el("tr", { class: CHANGE_CLASS[c.kind] },
     el("td", {}, trialCode(c.product), ` ${c.product_name}`),
     el("td", {}, `${c.kind_label}${c.heads.length ? ` ${c.heads.map((h) => h.label).join("・")}` : ""}${c.balloon ? ` #${c.balloon}` : ""}`),
@@ -680,77 +707,59 @@ function allChangesBlock(p, changes) {
     el("td", { class: `num ${signClass(c.difference)}` }, fmt(c.difference, { sign: true, missing: "—", yen: true })),
     el("td", {}, undoButton(c))));
   const heads = ["製品", "操作", "部品", "名称", "記号・寸法", "置換先", "置換先の名称", "置換先の記号・寸法",
-    numTh("員数"), numTh(`差（${p.head_label}）`), ""];
+    numTh("員数"), numTh(`差（${headLabel}）`), ""];
   const sum = changes.missing_count < changes.count ? changes.difference : null; // 全部未登録なら合計は出せない
   const total = el("tr", { class: "trial-total" },
     el("th", { colspan: heads.length - 2 }, `合計${changes.missing_count ? `（未登録 ${changes.missing_count} 件を除く）` : ""}`),
     el("th", { class: `num ${signClass(sum)}` }, fmt(sum, { sign: true, missing: "—", yen: true })),
     el("th", {}, ""));
-  return [el("h3", {}, `全製品の変更（${changes.count} 件）`),
-    el("div", { class: "table-scroll" }, table(heads, rows.length ? [...rows, total]
-      : [el("tr", {}, el("td", { colspan: heads.length, class: "muted" }, "なし"))], "small trial-all"))];
+  const body = el("div", { class: "table-scroll trial-log-body", hidden: !trialLogOpen },
+    table(heads, rows.length ? [...rows, total] : [el("tr", {}, el("td", { colspan: heads.length, class: "muted" }, "なし"))], "small trial-all"));
+  const toggle = el("button", { type: "button", class: "trial-log-toggle", "aria-expanded": String(trialLogOpen) });
+  const label = () => { toggle.textContent = `${trialLogOpen ? "▼" : "▲"} 変更の記録（${changes.count} 件）`; };
+  toggle.addEventListener("click", () => {
+    trialLogOpen = !trialLogOpen;
+    body.hidden = !trialLogOpen;
+    toggle.setAttribute("aria-expanded", String(trialLogOpen));
+    label();
+  });
+  label();
+  return el("section", { class: "trial-log", "aria-label": "変更の記録" }, toggle, body);
 }
 
 async function drawTrial() {
   const t = trialOpened;
   if (!t) throw new Error("検討案を開く");
-  const part = document.getElementById("trial-part").value.trim();
+  const part = trialMode === "part" ? trialPart : "";
   const base = { version: t.version, name: t.name, trial: "1" };
-  const [p, parts, changes] = await Promise.all([
+  const [p, parts, changes, heads] = await Promise.all([
     api("GET", `/api/group/products?${qs({ ...base, head: TRIAL_HEAD })}`),
     part ? api("GET", `/api/group/parts${trialPartsLayout === "code" ? "/by-code" : ""}?${qs({ ...base, part })}`) : null,
     api("GET", `/api/group/changes?${qs({ version: t.version, name: t.name, head: TRIAL_HEAD })}`),
+    trialMode === "product" ? api("GET", `/api/group/heads/all?${qs({ version: t.version, name: t.name })}`) : null,
   ]);
+  const products = heads ? await productTable(t, p, changes, heads) : null;
   trialForm = null;  // 表を描き直すと開いていた欄は消える
-  const premise = el("p", { class: "premise-line" }, `前提: ${versionLabel(p.version_id)}・検討案 ${p.name}・${p.head_label}・参考値`);
-  const tail = [...(parts ? partBlock(parts) : []),
-    el("div", { class: "trial-foot" },
-      el("button", { type: "button", class: "primary", onclick: () => guarded(trialToCompare) }, "③原価比較で見る →"))];
-  if (trialView === "all") {
-    document.getElementById("trial-body").replaceChildren(premise, trialViewSeg(), ...allChangesBlock(p, changes), ...tail);
-    return;
-  }
-  if (trialView === "heads") {
-    document.getElementById("trial-body").replaceChildren(premise, trialViewSeg(), ...await headsBulkBlock(t), ...tail);
-    return;
-  }
-  const byProduct = new Map();
-  for (const c of changes.rows) byProduct.set(c.product, [...(byProduct.get(c.product) ?? []), c]);
-  const productRows = [];
-  let count = 0;
-  for (const x of p.products) {
-    const own = byProduct.get(x.code) ?? [];
-    count += own.length;
-    productRows.push(el(
-      "tr",
-      {},
-      el("td", {}, twistyCell(x.code, true), trialCode(x.code)),
-      el("td", {}, x.name),
-      el("td", { class: "num" }, String(own.length)),
-      el("td", { class: `num ${signClass(x.difference)}`,
-        title: own.map((c) => `${c.text}　${fmt(c.difference, { sign: true, missing: "—", yen: true })}`).join("\n") },
-        fmt(x.difference, { sign: true, missing: "—", yen: true })),
-    ));
-    if (trialOpen.has(x.code)) productRows.push(await trialProductPanel(t, x.code, own));
-  }
-  const total = el("tr", { class: "trial-total" },
-    el("th", { colspan: 2 }, `合計${p.missing_count ? `（未登録 ${p.missing_count} 製品を除く）` : ""}`),
-    el("th", { class: "num" }, String(count)),
-    el("th", { class: `num ${signClass(p.difference)}` }, fmt(p.difference, { sign: true, missing: "—", yen: true })));
-  const heads = ["製品", "名称", numTh("変更"), numTh(`差（${p.head_label}）`)];
+  const top = el("div", { class: "trial-top" },
+    el("p", { class: "premise-line" }, `前提: ${versionLabel(p.version_id)}・検討案 ${p.name}・${p.head_label}・参考値`),
+    el("span", { class: "spacer" }),
+    el("span", { class: "trial-top-total" },
+      `差の合計${p.missing_count ? `（未登録 ${p.missing_count} 製品を除く）` : ""} `,
+      el("b", { class: `num ${signClass(p.difference)}` }, fmt(p.difference, { sign: true, missing: "—", yen: true }))),
+    el("button", { type: "button", class: "primary", onclick: () => guarded(trialToCompare) }, "③原価を見る →"));
+  const tools = el("div", { class: "trial-tools" }, trialModeSeg(),
+    ...(products ? [el("span", { class: "muted" }, `製品 ${countText(p.count, p.products.length, p.truncated)}`)] : partSearch()),
+    el("span", { class: "spacer" }),
+    products ? el("button", { type: "button", onclick: products.send }, "費目をまとめて変える") : null);
   document.getElementById("trial-body").replaceChildren(
-    premise, trialViewSeg(),
-    el("h3", {}, `製品（${countText(p.count, p.products.length, p.truncated)}）`),
-    table(heads, productRows.length ? [...productRows, total]
-      : [el("tr", {}, el("td", { colspan: heads.length, class: "muted" }, "なし"))]),
-    ...tail,
+    top, tools,
+    ...(products ? [products.table] : parts ? partBlock(parts) : []),
+    changeLog(changes, p.head_label),
   );
 }
 
 function wireTrial() {
   document.getElementById("trial-open").addEventListener("click", () => guarded(openSelectedTrial));
-  document.getElementById("trial-part-show").addEventListener("click", () => guarded(drawTrial));
-  document.getElementById("trial-part").addEventListener("keydown", (e) => e.key === "Enter" && guarded(drawTrial));
   document.getElementById("trial-version").addEventListener("change", (e) => guarded(async () => {
     await loadTrialNames();
     await loadCodes(e.target.value);

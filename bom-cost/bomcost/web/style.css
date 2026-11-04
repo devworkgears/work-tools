@@ -200,24 +200,40 @@ dialog label { display: grid; gap: 2px; }
 .change-line label { white-space: nowrap; cursor: pointer; }
 .change-form input:disabled { background: #eee; color: #aaa; }
 .change-buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
-/* ②構成変更: 開いた製品の中（この製品の変更・構成）と、③へ移るボタン */
+/* ②部品・費目を変える: 上に留める差の合計と③へ移るボタン、製品の行と開いた構成、下に留める変更の記録 */
 tr.trial-open > td { padding: 4px 6px 10px 22px; background: #fbfcfd; }
-.trial-changes { border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; margin-bottom: 6px; background: var(--panel); }
-.trial-changes-head { font-size: 12px; color: var(--muted); }
 tr.trial-changed td { background: #fff8f0; }
 tr.chg-replace td { background: var(--chg-replace); }
 tr.chg-remove td { background: var(--chg-remove); }
 tr.chg-add td { background: var(--chg-add); }
 tr.chg-qty td { background: var(--chg-qty); }
 tr.chg-head td { background: var(--chg-head); }
-.trial-heads { border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; margin-bottom: 6px; background: var(--panel); }
 .trial-layout { margin: 2px 0 4px; }
 table.small .pair-split { border-left: 2px solid var(--line); }
 tr.pair-sides th { font-weight: 600; color: inherit; }
 .trial-plus { color: var(--bad); font-weight: 600; }
 th.sortable { cursor: pointer; user-select: none; }
 tr.trial-total th { color: inherit; font-weight: 600; }
-.trial-foot { display: flex; justify-content: flex-end; padding: 8px 0; }
+.trial-top {
+  position: sticky; top: 0; z-index: 3; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  margin: -10px -12px 0; padding: 6px 12px; background: var(--panel); border-bottom: 1px solid var(--line);
+}
+.trial-top .premise-line { margin: 0; }
+.trial-top-total { white-space: nowrap; }
+.trial-top-total b { font-size: 16px; }
+.trial-tools { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; padding: 8px 0; }
+.trial-part { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); }
+tr.trial-product { cursor: pointer; }
+tr.trial-product:hover td { background: #f2f5f9; }
+tr.trial-product.on td { background: var(--accent-soft); }
+tr.trial-product td { padding-top: 5px; padding-bottom: 5px; }
+tr.trial-add td { border-bottom: none; padding-top: 6px; }
+.trial-log {
+  position: sticky; bottom: 0; z-index: 3; margin: 10px -12px -10px; padding: 4px 12px 6px;
+  background: var(--panel); border-top: 2px solid var(--line);
+}
+.trial-log-toggle { border-color: transparent; padding: 2px 4px; font-weight: 600; }
+.trial-log-body { max-height: 30vh; }
 
 /* 版管理: 検討案ごと消す確認の枠 */
 .verdel { margin: 10px 0; padding: 8px 12px; border: 1px solid var(--bad); border-radius: 6px; background: var(--panel); }
@@ -243,7 +259,7 @@ tr.trial-total th { color: inherit; font-weight: 600; }
 .change-replacements .change-line { display: flex; gap: 4px; }
 .change-replacements .change-register { margin-left: 0; padding-left: 0; }
 
-/* ③原価比較: タイル・左の差の横棒・右の選んだ製品 */
+/* ③原価を見る: タイル・左の差の横棒・右の選んだ製品 */
 .cmp-tools { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
 .cmp-tools label { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); }
 .cmp-tiles { display: grid; gap: 6px; margin-bottom: 10px; }
@@ -333,8 +349,6 @@ tr.look-current td { background: var(--accent-soft); }
 .trial-code { border: 0; background: transparent; color: inherit; padding: 0; text-decoration: underline; cursor: pointer; font: inherit; }
 .trial-structure-tools { display: flex; align-items: center; gap: 12px; }
 .trial-structure-tools button[aria-pressed="true"] { background: #dceafa; }
-.trial-parts-layout { margin-bottom: 8px; }
-.trial-view { margin: 6px 0 2px; }
 table.trial-all th, table.trial-all td { white-space: nowrap; }
 table.trial-bulk th, table.trial-bulk td { white-space: nowrap; }
 table.trial-bulk th.trial-bulk-group { text-align: center; border-left: 1px solid var(--line); }

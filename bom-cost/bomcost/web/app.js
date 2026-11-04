@@ -186,7 +186,7 @@ async function init() {
     return;
   }
   if (state.scenarios.length) await selectScenario(state.scenarios[0].scenario_id);
-  await showScreen("group");  // 版があれば①対象製品
+  await showScreen("group");  // 版があれば①製品を選ぶ
 }
 
 // 版の表示「D-123 新型ユニット（第2版）」。v は版 ID か版の行（開発番号・名称・版の番号を持つもの）
@@ -294,7 +294,7 @@ function roleTag(role) {
   return el("span", { class: cls }, role);
 }
 
-// ツリーの行の印（一部未登録・二重計上の判定）。構成変更の画面の行でも使う
+// ツリーの行の印（一部未登録・二重計上の判定）。②の画面の行でも使う
 function nodeMarks(node, head) {
   const marks = [];
   if (node.cost !== null && node.incomplete) marks.push(el("span", { class: "tag warn" }, "一部未登録"));

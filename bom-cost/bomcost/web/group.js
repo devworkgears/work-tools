@@ -1,8 +1,8 @@
-// ①対象製品: 版の製品を絞って並べ、検討案の名前を付けて一覧の製品で試算を作る。直すのは②構成変更の画面（trial.js）。
+// ①製品を選ぶ: 版の製品を絞って並べ、検討案の名前を付けて一覧の製品で試算を作る。直すのは②部品・費目を変えるの画面（trial.js）。
 // app.js・screens.js の関数を使う。
 "use strict";
 
-const TRIAL_HEAD = "MANUFACTURING"; // 検討案の原価は製造原価で出す（構成変更の画面も使う）
+const TRIAL_HEAD = "MANUFACTURING"; // 検討案の原価は製造原価で出す（②の画面も使う）
 
 // 最後に並べた一覧の条件。作るボタンは入力欄の今の値でなく、表示中の一覧と同じ条件で作る
 let groupShown = null; // { version, q, count }
@@ -42,7 +42,7 @@ async function drawGroup() {
     el("td", { class: "num" }, String(t.count)),
     el("td", {}, versionLabel(t.version_id)),
     el("td", {},
-      el("button", { type: "button", onclick: () => guarded(() => openTrial(t.version_id, t.name)) }, "構成変更で開く"),
+      el("button", { type: "button", onclick: () => guarded(() => openTrial(t.version_id, t.name)) }, "②で開く"),
       el("button", { type: "button", onclick: () => guarded(() => deleteTrial(t)) }, "消す")),
   ));
   const none = (n) => [el("tr", {}, el("td", { colspan: n, class: "muted" }, "なし"))];
