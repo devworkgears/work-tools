@@ -89,20 +89,24 @@ function compareHeadline(t) {
 }
 
 // ファイル名は API の Content-Disposition（filename*）から取る。api() は応答の見出しを返さないので fetch を直に使う
-async function exportCompareXlsx() {
-  const res = await fetch(`/api/group/compare/table/xlsx?${qs(compareState.query)}`);
+async function exportCompareXlsx(path = "/api/group/compare/table/xlsx") {
+  const res = await fetch(`${path}?${qs(compareState.query)}`);
   if (!res.ok) {
     const type = res.headers.get("Content-Type") || "";
     throw new Error((type.includes("json") && (await res.json()).error) || `${res.status}`);
   }
   const named = (res.headers.get("Content-Disposition") || "").match(/filename\*=UTF-8''([^;]+)/);
   const url = URL.createObjectURL(await res.blob());
-  const a = el("a", { href: url, download: named ? decodeURIComponent(named[1]) : "bom-cost-compare.xlsx" });
+  const a = el("a", { href: url, download: named ? decodeURIComponent(named[1]) : "bom-cost.xlsx" });
   document.body.append(a);
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+
+// 分析用のブック: ③で選んでいる版・検討案（製品の絞り込み・償却費を無視も）を範囲に、ピボットで切れる縦長の表
+const analysisBookButton = () => el("button", { type: "button",
+  onclick: () => guarded(() => exportCompareXlsx("/api/group/compare/analysis/xlsx")) }, "Excel に出す（分析用）");
 
 function compareLayoutSeg() {
   const button = (value, label) => el("button", {
@@ -145,7 +149,7 @@ const cmpHeadClass = (head) => (CMP_KEY_HEADS.has(head) ? "cmp-key" : "cmp-minor
 function drawCompareView() {
   if (compareState.layout === "analysis") {
     document.getElementById("cmp-body").replaceChildren(compareHeadline(compareState.table),
-      el("div", { class: "cmp-tools" }, compareLayoutSeg()), el("section", { class: "cmp-an", id: "cmp-an" }));
+      el("div", { class: "cmp-tools" }, compareLayoutSeg(), analysisBookButton()), el("section", { class: "cmp-an", id: "cmp-an" }));
     drawAnalysis();
     return;
   }
@@ -157,10 +161,12 @@ function drawCompareView() {
   }, r.heads.map((h) => el("option", { value: h.id, selected: h.id === head }, h.label)));
   const tools = el("div", { class: "cmp-tools" }, compareLayoutSeg(), el("label", {}, "費目 ", headSelect));
   if (isTable) {
-    tools.append(el("button", { type: "button", onclick: () => guarded(exportCompareXlsx) }, "Excel に書き出す"));
+    tools.append(el("button", { type: "button", onclick: () => guarded(() => exportCompareXlsx()) }, "Excel に書き出す"),
+      analysisBookButton());
     document.getElementById("cmp-body").replaceChildren(compareHeadline(r), tools, ...compareGrid(r, head));
     return;
   }
+  tools.append(analysisBookButton());
 
   const products = compareProducts(r);
   const withTrial = products.filter((p) => Object.keys(p.trials).length);

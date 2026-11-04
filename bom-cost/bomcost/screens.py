@@ -144,6 +144,7 @@ class Screens:
 
     def routes(self) -> list[tuple[str, str, Callable[..., Response]]]:
         return [
+            ("GET", r"/api/import/tables", self.import_tables),
             ("POST", r"/api/import/preview", self.import_preview),
             ("POST", r"/api/import", self.import_files),
             ("GET", r"/api/versions/info", self.version_info),
@@ -214,6 +215,14 @@ class Screens:
                 }
             )
         return result
+
+    def import_tables(self, params: dict[str, str]) -> Response:
+        """取り込める表と、表ごとの項目（必須か）。ファイルを選ぶ前の表の選択肢に使う。"""
+        return _json_response([
+            {"id": table_id, "label": TABLE_LABELS[table_id],
+             "fields": [{"name": f.name, "label": f.label, "required": f.required} for f in fields]}
+            for table_id, fields in TABLE_FIELDS.items()
+        ])
 
     def import_preview(self, params: dict[str, str], body: dict[str, Any]) -> Response:
         """送られたファイルの見出しと先頭の行、表ごとの保存済みの対応づけ（あれば）を返す。"""

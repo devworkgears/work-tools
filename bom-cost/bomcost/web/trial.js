@@ -56,6 +56,7 @@ async function openSelectedTrial() {
   trialOpen.clear();
   trialChecked.clear();
   trialHeadValues.clear();
+  trialBook.check = null;
   await drawTrial();
 }
 
@@ -717,6 +718,80 @@ async function productTable(t, p, changes, heads) {
   };
 }
 
+// 費目のブック: マスタ登録のブックと同じ流れ（① 書き出して Excel で開く → ② 取り込む → 確認 → 決定）
+const trialBook = { file: null, fileShown: false, check: null }; // check: { body, result }
+
+async function trialBookBody() {
+  const t = trialOpened;
+  const file = trialBook.file?.files[0];
+  const body = { version_id: t.version, name: t.name, head: TRIAL_HEAD };
+  if (!file) return body;
+  if (file.size > MAX_FILE_BYTES) throw new Error(`${file.name} が大きすぎる（上限 16 MB）`);
+  return { ...body, filename: file.name, content: await readAsBase64(file) };
+}
+
+function trialBookBar() {
+  trialBook.file ??= el("input", { type: "file", accept: ".xlsx,.xlsm" });
+  const t = trialOpened;
+  const base = { version_id: t.version, name: t.name };
+  const open = () => guarded(async () => {
+    // 置き場のブックに取り込んでいない差があるなら、作り直して消す前に確かめる（ブックが無い・読めない時は作り直す）
+    const diff = await api("POST", "/api/group/heads/book/check", base).catch(() => null);
+    const keep = diff && diff.changed > 0
+      && !confirm(`取り込んでいない差があります（${trialBookText(diff)}）。ブックを作り直しますか？`);
+    const r = await api("POST", keep ? "/api/group/heads/book/open" : "/api/group/heads/book", base);
+    showMessage(`${r.opened ? "開きました" : "書き出しました"}: ${r.path}`, "info");
+  });
+  const check = () => guarded(async () => {
+    const body = await trialBookBody();
+    trialBook.check = { body, result: await api("POST", "/api/group/heads/book/check", body) };
+    await drawTrial();
+  });
+  const toggleFile = () => {
+    trialBook.fileShown = !trialBook.fileShown;
+    if (!trialBook.fileShown) trialBook.file.value = "";
+    guarded(drawTrial);
+  };
+  return el("div", { class: "trial-book" },
+    el("button", { type: "button", onclick: open }, "① Excel で開く"),
+    el("span", { class: "muted", "aria-hidden": "true" }, "→"),
+    el("button", { type: "button", onclick: check }, "② 取り込む"),
+    el("button", { type: "button", "aria-pressed": String(trialBook.fileShown), onclick: toggleFile }, "別のファイル"),
+    trialBook.fileShown ? trialBook.file : null);
+}
+
+function trialBookText(r) {
+  return `${r.products} 製品・${r.changed} 件の値`;
+}
+
+function trialBookPanel() {
+  const c = trialBook.check;
+  if (!c) return null;
+  const r = c.result;
+  const close = () => { trialBook.check = null; guarded(drawTrial); };
+  const apply = () => guarded(async () => {
+    await api("POST", "/api/group/heads/book/apply", c.body);
+    trialBook.check = null;
+    trialBook.file.value = "";
+    await drawTrial();
+    showMessage(`取り込みました（${trialBookText(r)}）`, "info");
+  });
+  return el("section", { class: "trial-book-check", "aria-label": "取り込みの確認" },
+    el("h3", {}, "取り込みの確認"),
+    el("p", {}, `変わる値 ${trialBookText(r)}・同じ ${r.unchanged} 製品`),
+    r.changes.length ? table([numTh("行"), "製品", "名称", "費目", numTh("今"), numTh("ブック")], r.changes.map((x) => el("tr", {},
+      el("td", { class: "num" }, x.row), el("td", {}, x.product), el("td", {}, x.product_name), el("td", {}, x.head_label),
+      numTd(x.current, { yen: true }), numTd(x.value, { yen: true })))) : null,
+    r.errors.length ? [
+      el("p", { class: "missing" }, `行の誤り ${r.errors.length}件`),
+      table(["シート", numTh("行"), "内容"], r.errors.map((e) => el("tr", {},
+        el("td", {}, e.sheet), el("td", { class: "num" }, e.row ?? ""), el("td", {}, e.message)))),
+    ] : null,
+    el("div", { class: "form-row" },
+      el("button", { type: "button", disabled: r.errors.length > 0 || r.changed === 0, onclick: apply }, "決定"),
+      el("button", { type: "button", onclick: close }, "やめる")));
+}
+
 // 変更の記録（全製品・1回の操作ごとに1行）。置換先は代わりの部品ごとに「・」で並べる。画面の下に留めて、畳める
 function changeLog(changes, headLabel) {
   const rows = changes.rows.map((c) => el("tr", { class: CHANGE_CLASS[c.kind] },
@@ -776,9 +851,10 @@ async function drawTrial() {
   const tools = el("div", { class: "trial-tools" }, trialModeSeg(),
     ...(products ? [el("span", { class: "muted" }, `製品 ${countText(p.count, p.products.length, p.truncated)}`)] : partSearch()),
     el("span", { class: "spacer" }),
+    products ? trialBookBar() : null,
     products ? el("button", { type: "button", onclick: products.send }, "費目をまとめて変える") : null);
   document.getElementById("trial-body").replaceChildren(
-    top, tools,
+    top, tools, ...(products && trialBook.check ? [trialBookPanel()] : []),
     ...(products ? [products.table] : parts ? partBlock(parts) : []),
     changeLog(changes, p.head_label),
   );

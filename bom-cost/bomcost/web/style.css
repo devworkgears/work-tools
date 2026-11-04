@@ -225,6 +225,10 @@ tr.trial-total th { color: inherit; font-weight: 600; }
 .trial-top-total { white-space: nowrap; }
 .trial-top-total b { font-size: 16px; }
 .trial-tools { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; padding: 8px 0; }
+.trial-book { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.trial-book button[aria-pressed="true"] { background: #dceafa; }
+.trial-book-check { border: 1px solid var(--line); border-radius: 4px; padding: 4px 12px; margin-bottom: 8px; }
+.trial-book-check .form-row { padding: 8px 0; }
 .trial-part { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); }
 tr.trial-product { cursor: pointer; }
 tr.trial-product:hover td { background: #f2f5f9; }
@@ -249,6 +253,8 @@ tr.trial-add td { border-bottom: none; padding-top: 6px; }
 
 /* マスタ登録のタブ */
 .manual-tabs { justify-self: start; flex-wrap: wrap; }
+.import-fields { display: flex; flex-wrap: wrap; gap: 4px 10px; min-height: 26px; align-items: center; }
+.import-field { display: inline-flex; align-items: center; gap: 3px; color: var(--text); }
 .mreg-dev { justify-self: start; }
 .mreg-book > span { align-self: center; }
 .mreg-book button[aria-pressed="true"] { background: #dceafa; }

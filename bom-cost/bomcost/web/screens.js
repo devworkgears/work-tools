@@ -170,6 +170,7 @@ async function showScreen(name) {
   else if (name === "change") await enterChange();
   else if (name === "manual") await renderManual();
   else if (name === "lookup") await enterLookup();
+  else if (name === "import") await enterImport();
   else if (name === "versions") await drawVersions();
 }
 
@@ -657,6 +658,22 @@ function closableTitle(text, onClose) {
   return el("div", { class: "detail-title" }, text, " ", el("button", { type: "button", onclick: onClose }, "閉じる"));
 }
 
+// 表の選択肢と、選んだ表の列（必須の印つき）。ファイルを選ぶ前から出す
+let importTables = null;
+
+async function enterImport() {
+  importTables ??= await api("GET", "/api/import/tables");
+  if (!screenState.preview) options(document.getElementById("import-table"), importTables.map((t) => [t.id, t.label]));
+  drawImportFields();
+}
+
+function drawImportFields() {
+  const id = document.getElementById("import-table").value;
+  const t = (screenState.preview?.data.tables ?? importTables ?? []).find((x) => x.id === id);
+  document.getElementById("import-fields").replaceChildren(...(t?.fields ?? []).map((f) =>
+    el("span", { class: "import-field" }, f.label, f.required ? el("span", { class: "tag warn" }, "必須") : null)));
+}
+
 async function previewFile(sheet) {
   const input = document.getElementById("import-file");
   const file = input.files[0];
@@ -675,6 +692,7 @@ async function previewFile(sheet) {
 }
 
 function drawMapping() {
+  drawImportFields();
   const p = screenState.preview;
   const box = document.getElementById("import-preview");
   if (!p) { box.replaceChildren(); return; }

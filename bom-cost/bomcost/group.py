@@ -9,6 +9,7 @@ import unicodedata
 from collections import Counter
 from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 from urllib.parse import quote
 
@@ -144,12 +145,17 @@ class Group:
             ("GET", r"/api/group/heads", self.heads),
             ("GET", r"/api/group/heads/all", self.trial_heads),
             ("POST", r"/api/group/heads/bulk", self.set_heads),
+            ("POST", r"/api/group/heads/book", self.write_heads_book),
+            ("POST", r"/api/group/heads/book/open", self.open_heads_book),
+            ("POST", r"/api/group/heads/book/check", self.check_heads_book),
+            ("POST", r"/api/group/heads/book/apply", self.apply_heads_book),
             ("POST", r"/api/group/scenarios", self.add_scenarios),
             ("GET", r"/api/group/compare", self.compare),
             ("GET", r"/api/group/compare/table", self.compare_table),
             ("GET", r"/api/group/compare/table/xlsx", self.compare_table_xlsx),
             ("GET", r"/api/group/compare/breakdown", self.compare_breakdown),
             ("GET", r"/api/group/compare/analysis", self.compare_analysis),
+            ("GET", r"/api/group/compare/analysis/xlsx", self.compare_analysis_xlsx),
         ]
 
     # 比べる ------------------------------------------------------------------
@@ -196,6 +202,16 @@ class Group:
         name = compare_file_name(f"{version.dev_number or version.version_id}第{version.revision}版", data["names"])
         return Response(200, body, XLSX_TYPE, {
             "Content-Disposition": f"attachment; filename=\"bom-cost-compare.xlsx\"; filename*=UTF-8''{quote(name)}",
+        })
+
+    def compare_analysis_xlsx(self, params: dict[str, str]) -> Response:
+        """compare/table と同じ問い合わせを範囲に、ピボットで切れる縦長のブック（analysisbook）を .xlsx で。"""
+        from .analysisbook import analysis_book, analysis_file_name
+
+        version, names, body = analysis_book(self, params, datetime.now())
+        name = analysis_file_name(f"{version.dev_number or version.version_id}第{version.revision}版", names)
+        return Response(200, body, XLSX_TYPE, {
+            "Content-Disposition": f"attachment; filename=\"bom-cost-analysis.xlsx\"; filename*=UTF-8''{quote(name)}",
         })
 
     def compare_breakdown(self, params: dict[str, str]) -> Response:
@@ -692,6 +708,13 @@ class Group:
         items = body.get("items")
         if not isinstance(items, list) or not all(isinstance(x, dict) for x in items):
             raise ApiError(400, "変える所（items）は製品・費目の値の組の配列にする")
+        touched, count = self._apply_heads(version, name, head, items)
+        return _json_response({"version_id": version.version_id, "name": name, "count": count,
+                               "products": sorted(touched)})
+
+    def _apply_heads(self, version: Version, name: str, head: CostHead, items: list[dict[str, Any]]
+                     ) -> tuple[dict[str, Scenario], int]:
+        """set_heads の中身（保存まで）。製品 → 当てた試算と、当てた費目の数を返す。"""
         existing = self._scenarios(version, name)
         touched: dict[str, Scenario] = {}
         recorded_at = datetime.now()
@@ -717,8 +740,116 @@ class Group:
         if not count:
             raise ApiError(400, "変える値が無い")
         self.store.save_scenarios(touched.values())
-        return _json_response({"version_id": version.version_id, "name": name, "count": count,
-                               "products": sorted(touched)})
+        return touched, count
+
+    # 費目のブック（Excel で打ち替えて、まとめて費目変更にする） ------------------
+
+    def _heads_book(self, body: dict[str, Any]) -> tuple[Version, str, Path]:
+        """body の版・検討案と、その費目のブックの置き場（マスタのブックと同じフォルダ）。"""
+        from .headbook import book_name
+
+        version = self._version(body, "version_id")
+        name = _text_field(body, "name", "検討名")
+        folder = self.api.master_dir
+        if folder is None:
+            if self.store.path is None:
+                raise ApiError(400, "DB がファイルでないのでブックの置き場が無い")
+            folder = self.store.path.parent
+        stem = "bom-cost" if self.store.path is None else self.store.path.stem
+        text = f"{version.dev_number or version.version_id}第{version.revision}版"
+        return version, name, Path(folder) / book_name(stem, text, name)
+
+    def _heads_current(self, version: Version, name: str) -> dict[str, Any]:
+        """検討名の試算がある製品 → 費目変更で書き換えられる費目の今の変更後の値（品番の順）。"""
+        from .headbook import HeadValues
+
+        sids = self._scenarios(version, name)
+        current = {}
+        for product in sorted(sids):
+            _, after = self._head_values(version, name, product, sids[product], EDITABLE_HEADS)
+            current[product] = HeadValues(product, self._name(version, product),
+                                          {h: after.value(h) for h in EDITABLE_HEADS})
+        return current
+
+    def write_heads_book(self, params: dict[str, str], body: dict[str, Any]) -> Response:
+        """検討名の製品×費目（変更後の値）をブックに書き、Windows では既定のアプリで開く。開けない環境ではパスを返すだけ。"""
+        from .headbook import heads_book_bytes
+        from .masterbook import save_book
+
+        version, name, path = self._heads_book(body)
+        current = self._heads_current(version, name)
+        if not current:
+            raise ApiError(400, f"検討案 {name} に試算のある製品が無い")
+        data = heads_book_bytes(list(current.values()), version_label(version), name, datetime.now())
+        try:
+            save_book(path, data)
+        except PermissionError:
+            raise ApiError(409, "ブックが Excel で開いたままで書き出せない（閉じてからもう一度）") from None
+        except OSError as exc:
+            raise ApiError(500, f"ブックを書き出せない: {exc.strerror or exc}") from None
+        return self._open_book(path)
+
+    def open_heads_book(self, params: dict[str, str], body: dict[str, Any]) -> Response:
+        """置き場のブックを書き直さずに開く。無ければ 404。"""
+        _, _, path = self._heads_book(body)
+        if not path.is_file():
+            raise ApiError(404, "ブックがまだ無い（先に［Excel で開く］）")
+        return self._open_book(path)
+
+    def _open_book(self, path: Path) -> Response:
+        opened = False
+        if self.api.open_file is not None:
+            try:
+                self.api.open_file(path)
+                opened = True
+            except OSError:
+                pass
+        return _json_response({"path": str(path), "opened": opened})
+
+    def _heads_plan(self, body: dict[str, Any]) -> tuple[Version, str, str, Any, dict[str, Any]]:
+        """body に content があれば送られたブック、無ければ置き場のブックを読み、今の変更後の値と比べる。"""
+        from .headbook import plan_heads
+        from .screens import Screens
+
+        version, name, path = self._heads_book(body)
+        if body.get("content"):
+            source, data = Screens._upload_bytes(body)
+            if not source.lower().endswith((".xlsx", ".xlsm")):
+                raise ApiError(400, f"{source} は Excel のブック（.xlsx）でない")
+        else:
+            source = str(path)
+            try:
+                data = path.read_bytes()
+            except FileNotFoundError:
+                raise ApiError(404, "ブックがまだ無い（先に［Excel で開く］）") from None
+            except PermissionError:
+                raise ApiError(409, "ブックを読めない（Excel が開いたまま？）") from None
+        current = self._heads_current(version, name)
+        try:
+            plan = plan_heads(data, name, current)
+        except Exception:  # 壊れた .xlsx は zipfile などの例外で落ちるので、まとめて読めないとする
+            raise ApiError(400, f"{source} を Excel のブックとして読めない") from None
+        return version, name, source, plan, current
+
+    def check_heads_book(self, params: dict[str, str], body: dict[str, Any]) -> Response:
+        """ブックと今の変更後の値の差（変わる値の一覧）と行の誤りを返す。何も保存しない。"""
+        from .headbook import plan_json
+
+        _, _, source, plan, current = self._heads_plan(body)
+        return _json_response({"source": source, **plan_json(plan, current)})
+
+    def apply_heads_book(self, params: dict[str, str], body: dict[str, Any]) -> Response:
+        """ブックを読み直し、変わった値だけを製品ごとに1回の費目変更で入れる。行の誤りが1つでもあれば何も入れず 400。"""
+        from .headbook import plan_json
+
+        version, name, source, plan, current = self._heads_plan(body)
+        result = {"source": source, **plan_json(plan, current)}
+        if plan.errors:
+            return _json_response({"error": f"行の誤りが {len(plan.errors)} 件あるので取り込まない", **result}, 400)
+        if not plan.changes:
+            raise ApiError(400, "変える値が無い")
+        self._apply_heads(version, name, _head(body.get("head"), CostHead.MATERIAL), plan.items())
+        return _json_response(result)
 
     # 部品の検索 --------------------------------------------------------------
 
