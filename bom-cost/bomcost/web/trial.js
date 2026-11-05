@@ -421,7 +421,7 @@ function trialNodeRow(ctx, node, path, depth) {
   let specification = node.specification || "";
   let quantity = fmt(node.quantity, { missing: "" });
   if (change?.kind === "REPLACE") {
-    code = [trialCode(node.code), "→", joinReplacements(change, (r) => trialCode(r.code))];
+    code = [trialCode(node.code), "→", joinReplacements(change, (r) => [trialCode(r.code), inheritTag(r.inherited)])];
     const after = change.replacements.map((r) => change.replacement_specifications?.[r.code] || "—").join("・");
     if (specification || after.replace(/[—・]/g, "")) specification = `${specification || "—"}→${after}`;
     name = `${node.name}→${change.replacements.map((r) => r.name || r.code).join("・")}`;
@@ -481,7 +481,7 @@ const emptyCells = () => Array.from({ length: PAIR_COLS }, (_, i) => el("td", { 
 function pairCells(node, depth, twisty, first) {
   return [
     el("td", { class: `num ${first ? "pair-split" : ""}` }, node.balloon ?? ""),
-    el("td", { style: `padding-left:${6 + depth * 18}px` }, twisty, trialCode(node.code)),
+    el("td", { style: `padding-left:${6 + depth * 18}px` }, twisty, trialCode(node.code), inheritTag(node.inherited)),
     el("td", {}, node.name ?? ""), el("td", {}, node.specification || ""),
     el("td", { class: "num" }, fmt(node.quantity, { missing: "" })),
     el("td", {}, node.kind || ""),
@@ -502,7 +502,7 @@ function trialPairRows(ctx, node, path, depth, gone) {
   // 置換は代わりの部品ごとに右へ1行（2つ目からは左を空ける）
   return change.replacements.map((r, i) => el("tr", { class: cls },
     i === 0 ? left : Array.from({ length: PAIR_COLS }, () => el("td", {}, "")),
-    pairCells({ balloon: node.balloon, code: r.code, name: r.name, specification: change.replacement_specifications?.[r.code], quantity: r.quantity, kind: r.kind }, depth, null, true),
+    pairCells({ balloon: node.balloon, code: r.code, name: r.name, specification: change.replacement_specifications?.[r.code], quantity: r.quantity, kind: r.kind, inherited: r.inherited }, depth, null, true),
     i === 0 ? button : el("td", {}, "")));
 }
 
@@ -802,7 +802,7 @@ function changeLog(changes, headLabel) {
     el("td", {}, trialCode(c.part)), el("td", {}, c.part_name), el("td", {}, c.part_specification || ""),
     // 費目変更は員数でなく、変えた費目と値を置換先の欄に
     c.kind === "SET_HEAD" ? el("td", { colspan: 3 }, headValues(c).join("・")) : [
-      el("td", {}, joinReplacements(c, (r) => trialCode(r.code))),
+      el("td", {}, joinReplacements(c, (r) => [trialCode(r.code), inheritTag(r.inherited)])),
       el("td", {}, joinReplacements(c, (r) => r.name || "—")),
       el("td", {}, joinReplacements(c, (r) => c.replacement_specifications?.[r.code] || "—"))],
     el("td", { class: "num" }, c.kind === "REPLACE" ? joinReplacements(c, (r) => fmt(r.quantity))

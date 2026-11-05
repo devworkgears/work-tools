@@ -251,10 +251,13 @@ class Group:
         series = [_breakdown_series(None, view, version, by, weights, current, 0)]
         for name in names:
             scenario_ids = self._scenarios(version)
-            parts = {code: (_trial_parts(structure, self.store.load_scenario(scenario_ids[code], version))
-                            if code in scenario_ids else current[code]) for code in weights}
+            scenarios = {code: self.store.load_scenario(scenario_ids[code], version)
+                         for code in weights if code in scenario_ids}
+            parts = {code: (_trial_parts(structure, scenarios[code]) if code in scenarios else current[code])
+                     for code in weights}
             series.append(_breakdown_series(name, view, version, by, weights, parts,
-                                            sum(1 for code in weights if code not in scenario_ids)))
+                                            sum(1 for code in weights if code not in scenario_ids),
+                                            views={c: _part_view(view, s) for c, s in scenarios.items()}))
         return _json_response({"group_id": version.version_id, "by": by, "weight": weight,
                                "products": list(weights), "excluded": excluded, "series": series})
 
@@ -318,16 +321,17 @@ class Group:
             if not ignore and b.value(Head.AMORTIZATION) is None:
                 failed.append(code if name is None else f"{code}（{name}）")
             material = b.value(Head.MATERIAL)
-            return b, Decimal(0) if material is None else material - _known_material(view, parts)
+            return b, Decimal(0) if material is None else material - _known_material(_part_view(view, scenario), parts)
 
         def series_of(name: str | None, parts: dict[str, _Parts], without_trial: int,
-                      owns: dict[str, tuple[Breakdown, Decimal]]) -> dict[str, Any]:
+                      owns: dict[str, tuple[Breakdown, Decimal]], views: dict[str, _View] | None = None
+                      ) -> dict[str, Any]:
             def heads(w: dict[str, Decimal]) -> list[dict[str, Any]]:
                 return _head_rows(w, owns, factor, ignore) if with_heads else []
 
-            s = _breakdown_series(name, view, version, by, weights, parts, without_trial, factor, heads(weights))
+            s = _breakdown_series(name, view, version, by, weights, parts, without_trial, factor, heads(weights), views)
             by_volume = {c: volumes[c] for c in weights if c in volumes}
-            annual = _breakdown_series(name, view, version, by, by_volume, parts, 0, factor, heads(by_volume))
+            annual = _breakdown_series(name, view, version, by, by_volume, parts, 0, factor, heads(by_volume), views)
             amounts = {r["key"]: r["amount"] for r in annual["rows"]}
             counts = _key_products(version, by, {c: parts[c] for c in weights})
             for r in s["rows"]:
@@ -352,7 +356,8 @@ class Group:
                          for code in weights if code in scenario_ids}
             parts = {code: (parts_of(code, scenarios[code]) if code in scenarios else current[code]) for code in weights}
             owns = {**current_owns, **owns_of(name, scenarios, {c: parts[c] for c in scenarios})} if with_heads else {}
-            series.append(series_of(name, parts, sum(1 for code in weights if code not in scenario_ids), owns))
+            series.append(series_of(name, parts, sum(1 for code in weights if code not in scenario_ids), owns,
+                                    {c: _part_view(view, s) for c, s in scenarios.items()}))
         if failed:
             raise ApiError(400, _amortization_missing(list(dict.fromkeys(failed))))
         return _json_response({
@@ -473,6 +478,7 @@ class Group:
             inside, outer = scenario.locks()
             if inside or outer:
                 locks[product] = {"inside": inside, "outer": outer}
+            inherited = scenario.inherited_costs()
             for recorded, records in zip(_batches(scenario.history), replayed_batches(scenario, head)):
                 row = _batch_json(records)
                 row["sequence"], row["batch"] = recorded[0].sequence, recorded[0].batch
@@ -486,6 +492,9 @@ class Group:
                 for r in row["replacements"]:
                     r["name"] = self._name(version, r["code"])
                     r["kind"] = self._kind(version, r["code"])
+                    # 空いた費目に置き換えた元の部品の値を引き継いだ費目（Scenario.inherited_costs）。無ければ付けない
+                    if r["code"] in inherited:
+                        r["inherited"] = [h.name for h in inherited[r["code"]]]
                 if row["difference"] is None:
                     missing += 1
                 else:
@@ -1184,6 +1193,16 @@ def _contribution(current: dict[str, Any], after: dict[str, Any]) -> dict[str, A
             "missing": len(rows) - len(known), "rows": rows}
 
 
+def _part_view(view: _View, scenario: Scenario | None) -> _View:
+    """部品の行の材料費を出す一括の見方 view を、試算の置換の代わりの部品が値を引き継ぐなら、その値を入れた版の上で作り直す。"""
+    priced = view.version if scenario is None else scenario.priced_version()
+    if priced is view.version:
+        return view
+    s = view.scenario
+    return _View(Scenario(s.name, s.base, s.product_code, priced, s.head, s.policy),
+                 view.mode, view.head, view.by_balloon, view.ignore_amortization)
+
+
 def _known_material(view: _View, parts: _Parts) -> Decimal:
     """1台分の直の子の材料費の計（未登録は除く）。"""
     total = Decimal(0)
@@ -1222,14 +1241,16 @@ def _head_rows(weights: dict[str, Decimal], owns: dict[str, tuple[Breakdown, Dec
 
 def _breakdown_series(name: str | None, view: _View, version: Version, by: str, weights: dict[str, Decimal],
                       parts: dict[str, _Parts], without_trial: int, factor: Decimal = Decimal(1),
-                      heads: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+                      heads: list[dict[str, Any]] | None = None, views: dict[str, _View] | None = None) -> dict[str, Any]:
     """製品ごとの直の子を重み（weights）を掛けてまとめ方 by の行に足し、金額の高い順に割合と累積の割合を付ける。
 
     factor は部品の行の金額に掛ける率（製造原価で見る時）。heads（製品の費目の行）は部品の行の後に置き、計・割合に含める。
+    views は製品ごとに view の代わりに使う見方（試算の置換の代わりの部品が値を引き継ぐ製品・_part_view）。
     """
     key_of = BREAKDOWN_KEYS[by]
     groups: dict[str, dict[str, Any]] = {}
     for product, w in weights.items():
+        priced = (views or {}).get(product, view)
         for child, row in parts[product].items():
             item = version.items.get(child)
             child_name, spec = ("", "") if item is None else (item.name, item.specification)
@@ -1244,12 +1265,12 @@ def _breakdown_series(name: str | None, view: _View, version: Version, by: str, 
             for code, qty in row["terms"].items():
                 if not qty:
                     continue
-                cost = view.cost(code, CostHead.MATERIAL)
+                cost = priced.cost(code, CostHead.MATERIAL)
                 if cost is None:
                     missing = True
                     continue
                 known, found = known + qty * cost, True
-                g["incomplete"] |= view.incomplete(code, CostHead.MATERIAL)
+                g["incomplete"] |= priced.incomplete(code, CostHead.MATERIAL)
             g["missing"] += missing
             if found:
                 g["amount"] = (g["amount"] or Decimal(0)) + w * known * factor

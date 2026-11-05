@@ -312,10 +312,18 @@ function roleTag(role) {
   return el("span", { class: cls }, role);
 }
 
+// 置換の代わりの部品が、空いた費目（heads は費目の id）に置き換えた元の部品の値を引き継いだ印。②の画面でも使う
+function inheritTag(heads) {
+  if (!heads?.length) return null;
+  const label = (id) => [...state.meta.heads, ...state.meta.master_heads].find((h) => h.id === id)?.label ?? id;
+  return el("span", { class: "tag", title: heads.map(label).join("・") }, "引継");
+}
+
 // ツリーの行の印（一部未登録・二重計上の判定）。②の画面の行でも使う
 function nodeMarks(node, head) {
   const marks = [];
   if (node.cost !== null && node.incomplete) marks.push(el("span", { class: "tag warn" }, "一部未登録"));
+  if (node.inherited?.length) marks.push(inheritTag(node.inherited));
   if (node.verdict && node.verdict !== "判定できない") {
     // 印の数は計算に効かない。比べた2つの値を並べ、何を見て推定したかを出す
     const [own, compared] = node.verdict_values || [null, null];

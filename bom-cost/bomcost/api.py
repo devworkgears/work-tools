@@ -230,11 +230,13 @@ class _View:
         """
         self.scenario = scenario
         self.ignore_amortization = ignore_amortization
-        self.version = scenario.version
         self.mode = mode
         self.head = head
         self.by_balloon = by_balloon
         self.diff = mode == "diff"
+        # 差分では置換の代わりの部品の空いた費目を元の部品の値で埋める（inherited は 品番 → 引き継いだ費目）
+        self.inherited = scenario.inherited_costs() if self.diff else {}
+        self.version = scenario.priced_version() if self.inherited else scenario.version
         self.root = scenario.product_code if self.diff else scenario.base
         self.overrides: dict[str, tuple[BomLine, ...]] = scenario.overrides() if self.diff else {}
         self._calcs: dict[CostHead, CostCalculator] = {}
@@ -386,6 +388,7 @@ class _View:
             "cost": _s(cost),
             "amount": None if quantity is None else _s(_mul(quantity, cost)),
             "own_missing": self.own_value(code, self.head) is None,
+            "inherited": [h.name for h in self.inherited.get(code, {})],
             "incomplete": self.incomplete(code),
             "has_children": bool(self.lines(code)),
             "role": self.role(parent, line) if line is not None or code == self.root else "",

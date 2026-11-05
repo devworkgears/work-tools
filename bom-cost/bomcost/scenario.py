@@ -3,14 +3,14 @@
 試算の結果の構成は「仮の製品 → 土台 ×1 ＋ 変更の行」で、仮の製品の子を上書きして計算する。
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal
 from enum import Enum
 from typing import Iterable
 
 from .formula import EDITABLE_HEADS, Head, OwnValues, registered_own
-from .model import BomLine, Code, CostHead, Version
+from .model import BomLine, Code, CostHead, CostRow, Version
 from .mold import Allocation, usage_per_unit
 from .normalize import NumberLike, to_code, to_decimal, to_optional_code
 from .rollup import CostResult, ScopePolicy, calculate_cost
@@ -179,6 +179,47 @@ class Scenario:
     def overrides(self, changes: tuple[Change, ...] | None = None) -> dict[str, tuple[BomLine, ...]]:
         return {self.product_code: self.root_lines(changes)}
 
+    def inherited_costs(self, version: Version | None = None, changes: tuple[Change, ...] | None = None
+                        ) -> dict[str, dict[CostHead, Decimal]]:
+        """置換（省けば履歴の全部）の代わりの部品が、版で空の費目に引き継ぐ置き換えた元の部品の値（品番 → 費目 → 値）。
+
+        同じ代わりの部品を、その費目の値が食い違う（片方が空も含む）元の部品の置換に使ったら、その費目は引き継がない。
+        元の部品の値は版の値で、版で空なら先の置換で引き継いだ値。
+        """
+        version = version or self.version
+        found: dict[str, dict[CostHead, set[Decimal | None]]] = {}
+
+        def value(code: str, head: CostHead) -> Decimal | None:
+            own = version.cost_value(code, head)
+            seen = found.get(code, {}).get(head, set())
+            return own if own is not None or len(seen) != 1 else next(iter(seen))
+
+        for change in self.changes if changes is None else changes:
+            if change.kind is not ChangeKind.REPLACE or change.replacement == change.part:
+                continue
+            for head in _INHERITED_HEADS:
+                if version.cost_value(change.replacement, head) is None:
+                    found.setdefault(change.replacement, {}).setdefault(head, set()).add(value(change.part, head))
+        result: dict[str, dict[CostHead, Decimal]] = {}
+        for code, heads in found.items():
+            values = {h: v for h, seen in heads.items() if len(seen) == 1 and (v := next(iter(seen))) is not None}
+            if values:
+                result[code] = values
+        return result
+
+    def priced_version(self, version: Version | None = None, changes: tuple[Change, ...] | None = None) -> Version:
+        """版（省けば試算の版）に、置換の代わりの部品が引き継ぐ値（inherited_costs）を入れた版。引き継ぎが無ければ版そのもの。"""
+        version = version or self.version
+        inherited = self.inherited_costs(version, changes)
+        if not inherited:
+            return version
+        rows = []
+        for code, values in inherited.items():
+            row = version.cost_row(code)
+            merged = {h: values.get(h, None if row is None else row.value(h)) for h in CostHead}
+            rows.append(CostRow(code, merged) if row is None else replace(row, values=merged))
+        return version.with_costs(rows)
+
     def own_values(self, version: Version | None = None, changes: tuple[Change, ...] | None = None) -> OwnValues:
         """試算の製品自身の値: 土台の製品の登録値に、費目変更（省けば履歴の全部）を順に当てたもの。"""
         own = registered_own(version or self.version, self.base)
@@ -193,8 +234,8 @@ class Scenario:
         head: CostHead | None = None,
         changes: tuple[Change, ...] | None = None,
     ) -> CostResult:
-        """同じ土台＋変更の履歴を、指定の版（省けば試算の版）の原価で計算する。"""
-        version = version or self.version
+        """同じ土台＋変更の履歴を、指定の版（省けば試算の版）の原価で計算する（置換の代わりの部品は priced_version の値）。"""
+        version = self.priced_version(version, changes)
         return calculate_cost(
             version,
             self.product_code,
@@ -345,6 +386,8 @@ class Scenario:
 
 
 _PART_CHANGES = (ChangeKind.REMOVE, ChangeKind.REPLACE, ChangeKind.SET_QUANTITY)  # 部品そのものを変える変更
+# 置換で引き継ぐのは計算に入る登録の費目だけ。登録の製造原価などを写すと、代わりの部品自身の値と食い違い二重計上の判定を誤らせる
+_INHERITED_HEADS = (CostHead.MATERIAL, CostHead.AMORTIZATION, CostHead.DIRECT, CostHead.PROCESSING)
 
 
 def _label(change: Change) -> str:

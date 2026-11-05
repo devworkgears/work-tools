@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 from .api import MASTER_HEADS, _View, group_label
 from .comparebook import _UNSAFE
 from .formula import ADJUSTMENT_RATE, INDIRECT_RATE, Head
-from .group import _Structure
+from .group import _part_view, _Structure
 from .importer import load_openpyxl
 from .model import CostHead, Version
 from .rollup import Scope, ScopePolicy
@@ -160,7 +160,8 @@ def analysis_book(group: "Group", params: dict[str, str], now: datetime) -> tupl
             for code in products:
                 scenario = scenarios.get((label, code))
                 entries = scenario.root_entries() if scenario else [(code, Decimal(1), True, None)]
-                for p in places(version, policy, view, tree, code, entries):
+                priced = _part_view(view, scenario)
+                for p in places(priced.version, policy, priced, tree, code, entries):
                     contribution = _mul(p.material, FACTOR)
                     structure.append([label, code, p.parent, p.part, p.level, p.quantity, p.usage, p.unit, p.material,
                                       contribution, annual[code], _mul(contribution, annual[code])])

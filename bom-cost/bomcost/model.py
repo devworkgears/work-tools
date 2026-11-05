@@ -295,6 +295,12 @@ class Version:
     def volume(self, product: Code) -> Volume | None:
         return self.volumes.get(to_code(product))
 
+    def with_costs(self, rows: Iterable[CostRow]) -> "Version":
+        """原価の行（同じ品番は差し替え）を足した写し。品目・構成は元の版と共有する（どちらも変えない前提）。"""
+        result = replace(self, _costs={**self._costs, **{row.code: row for row in rows}})
+        result._children_index = self._children_index
+        return result
+
 
 def overlay_manual(base: Version, manual: Version) -> Version:
     """グループの BOM（base）にマスタ登録（manual）を重ねた版を作る。元の版は変えない。
