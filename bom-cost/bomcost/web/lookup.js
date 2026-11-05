@@ -1,14 +1,9 @@
-// 品目照会: グループと品番（名称の一部でも）1つで、その品の基本・原価・使われ方・構成・②の変更を並べる。
+// 品目照会: グループの中身（screens.js）で押した品番1つの、基本・原価・使われ方・構成・②の変更を中身の下に並べる。
 // app.js・screens.js の関数を使う。原価は API の Decimal の文字列をそのまま出す。
 "use strict";
 
 const LOOK_SOURCE_CLASS = { bom: "look-src-bom", master: "look-src-master" };
-
-async function enterLookup() {
-  const group = document.getElementById("look-group");
-  groupOptions(group, { value: group.value || state.summary?.scenario.group_id });
-  await loadCodes(group.value);
-}
+const lookState = { group: "", code: "", request: 0 };
 
 // 表の中の品番。押すとその品番の照会に移る
 function lookLink(code) {
@@ -18,32 +13,43 @@ function lookLink(code) {
 }
 
 function lookGroup() {
-  return document.getElementById("look-group").value;
+  return lookState.group;
 }
 
-async function lookupCode(code) {
-  document.getElementById("look-q").value = code;
+async function lookupCode(code, group = lookState.group) {
+  lookState.group = group;
+  lookState.code = code;
   await drawLookup();
 }
 
+function closeLookup() {
+  lookState.code = "";
+  lookState.request += 1;
+  document.getElementById("look-body").replaceChildren();
+}
+
 async function drawLookup() {
-  const group = lookGroup();
+  const { group, code } = lookState;
   if (!group) throw new Error("グループが空");
-  const q = document.getElementById("look-q").value.trim();
-  if (!q) throw new Error("品番が空");
-  const r = await api("GET", `/api/lookup?${qs({ group, q })}`);
+  if (!code) throw new Error("品番が空");
+  const request = ++lookState.request;
+  const r = await api("GET", `/api/lookup?${qs({ group, q: code })}`);
+  if (request !== lookState.request) return;
   const body = document.getElementById("look-body");
+  const title = closableTitle(`品目照会: ${code}`, closeLookup);
   if (!r.item) {
     body.replaceChildren(
+      title,
       el("h3", {}, `候補（${r.candidates.length}${r.truncated ? "+" : ""} 件）`),
       table(["品番", "名称", "記号・寸法", numTh("材料費小計"), numTh("製造原価")], r.candidates.map((c) => el("tr", {}, el("td", {}, lookLink(c.code)), el("td", {}, c.name), el("td", {}, c.specification), numTd(c.material, { yen: true }), numTd(c.manufacturing, { yen: true })))),
     );
-    return;
+  } else {
+    const x = r.item;
+    body.replaceChildren(
+      title, lookBasics(x), lookCosts(x), lookUsedIn(x), lookStructure(x), lookChanges(x),
+    );
   }
-  const x = r.item;
-  body.replaceChildren(
-    lookBasics(x), lookCosts(x), lookUsedIn(x), lookStructure(x), lookChanges(x),
-  );
+  body.scrollIntoView({ block: "start" });
 }
 
 function noneRow(n) {
@@ -132,14 +138,3 @@ function lookChanges(x) {
     table(["製品", "役割", "変更"], changeRows.length ? changeRows : noneRow(3)),
   );
 }
-
-function wireLookup() {
-  document.getElementById("look-show").addEventListener("click", () => guarded(drawLookup));
-  document.getElementById("look-q").addEventListener("keydown", (e) => e.key === "Enter" && guarded(drawLookup));
-  document.getElementById("look-group").addEventListener("change", (e) => guarded(async () => {
-    await loadCodes(e.target.value);
-    if (document.getElementById("look-q").value.trim()) await drawLookup();
-  }));
-}
-
-wireLookup();

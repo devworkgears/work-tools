@@ -15,10 +15,9 @@
   </div>
   <nav class="screen-nav" id="screen-seg" aria-label="画面">
     <div class="seg">
-      <button type="button" data-screen="import">データ取込</button>
       <button type="button" data-screen="groups">グループ</button>
+      <button type="button" data-screen="import">データ取込</button>
       <button type="button" data-screen="manual">マスタ登録</button>
-      <button type="button" data-screen="lookup">品目照会</button>
     </div>
     <span class="nav-flow-steps" data-flow-of="swap">
       <span class="nav-sep" aria-hidden="true"></span>
@@ -192,20 +191,6 @@
   <div class="cards" id="manual-body"></div>
 </main>
 
-<main class="screen" id="screen-lookup" hidden>
-  <section class="panel">
-    <div class="panel-head">
-      <h2>品目照会</h2>
-    </div>
-    <div class="form-row">
-      <label>グループ <select id="look-group"></select></label>
-      <label>品番・名称 <input id="look-q" list="code-list-2" placeholder="例 B-200"></label>
-      <button type="button" class="primary" id="look-show">見る</button>
-    </div>
-    <div id="look-body" class="screen-body"></div>
-  </section>
-</main>
-
 <main class="screen" id="screen-import" hidden>
   <section class="panel">
     <div class="panel-head"><h2>BOM 取込（CSV・Excel）</h2></div>
@@ -233,6 +218,8 @@
     <div class="panel-head"><h2>グループ</h2></div>
     <div id="import-result" class="screen-body"></div>
     <div id="group-list" class="screen-body"></div>
+    <div id="group-contents" class="screen-body"></div>
+    <div id="look-body" class="screen-body"></div>
     <div class="screen-body">
       <h3>新しく作る</h3>
       <div id="group-new"></div>

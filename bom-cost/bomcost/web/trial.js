@@ -133,12 +133,7 @@ async function openTrialLookup(code) {
       ? table(["品番", "名称", numTh("員数")], s.parents.map((p) => el("tr", {},
         el("td", {}, trialCode(p.code)), el("td", {}, p.name), numTd(p.quantity))))
       : el("p", { class: "muted" }, "なし"),
-    el("button", { type: "button", onclick: () => guarded(async () => {
-      await showScreen("lookup");
-      document.getElementById("look-group").value = group;
-      await loadCodes(group);
-      await lookupCode(code);
-    }) }, "品目照会で開く"));
+    el("button", { type: "button", onclick: () => guarded(() => openContents(group, { code })) }, "品目照会で開く"));
   const screen = document.getElementById("screen-trial");
   screen.classList.add("trial-with-lookup");
   screen.append(panel);

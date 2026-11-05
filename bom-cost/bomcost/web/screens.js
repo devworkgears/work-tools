@@ -1,4 +1,4 @@
-// 画面の2段目: 型費配賦・積上げ見積・マスタ登録・データ取込・グループ。app.js の el・fmt・money・api・guarded を使う。
+// 画面の2段目: 型費配賦・積上げ見積・マスタ登録・データ取込・グループ（と中身）。app.js の el・fmt・money・api・guarded を使う。
 // 原価は API が出した Decimal の文字列をそのまま出し、ここでは計算しない。
 "use strict";
 
@@ -20,6 +20,7 @@ const screenState = {
   importCheck: null, // { body, result }: 取り込みの確認
   noteEditing: null, // 検討内容を直しているグループの ID
   warningOpen: null, // { group_id, info }: 開いているグループの警告
+  contents: null, // { group, table, q }: 中身を開いているグループと選んだ表・絞り込み
   copyFrom: "", // ［新しく作る］の流用元（空は流用しない）
   importedGroup: null, // この画面を開いてから直近に作った・取り込んだグループ
 };
@@ -106,9 +107,9 @@ function numTd(text, opts) {
 
 // 画面の切り替え -----------------------------------------------------------
 
-const SCREENS = { product: "main-layout", group: "screen-group", trial: "screen-trial", compare: "screen-compare", part: "screen-part", change: "screen-change", manual: "screen-manual", lookup: "screen-lookup", import: "screen-import", groups: "screen-groups" };
+const SCREENS = { product: "main-layout", group: "screen-group", trial: "screen-trial", compare: "screen-compare", part: "screen-part", change: "screen-change", manual: "screen-manual", import: "screen-import", groups: "screen-groups" };
 
-// モード（差し替え・積み上げ）ごとの画面。共通の画面（取込・マスタ・照会）はどのモードでも開け、モードを変えない。
+// モード（差し替え・積み上げ）ごとの画面。共通の画面（グループ・取込・マスタ）はどのモードでも開け、モードを変えない。
 // 選んだモードはこのブラウザに覚える（読めない時は差し替え）
 const FLOW_SCREENS = { swap: ["group", "trial", "compare", "product", "part"], stack: ["change"] };
 const FLOW_KEY = "bomcost.flow";
@@ -139,7 +140,7 @@ function setFlow(flow) {
 }
 
 function manualDefaultGroup() {
-  const ids = { group: "group-pick", trial: "trial-group", compare: "cmp-group", lookup: "look-group",
+  const ids = { group: "group-pick", trial: "trial-group", compare: "cmp-group",
     part: "part-group", change: "change-new-group", product: "product-group", import: "import-group" };
   // グループの欄の無い画面（グループの一覧など）からは、直近に作った・取り込んだグループ
   return document.getElementById(ids[screenState.screen])?.value || screenState.importedGroup
@@ -171,7 +172,6 @@ async function showScreen(name) {
   else if (name === "part") await enterPart();
   else if (name === "change") await enterChange();
   else if (name === "manual") await renderManual();
-  else if (name === "lookup") await enterLookup();
   else if (name === "import") await enterImport();
   else if (name === "groups") await drawGroups();
 }
@@ -816,7 +816,7 @@ async function decideImport() {
 
 // 各画面のグループの欄の既定を、いま作った・取り込んだグループにする（利用者が選び直した欄は除く）。マスタ登録も manualDefaultGroup が追う
 const FOLLOW_GROUP_SELECTS = ["group-pick", "trial-group", "cmp-group", "part-group", "change-old-group",
-  "change-new-group", "look-group", "import-group"];
+  "change-new-group", "import-group"];
 
 function followGroup(groupId) {
   screenState.importedGroup = groupId;
@@ -885,6 +885,8 @@ async function drawGroups() {
       el("td", {}, g.source_name || "—"),
       el("td", { class: `num ${g.warning_count ? "missing" : ""}` }, String(g.warning_count)),
       el("td", {},
+        el("button", { type: "button", class: screenState.contents?.group === g.group_id ? "on" : null,
+          onclick: () => guarded(() => toggleContents(g.group_id)) }, "中身"),
         el("button", {
           type: "button", class: screenState.warningOpen?.group_id === g.group_id ? "on" : null,
           onclick: toggleWarnings(g.group_id),
@@ -894,6 +896,7 @@ async function drawGroups() {
     ))) : el("p", { class: "muted" }, "なし"),
     warningDetail() ?? "",
   );
+  await drawContents();
   drawGroupForm();
 }
 
@@ -929,11 +932,13 @@ function drawGroupForm() {
     followGroup(r.group_id);
     await drawGroups();
   });
+  const createButton = el("button", { type: "button", class: "primary", onclick: create }, "新しく作る");
+  createButton.classList.toggle("primary", !screenState.contents);  // 中身を出している間は［絞り込む］が主ボタン
   document.getElementById("group-new").replaceChildren(
     el("div", { class: "form-row" }, field("流用元 ", from), field("開発番号 ", devNumber), field("名称 ", devName),
       field("検討内容 ", note)),
     source ? el("div", { class: "form-row" }, tables.map((t) => t.label), master.label, changes.label) : null,
-    el("div", { class: "form-row" }, el("button", { type: "button", class: "primary", onclick: create }, "新しく作る")),
+    el("div", { class: "form-row" }, createButton),
   );
 }
 
@@ -945,6 +950,75 @@ async function deleteGroup(g) {
   await refreshLists();
   await drawGroups();
   showMessage(`${g.label} を消しました。`, "info");
+}
+
+// グループの中身: 取り込んだ表を取り込んだまま見る（見るだけ）。品番を押すとその下に品目照会を出す
+
+// 他の画面から、そのグループの中身を開く（code を渡せばその品番の照会も出す）
+async function openContents(groupId, { code } = {}) {
+  if (screenState.contents?.group !== groupId) {
+    screenState.contents = { group: groupId, table: screenState.contents?.table ?? "item", q: "" };
+    closeLookup();
+  }
+  await loadCodeNames(groupId);
+  await refreshLists();
+  await showScreen("groups");
+  if (code) await lookupCode(code, groupId);
+}
+
+async function toggleContents(groupId) {
+  if (screenState.contents?.group === groupId) {
+    screenState.contents = null;
+    closeLookup();
+    await drawGroups();
+    return;
+  }
+  await openContents(groupId);
+}
+
+function contentsCell(column, row, group) {
+  const value = row.cells[column.key];
+  if (column.number) return numTd(value);
+  if (column.code && value) return el("td", {}, el("button", { type: "button", class: "look-link",
+    title: codeTitle(group, value), onclick: () => guarded(() => lookupCode(value, group)) }, value));
+  return el("td", {}, value ?? "");
+}
+
+async function drawContents() {
+  const box = document.getElementById("group-contents");
+  const c = screenState.contents;
+  if (c && !state.groups.some((g) => g.group_id === c.group)) {
+    screenState.contents = null;
+    closeLookup();
+  }
+  if (!screenState.contents) { box.replaceChildren(); return; }
+  const d = await api("GET", `/api/groups/contents?${qs({ group: c.group, table: c.table, q: c.q })}`);
+  const close = () => guarded(() => toggleContents(c.group));
+  const pick = (id) => () => guarded(async () => { c.table = id; await drawContents(); });
+  const q = el("input", { value: c.q, placeholder: "品番・名称の一部" });
+  const filter = () => guarded(async () => { c.q = q.value.trim(); await drawContents(); });
+  q.addEventListener("keydown", (e) => e.key === "Enter" && filter());
+  const current = d.tables.find((t) => t.id === d.table);
+  const rows = d.rows.map((r) => el("tr", {}, d.columns.map((col, i) => {
+    const td = contentsCell(col, r, c.group);
+    if (i === 0 && r.master) td.append(" ", el("span", { class: "mreg-inbom" }, "マスタ"));
+    return td;
+  })));
+  const emptyText = current.imported ? "なし" : "取り込んでいない";
+  box.replaceChildren(
+    closableTitle(`${d.label} の中身`, close),
+    el("div", { class: "seg manual-tabs", role: "tablist" }, d.tables.map((t) => el("button", {
+      type: "button", role: "tab", class: t.id === d.table ? "on" : null, "aria-selected": String(t.id === d.table),
+      onclick: pick(t.id),
+    }, `${t.label}（${t.imported ? t.count : "未取込"}）`))),
+    el("div", { class: "form-row" }, field("品番・名称 ", q),
+      el("button", { type: "button", class: "primary", onclick: filter }, "絞り込む"),
+      el("span", { class: "muted" }, d.matched > d.rows.length ? `${d.matched} 件中 ${d.rows.length} 件` : `${d.matched} 件`)),
+    el("div", { class: "table-scroll" }, table(
+      d.columns.map((col) => (col.number ? numTh(col.label) : col.label)),
+      rows.length ? rows : [el("tr", {}, el("td", { colspan: d.columns.length, class: "muted" }, emptyText))],
+    )),
+  );
 }
 
 // 配線 ----------------------------------------------------------------------

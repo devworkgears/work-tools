@@ -166,7 +166,7 @@ class ScreenWording(unittest.TestCase):
         self.assertIn("followGroup(r.group_id)", screens[screens.index("function drawGroupForm"):])
         follow = screens[screens.index("function followGroup"):]
         self.assertIn("if (!select.dataset.picked) groupOptions(select, { value: groupId })", follow)
-        for id_ in ("group-pick", "change-old-group", "look-group", "import-group"):
+        for id_ in ("group-pick", "change-old-group", "import-group"):
             self.assertIn(f'"{id_}"', screens[screens.index("const FOLLOW_GROUP_SELECTS"):])
         self.assertIn("screenState.importedGroup", screens[screens.index("function manualDefaultGroup"):])
 

@@ -177,10 +177,6 @@ class History(LookupCase):
 class Screen(unittest.TestCase):
     def test_screen_files(self) -> None:
         index = static_response("/").body.decode("utf-8")
-        self.assertIn('data-screen="lookup"', index)
-        # 帯の［マスタ登録］の隣
-        self.assertLess(index.index('data-screen="manual"'), index.index('data-screen="lookup"'))
-        self.assertLess(index.index('data-screen="lookup"'), index.index('data-screen="group"'))
         self.assertIn("lookup.js", index)
         self.assertEqual(static_response("/lookup.js").status, 200)
 

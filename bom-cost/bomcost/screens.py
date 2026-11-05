@@ -34,13 +34,13 @@ from .model import (
     Volume,
     overlay_manual,
 )
-from .group import PRODUCT_KIND_CODE, Group, _Structure, _batches, is_product_kind, part_kind
+from .group import PRODUCT_KIND_CODE, Group, _matches, _Structure, _batches, is_product_kind, part_kind
 from .masterbook import MasterPlan, apply_plan, book_bytes, plan_book, plan_json, save_book
 from .modelchange import compare_structures
 from .mold import Allocation, MoldCost, ReuseTarget, allocate_mold_cost, part_users, reuse_impact
 from .normalize import to_code, to_decimal, to_optional_code
 from .scenario import ChangeRecord, Scenario
-from .store import GroupInfo, bom_subset, retarget
+from .store import COST_COLUMNS, GroupInfo, bom_subset, retarget
 
 if TYPE_CHECKING:
     from .api import Api
@@ -54,6 +54,16 @@ TABLE_LABELS = {
     "volume": "年間台数",
 }
 SAMPLE_ROWS = 5
+MAX_CONTENT_ROWS = 500
+# グループの中身の表の列（保存している列。構成の「レベル」は保存しないので無い。原価は EBOM の品番も出す）
+CONTENT_COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
+    "item": tuple((f.name, f.label) for f in TABLE_FIELDS["item"]),
+    "bom_line": (("parent", "親品番"), ("balloon", "風船番号"), ("child", "子品番"), ("quantity", "数量")),
+    "cost": (("code", "品番"), *((f.name, f.label) for f in TABLE_FIELDS["cost"])),
+    "volume": tuple((f.name, f.label) for f in TABLE_FIELDS["volume"]),
+}
+CONTENT_CODE_COLUMNS = {"code", "parent", "child", "product", "mbom_code"}
+CONTENT_NUMBER_COLUMNS = {"quantity", "annual", *(name for name, _ in COST_COLUMNS)}
 
 
 def _optional_number(value: Any, name: str) -> Decimal | None:
@@ -199,6 +209,7 @@ class Screens:
             ("POST", r"/api/import", self.import_files),
             ("POST", r"/api/groups", self.create_group),
             ("GET", r"/api/groups/info", self.group_detail),
+            ("GET", r"/api/groups/contents", self.group_contents),
             ("DELETE", r"/api/groups", self.delete_group),
             ("PUT", r"/api/groups/note", self.put_group_note),
             ("GET", r"/api/manual", self.manual),
@@ -563,6 +574,55 @@ class Screens:
                 "products": [s.base for s in self.store.list_scenarios(info.group_id)],
             }
         )
+
+    def group_contents(self, params: dict[str, str]) -> Response:
+        """グループに取り込んだ表（table: item・bom_line・cost・volume）の行を取り込んだまま返す。
+
+        q（品番・名称の一部）で絞り、出すのは MAX_CONTENT_ROWS 行まで（matched が全体の件数）。
+        master はマスタ登録がその行を上書きしているか（構成は親品番の単位、原価は値のある費目があるとき）。
+        """
+        info = self._group_info(params)
+        table = _optional_text(params, "table") or "item"
+        if table not in CONTENT_COLUMNS:
+            raise ApiError(400, f"表（table）は {'・'.join(CONTENT_COLUMNS)} のどれか")
+        bom = self.store.load_bom(info.group_id)
+        manual = self.store.load_manual(info.group_id)
+        names = overlay_manual(bom, manual).items
+        master_parents = set(manual.parents())
+        all_rows = {
+            "item": [({"code": i.code, "name": i.name, "specification": i.specification, "kind": i.kind,
+                       "lifecycle": i.lifecycle, "has_children": "有" if i.has_children else "無"},
+                      i.code in manual.items) for i in bom.items.values()],
+            "bom_line": [({"parent": l.parent, "balloon": l.balloon, "child": l.child, "quantity": _s(l.quantity)},
+                          l.parent in master_parents) for l in bom.lines],
+            "cost": [({"code": r.code, "mbom_code": r.mbom_code,
+                       **{name: _s(r.value(head)) for name, head in COST_COLUMNS}},
+                      any(manual.cost_value(r.code, head) is not None for _, head in COST_COLUMNS))
+                     for r in bom.cost_rows],
+            "volume": [({"product": v.product, "annual": _s(v.annual)}, v.product in manual.volumes)
+                       for v in bom.volumes.values()],
+        }
+        needle = _optional_text(params, "q")
+
+        def hit(cells: dict[str, Any]) -> bool:
+            codes = [cells[k] for k in CONTENT_CODE_COLUMNS if cells.get(k)]
+            texts = (*codes, *(names[c].name for c in codes if c in names), cells.get("name") or "")
+            return _matches(texts, needle)
+
+        rows = [{"cells": cells, "master": master} for cells, master in all_rows[table] if not needle or hit(cells)]
+        return _json_response({
+            "group_id": info.group_id,
+            "label": group_text(info.dev_number, info.dev_name, info.note),
+            "table": table,
+            "q": needle,
+            "tables": [{"id": t, "label": TABLE_LABELS[t], "imported": t in info.bom_tables, "count": len(all_rows[t])}
+                       for t in CONTENT_COLUMNS],
+            "columns": [{"key": k, "label": label, "code": k in CONTENT_CODE_COLUMNS - {"mbom_code"},
+                         "number": k in CONTENT_NUMBER_COLUMNS} for k, label in CONTENT_COLUMNS[table]],
+            "rows": rows[:MAX_CONTENT_ROWS],
+            "matched": len(rows),
+            "limit": MAX_CONTENT_ROWS,
+        })
 
     def delete_group(self, params: dict[str, str]) -> Response:
         """グループと中身（BOM・マスタ登録・変更）を消し、グループの一覧を返す。流用したグループは残る。"""
