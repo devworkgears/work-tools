@@ -34,7 +34,6 @@ from .model import (
     Volume,
     VolumeKind,
     base_code,
-    manual_version_id,
     mbom_to_ebom,
     overlay_manual,
 )
@@ -59,22 +58,20 @@ from .scenario import (
     Change,
     ChangeKind,
     ChangeRecord,
-    LineComparison,
     Scenario,
-    VersionComparison,
 )
-from .store import PartMapRow, ScenarioInfo, Store, VersionInfo, VersionInUseError
+from .store import GroupInfo, OldDatabaseError, PartMapRow, ScenarioInfo, Store
 
 __all__ = [
     "Allocation", "BASIC_HEADS", "BomConflict", "BomLine", "Change", "ChangeKind", "ChangeRecord",
     "ColumnMap", "CostCalculator", "CostHead", "CostResult", "CostRow", "DEFAULT_AMORTIZATION_YEARS",
     "DEFAULT_NEAR_TOLERANCE", "DEFAULT_SMALL_RATIO", "FieldSpec", "ImportWarning", "Item", "Judgement",
-    "LineComparison", "MANUAL_VERSION_ID", "ManualOverlap", "MatchKind", "MissingColumnsError",
+    "GroupInfo", "MANUAL_VERSION_ID", "ManualOverlap", "MatchKind", "MissingColumnsError",
     "MoldAllocation", "MoldCost", "PartMapRow", "PartUser", "ProductShare", "ReuseImpact", "ReuseTarget", "Scenario",
     "ScenarioInfo", "Scope", "ScopePolicy", "Source", "Store", "StructureRow", "TABLE_FIELDS", "Table",
-    "Verdict", "Version", "VersionComparison", "VersionImport", "VersionInUseError", "VersionInfo", "Volume",
+    "OldDatabaseError", "Verdict", "Version", "VersionImport", "Volume",
     "VolumeKind", "allocate_mold_cost", "base_code", "calculate_cost", "compare_structures",
-    "judge_double_counting", "manual_version_id", "mbom_to_ebom", "overlay_manual", "part_users", "read_csv", "read_table",
+    "judge_double_counting", "mbom_to_ebom", "overlay_manual", "part_users", "read_csv", "read_table",
     "read_xlsx", "reuse_impact", "tally", "to_code", "to_decimal", "to_flag", "to_optional_code",
     "to_optional_decimal", "to_symbol", "usage_per_unit",
 ]

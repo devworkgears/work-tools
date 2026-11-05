@@ -4,7 +4,7 @@ import unittest
 
 from bomcost import Change, ChangeKind, CostHead, Scenario
 from bomcost.demo import demo_policy, demo_versions
-from test_group import NAME, SampleDbCase
+from test_group import SampleDbCase
 
 PARENT_OUT = {"kind": "REPLACE", "part": "A-100", "parent": "V-110", "balloon": "1", "replacement": "C-300",
               "quantity": "1"}
@@ -55,11 +55,11 @@ class NestedScenario(unittest.TestCase):
 
 class NestedApi(SampleDbCase):
     def scenario_changes(self) -> int:
-        return len(self.ok("GET", "/api/group/changes", f"version=2026-10&name={NAME}")["rows"])
+        return len(self.ok("GET", "/api/group/changes", f"group=2026-10")["rows"])
 
     def refused(self, change: dict, words: str) -> None:
         before = self.scenario_changes()
-        bad = self.call("POST", "/api/group/changes", body={"version_id": "2026-10", "name": NAME, "product": "V-110",
+        bad = self.call("POST", "/api/group/changes", body={"group_id": "2026-10", "product": "V-110",
                                                             **change})
         self.assert_error(bad, 400, words)
         self.assertEqual(self.scenario_changes(), before)
@@ -82,7 +82,7 @@ class NestedApi(SampleDbCase):
         self.change("V-110", kind="REMOVE", part="A-100", quantity="1")
         self.refused(CHILD, "A-100 を変えたので")
         bad = self.call("POST", "/api/group/changes/bulk", body={
-            "version_id": "2026-10", "name": NAME, "replacement": "X-610",
+            "group_id": "2026-10", "replacement": "X-610",
             "items": [{"product": "V-110", "part": "B-200"}]})
         self.assert_error(bad, 400, "A-100 を変えたので")
         self.assertEqual(self.scenario_changes(), 1)
@@ -94,19 +94,19 @@ class NestedApi(SampleDbCase):
 
     def test_locks_for_screen(self) -> None:
         self.change("V-110", **PARENT_OUT)
-        locks = self.ok("GET", "/api/group/changes", f"version=2026-10&name={NAME}")["locks"]["V-110"]
+        locks = self.ok("GET", "/api/group/changes", f"group=2026-10")["locks"]["V-110"]
         self.assertEqual(locks["inside"].get("A-100"), "A-100")
-        rows = self.parts(f"&name={NAME}&part=B-200")["rows"]
+        rows = self.parts(f"&part=B-200")["rows"]
         self.assertEqual([(r["product"], r["locked"]) for r in rows if r["product"] == "V-110"],
                          [("V-110", {"kind": "inside", "by": "A-100"})])
         self.ok("POST", "/api/group/changes/undo", body={"scenario_id": self.sid(), "sequence": 1})
         self.change("V-110", **CHILD)
-        rows = self.parts(f"&name={NAME}&part=A-100")["rows"]
+        rows = self.parts(f"&part=A-100")["rows"]
         self.assertEqual([r["locked"] for r in rows if r["product"] == "V-110"],
                          [{"kind": "outer", "by": "A-100 の #1 B-200"}])
 
     def sid(self) -> int:
-        return self.ok("GET", "/api/group/changes", f"version=2026-10&name={NAME}")["rows"][0]["scenario_id"]
+        return self.ok("GET", "/api/group/changes", f"group=2026-10")["rows"][0]["scenario_id"]
 
 
 if __name__ == "__main__":

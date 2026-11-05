@@ -24,13 +24,13 @@ MARK_COLOR = "FFF2CC"
 _UNSAFE = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 
 
-def compare_file_name(version_id: str, names: list[str]) -> str:
-    """版と検討案が分かるファイル名。ファイル名に使えない文字は _ に。"""
-    return _UNSAFE.sub("_", f"原価比較_{version_id}_{'・'.join(names)}") + ".xlsx"
+def compare_file_name(group_text: str, names: list[str]) -> str:
+    """グループが分かるファイル名。ファイル名に使えない文字は _ に。"""
+    return _UNSAFE.sub("_", f"原価比較_{group_text}_{'・'.join(names)}") + ".xlsx"
 
 
-def compare_workbook(table: dict[str, Any], version_text: str, query: str, now: datetime) -> bytes:
-    """table は compare/table の返事。version_text は前提に書く版の表示、query は製品の絞り込みの語。"""
+def compare_workbook(table: dict[str, Any], group_text: str, query: str, now: datetime) -> bytes:
+    """table は compare/table の返事。group_text は前提に書くグループの表示、query は製品の絞り込みの語。"""
     openpyxl = load_openpyxl()
     from openpyxl.comments import Comment
     from openpyxl.styles import Font, PatternFill
@@ -123,8 +123,7 @@ def compare_workbook(table: dict[str, Any], version_text: str, query: str, now: 
     premises = wb.create_sheet(PREMISES)
     shown = len(table["products"]) + table["without_trial"]
     for key, value in (
-        ("版", version_text),
-        ("検討案", "・".join(table["names"])),
+        ("グループ", group_text),
         ("製品の絞り込み", query or "なし"),
         ("製品", f"{shown} / {table['count']}" + ("（上限で打ち切り）" if table["truncated"] else "")),
         ("試算なしの製品", table["without_trial"]),

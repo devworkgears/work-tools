@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 from .api import Api, Response, error_response
 from .demo import build_demo
 from .screens import MAX_UPLOAD_BYTES
-from .store import Store
+from .store import OldDatabaseError, Store
 
 HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
@@ -159,7 +159,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"架空の例の DB を作った: {args.db}（試算 ID {scenario_id}）")
         print(f"立てるには: python -m bomcost.app --db {args.db}")
         return 0
-    serve(args.db, args.port, not args.no_browser)
+    try:
+        serve(args.db, args.port, not args.no_browser)
+    except OldDatabaseError as exc:
+        print(exc, file=sys.stderr)
+        return 1
     return 0
 
 

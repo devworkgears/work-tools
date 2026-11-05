@@ -17,7 +17,7 @@ M = CostHead.MATERIAL
 PRODUCT = PRODUCT_KIND_CODE  # 区分の記号: 製品
 PART = PART_KIND_CODE  # 部品
 DEMO_SCENARIO_NAME = "V-110 検討"
-DEMO_DEV_NUMBER = "D-100"  # 2つの版はこの開発番号の第1版・第2版
+DEMO_DEV_NUMBER = "D-100"  # 2つのグループはこの開発番号
 DEMO_DEV_NAME = "例のユニット"
 
 
@@ -52,9 +52,9 @@ def demo_manual() -> Version:
 
 
 def demo_versions() -> list[Version]:
-    """取り込みの版 2026-10（第1版）と 2026-12（第2版）（manual は重ねない）。"""
+    """グループ 2026-10 と、その原価を取り込み直した 2026-12 の BOM（マスタ登録は重ねない）。"""
     v10 = Version("2026-10", datetime(2026, 10, 1), "架空の例", "例の取り込み", dev_number=DEMO_DEV_NUMBER,
-                  dev_name=DEMO_DEV_NAME, revision=1)
+                  dev_name=DEMO_DEV_NAME)
     v10.add_items(_items())
     v10.add_bom_lines(_bom_lines())
     v10.add_costs(
@@ -68,8 +68,8 @@ def demo_versions() -> list[Version]:
     )
     v10.add_volume(Volume("K-200", 5000))
 
-    v12 = Version("2026-12", datetime(2026, 12, 1), "架空の例", "例の取り込み", dev_number=DEMO_DEV_NUMBER,
-                  dev_name=DEMO_DEV_NAME, revision=2)
+    v12 = Version("2026-12", datetime(2026, 12, 1), "原価の更新", "例の取り込み", dev_number=DEMO_DEV_NUMBER,
+                  dev_name=DEMO_DEV_NAME)
     v12.add_items(_items())
     v12.add_bom_lines(_bom_lines())
     v12.add_costs(
@@ -91,18 +91,21 @@ def demo_policy() -> ScopePolicy:
 
 
 def build_demo(path: str | Path) -> int:
-    """架空の例を入れた DB を path に作り、試算「V-110 検討」の ID を返す。path にファイルがあれば止める。"""
+    """架空の例を入れた DB を path に作り、グループ 2026-10 の A-100 の試算（V-110）の ID を返す。path にファイルがあれば止める。
+
+    2つのグループは同じ開発番号で、どちらにも同じマスタ登録・型費・流用先を入れる（グループどうしは共有しない）。
+    """
     path = Path(path)
     if path.exists():
         raise FileExistsError(f"{path} はもうある（作り直すなら消すか、別の名前にする）")
     with Store(path) as store:
         for version in demo_versions():
-            store.save_version(version)
-        store.save_manual(demo_manual())
+            store.save_group(version)
+            store.save_manual(demo_manual(), version.version_id)
+            store.save_mold_cost(MoldCost("X-610", 2400000, 2), version.version_id)
+            store.add_reuse_target(ReuseTarget("X-610", "K-200", 2, replaced_part="F-600"), version.version_id)
         store.save_scope_policy(demo_policy())
-        store.save_mold_cost(MoldCost("X-610", 2400000, 2))
-        store.add_reuse_target(ReuseTarget("X-610", "K-200", 2, replaced_part="F-600"))
-        version = store.load_version("2026-10")
+        version = store.load_group("2026-10")
         scenario = Scenario(DEMO_SCENARIO_NAME, "A-100", "V-110", version, M, store.load_scope_policy())
         volume = version.volume("V-110")
         annual = None if volume is None else volume.annual

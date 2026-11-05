@@ -1,4 +1,4 @@
-"""画面の2段目の API: 取り込みと列の対応づけ・版の一覧と削除・手入力・部品から見る・モデルチェンジの比較。
+"""画面の2段目の API: グループ（作る・流用・消す）・取り込みと列の対応づけ・マスタ登録・部品から見る・モデルチェンジの比較。
 
 経路は Api の _routes に足す（screen_routes）。入力の誤りは ApiError（400 番台・日本語）で返す。
 金額と数量は Decimal の文字列で返し、計算は計算の層（mold・modelchange・rollup）に任せる。
@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Collection
 
 from .api import (HEADS, MASTER_HEADS, ApiError, Response, _flag, _head, _json_response, _known_codes, _s, _text_field, _View,
-                  version_label)
+                  change_problem, group_label, group_text)
 from .importer import (
     TABLE_FIELDS,
     ColumnMap,
@@ -32,14 +32,15 @@ from .model import (
     Item,
     Version,
     Volume,
-    is_manual_version_id,
+    overlay_manual,
 )
 from .group import PRODUCT_KIND_CODE, Group, _Structure, _batches, is_product_kind, part_kind
 from .masterbook import MasterPlan, apply_plan, book_bytes, plan_book, plan_json, save_book
 from .modelchange import compare_structures
 from .mold import Allocation, MoldCost, ReuseTarget, allocate_mold_cost, part_users, reuse_impact
 from .normalize import to_code, to_decimal, to_optional_code
-from .scenario import Scenario
+from .scenario import ChangeRecord, Scenario
+from .store import GroupInfo, bom_subset, retarget
 
 if TYPE_CHECKING:
     from .api import Api
@@ -127,6 +128,54 @@ def _manual_copy(
     return v
 
 
+def _item_name(version: Version, code: str) -> str:
+    item = version.items.get(code)
+    return "" if item is None else item.name
+
+
+def _batch_text(records: list[ChangeRecord]) -> str:
+    """1回の操作の文（変更の記録の1行と同じ）。"""
+    from .group import _batch_json
+
+    return _batch_json(records)["text"]
+
+
+def _table_diff(old: Version, new: Version, table: str) -> dict[str, int]:
+    """表（item・bom_line・cost・volume）の、old から new への 追加・変更・削除 の件数。"""
+    if table == "item":
+        a, b = old.items, new.items
+    elif table == "bom_line":
+        a, b = {l.key: l.quantity for l in old.lines}, {l.key: l.quantity for l in new.lines}
+    elif table == "cost":
+        a = {r.code: (r.mbom_code, dict(r.values)) for r in old.cost_rows}
+        b = {r.code: (r.mbom_code, dict(r.values)) for r in new.cost_rows}
+    else:
+        a = {p: v.annual for p, v in old.volumes.items()}
+        b = {p: v.annual for p, v in new.volumes.items()}
+    return {"added": sum(1 for k in b if k not in a), "changed": sum(1 for k in b if k in a and a[k] != b[k]),
+            "removed": sum(1 for k in a if k not in b)}
+
+
+def _unused_master(manual: Version, source: Version, merged: Version, tables: Collection[str]) -> list[str]:
+    """取り込む表（tables）で、流用元の BOM の値を上書きしていた登録のうち、その品番が新しい BOM に無くなった品番。
+
+    BOM に無い部品の追加（流用元の BOM にも無い品番の登録）は数えない。
+    """
+    known = _known_codes(merged)
+    found: dict[str, None] = {}
+    by_table = {
+        "item": (manual.items, source.items),
+        "bom_line": (manual.parents(), source.parents()),
+        "cost": ([r.code for r in manual.cost_rows], [r.code for r in source.cost_rows]),
+        "volume": (manual.volumes, source.volumes),
+    }
+    for table, (registered, before) in by_table.items():
+        if table in tables:
+            before = set(before)
+            found.update((c, None) for c in registered if c in before and c not in known)
+    return list(found)
+
+
 def _original_code(body: dict[str, Any], key: str, name: str) -> str | None:
     """直す元の行（original の key）の品番。送られていなければ None（同じ品番を入れ替える）。"""
     original = body.get("original")
@@ -146,10 +195,12 @@ class Screens:
         return [
             ("GET", r"/api/import/tables", self.import_tables),
             ("POST", r"/api/import/preview", self.import_preview),
+            ("POST", r"/api/import/check", self.check_import),
             ("POST", r"/api/import", self.import_files),
-            ("GET", r"/api/versions/info", self.version_info),
-            ("DELETE", r"/api/versions", self.delete_version),
-            ("PUT", r"/api/versions/note", self.put_version_note),
+            ("POST", r"/api/groups", self.create_group),
+            ("GET", r"/api/groups/info", self.group_detail),
+            ("DELETE", r"/api/groups", self.delete_group),
+            ("PUT", r"/api/groups/note", self.put_group_note),
             ("GET", r"/api/manual", self.manual),
             ("PUT", r"/api/manual/items", self.put_manual_item),
             ("DELETE", r"/api/manual/items", self.delete_manual_item),
@@ -271,52 +322,37 @@ class Screens:
                 400, f"{table.name}: {TABLE_LABELS[table_id]}の必須の列が対応づいていない: {'・'.join(exc.missing)}"
             ) from None
 
-    def import_files(self, params: dict[str, str], body: dict[str, Any]) -> Response:
-        """何本かのファイルを1つの版として取り込み、使った列の対応づけを保存する。
-
-        開発番号（dev_number）と名称（dev_name）で取り込む。既にある開発番号なら版の番号を1つ上げた新しい版にし、
-        前の版は残す。名称が空なら前の版の名称を使う。版 ID は自動で振る。version_id を渡せばその ID で入れる
-        （開発番号を省けば開発番号も version_id にする）。
-        """
-        explicit_id = _optional_text(body, "version_id")
-        dev_number = _optional_text(body, "dev_number") or explicit_id
-        if not dev_number:
-            raise ApiError(400, "開発番号が空")
-        if is_manual_version_id(explicit_id) or is_manual_version_id(dev_number):
-            raise ApiError(400, f"{explicit_id or dev_number} は手入力の版の名前なので使えない")
-        if explicit_id and any(v.version_id == explicit_id for v in self.store.list_versions()):
-            raise ApiError(409, f"版 {explicit_id} はもうある（別の ID にするか、先に版を消す）")
+    def _import_plan(self, body: dict[str, Any]) -> dict[str, Any]:
+        """取り込みの確認と決定で同じ中身: 読んだ表・警告・流用元との差・当て直した変更・使われないマスタ登録。何も保存しない。"""
+        group_id = _optional_text(body, "group_id")
+        if not group_id:
+            raise ApiError(400, "グループ（group_id）が空")
+        try:
+            info = self.store.group_info(group_id)
+        except KeyError:
+            raise ApiError(404, f"グループ {group_id} は無い") from None
         files = body.get("files")
         if not isinstance(files, list) or not files:
             raise ApiError(400, "取り込むファイル（files）が空")
-        cost_only = _flag(body.get("cost_only"))
-        previous = self.store.latest_revision(dev_number)
-        if cost_only and previous is None:
-            raise ApiError(400, f"原価だけの更新は既にある開発番号で行う（{dev_number} の版が無い）")
-        revision = 1 if previous is None else previous.revision + 1
-        dev_name = _optional_text(body, "dev_name") or ("" if previous is None else previous.dev_name)
-        version_id = explicit_id or self.store.new_version_id(dev_number, revision)
         imported_at = datetime.now().replace(microsecond=0)
-        imp = VersionImport(Version(version_id, imported_at=imported_at,
-                                    note=_optional_text(body, "note"), dev_number=dev_number, dev_name=dev_name,
-                                    revision=revision))
+        imp = VersionImport(Version(group_id, imported_at=imported_at, note=info.note, dev_number=info.dev_number,
+                                    dev_name=info.dev_name))
         maps: list[ColumnMap] = []
         used: list[dict[str, Any]] = []
         for f in files:
             table, name, _ = self._read_upload(f)
             column_map = self._column_map(f, table)
-            if cost_only and column_map.table != "cost":
-                raise ApiError(400, f"原価だけの更新に{TABLE_LABELS[column_map.table]}の表は入れられない: {name}")
             imp.add_table(table, column_map)
             maps.append(column_map)
             used.append({"filename": name, "table": column_map.table, "rows": len(table.rows),
                          "columns": dict(column_map.columns)})
             if not table.rows:
                 imp.warnings.append(ImportWarning(name, None, "読める行が無い"))
-        copies: list[Scenario] = []
-        if previous is not None and cost_only:
-            imp.version = self._with_new_costs(previous.version_id, imp.version, imp.warnings)
-            copies = self._copied_scenarios(previous.version_id, imp.version, imported_at)
+        tables = {m.table for m in maps}
+        taken = [t for t in TABLE_FIELDS if t in tables and t in info.bom_tables]
+        if taken:
+            raise ApiError(400, "・".join(TABLE_LABELS[t] for t in taken)
+                           + " はもうこのグループに入っているので取り込めない（［新しく作る］でこの表を外して流用し、そこへ取り込む）")
         warnings = list(imp.warnings)
         for conflict in imp.version.conflicts:
             parent, balloon, child = conflict.key
@@ -325,195 +361,253 @@ class Screens:
                 "", None,
                 f"構成の数量が食い違う: 親 {parent}・風船番号 {balloon or '空欄'}・子 {child}（{quantities}。計算には最初の数量を使う）",
             ))
-        self.store.save_version(imp.version, warnings=warnings)
-        for column_map in maps:
-            self.store.save_column_map(column_map)
-        for scenario in copies:
-            self.store.save_scenario(scenario)
-        v = imp.version
-        return _json_response(
-            {
-                "version_id": version_id,
-                "dev_number": dev_number,
-                "dev_name": dev_name,
-                "revision": revision,
-                "source_name": v.source_name,
-                "files": used,
-                "counts": {"items": len(v.items), "lines": len(v.lines), "costs": len(v.cost_rows),
-                           "volumes": len(v.volumes)},
-                "warnings": [_warning_json(w) for w in warnings],
-                "warning_count": len(warnings),
-                "cost_only": cost_only,
-                "based_on": previous.version_id if cost_only and previous is not None else None,
-                "copied_scenarios": len({s.name for s in copies}),
-                "copied_products": len(copies),
-            },
-            201,
-        )
+        current = self.store.load_bom(group_id)
+        merged = bom_subset(current, info.bom_tables)
+        new = bom_subset(imp.version, tables)
+        merged.add_items(new.items.values())
+        merged.add_bom_lines(new.lines)
+        for conflict in new.conflicts:
+            merged.add_conflict(conflict.key, conflict.quantities)
+        merged.add_costs(new.cost_rows)
+        for volume in new.volumes.values():
+            merged.add_volume(volume)
+        version = self.store.overlay_master(merged)
+        source = self._source_bom(info)
+        all_tables = set(info.bom_tables) | tables
+        refit: tuple[list[Scenario], list[int], list[dict[str, Any]]] = ([], [], [])
+        if "bom_line" in all_tables:
+            refit = self._refit([self.store.load_scenario(s.scenario_id) for s in self.store.list_scenarios(group_id)],
+                                version)
+        return {
+            "info": info, "imp": imp, "maps": maps, "used": used, "tables": tables, "warnings": warnings,
+            "version": version, "refit": refit,
+            "diff": [{"table": t, "label": TABLE_LABELS[t], **_table_diff(source, new, t)}
+                     for t in TABLE_FIELDS if t in tables],
+            "unused": _unused_master(self.store.load_manual(group_id), source, merged, tables),
+        }
 
-    def _with_new_costs(self, previous_id: str, costs: Version, warnings: list[ImportWarning]) -> Version:
-        """前の版（manual を重ねない）の中身を写し、costs の原価で品番ごとに上書きした版。
+    def _source_bom(self, info: GroupInfo) -> Version:
+        """流用元のグループの BOM（流用元が無い・消えた時は空）。取り込みの差と使われないマスタ登録はこれと比べる。"""
+        if info.copied_from:
+            try:
+                return self.store.load_bom(info.copied_from)
+            except KeyError:
+                pass
+        return Version(info.group_id)
 
-        前の版に無い品番の原価は取り込まず、warnings に足す。
+    def _refit(self, scenarios: list[Scenario], version: Version
+               ) -> tuple[list[Scenario], list[int], list[dict[str, Any]]]:
+        """試算の変更を version（新しい構成）の上に、記録のときと同じ順で当て直す（まだ保存しない）。
+
+        場所が無い・品番が無い・部品とその中の場所が重なる操作は写さず、dropped に1行ずつ（製品・操作・理由）。
+        製品がグループに無い試算は丸ごと外す（removed に ID）。返すのは（当て直した試算, removed, dropped）。
         """
-        previous = self.store.load_version(previous_id, with_manual=False)
-        v = Version(costs.version_id, costs.imported_at, costs.note, costs.source_name,
-                    dev_number=costs.dev_number, dev_name=costs.dev_name, revision=costs.revision)
-        v.add_items(previous.items.values())
-        v.add_bom_lines(previous.lines)
-        for conflict in previous.conflicts:
-            v.add_conflict(conflict.key, conflict.quantities)
-        v.add_costs(previous.cost_rows)
-        for volume in previous.volumes.values():
-            v.add_volume(volume)
-        known = _known_codes(previous)
-        before = {row.code: row for row in previous.cost_rows}
-        for row in costs.cost_rows:
-            if row.code in known:
-                # 空欄（列が無い費目も）は前の版の値を残す。材料費だけのファイルで他の費目を消さないため
-                old = before.get(row.code)
-                if old is not None:
-                    merged = {h: row.values[h] if row.values[h] is not None else old.values[h] for h in row.values}
-                    row = CostRow(row.code, merged, row.mbom_code or old.mbom_code, row.source)
-                v.add_cost(row)
-            else:
-                warnings.append(ImportWarning(costs.source_name, None,
-                                              f"品番 {row.code} は前の版 {previous_id} に無いので原価を取り込まなかった"))
-        return v
-
-    def _copied_scenarios(self, previous_id: str, imported: Version, recorded_at: datetime) -> list[Scenario]:
-        """前の版を使う試算を、新しい版の上に同じ名前・土台・変更の並びで作り直す（まだ保存しない）。
-
-        変更は記録のときと同じ apply_batch を通し、原価を新しい版で計算し直す。
-        """
-        version = self.store.overlay_master(imported)
         policy = self.store.load_scope_policy()
-        copies = []
-        for info in self.store.list_scenarios():
-            if info.version_id != previous_id:
-                continue
-            old = self.store.load_scenario(info.scenario_id)
-            new = Scenario(old.name, old.base, old.product_code, version, old.head, policy, old.note)
-            new.calculate()
-            for records in _batches(old.history):
-                first = records[0]
-                new.apply_batch([r.change for r in records], recorded_at, first.volume, first.allocation)
-            copies.append(new)
-        return copies
+        known = _known_codes(version)
+        kept: list[Scenario] = []
+        removed: list[int] = []
+        dropped: list[dict[str, Any]] = []
 
-    def version_info(self, params: dict[str, str]) -> Response:
-        version_id = _param(params, "version", "版")
-        info = next((v for v in self.store.list_versions() if v.version_id == version_id), None)
-        if info is None:
-            raise ApiError(404, f"版 {version_id} は無い")
+        def drop(old: Scenario, records: list[Any], reason: str) -> None:
+            dropped.append({"product": old.base, "product_name": _item_name(version, old.base),
+                            "text": _batch_text(records), "reason": reason})
+
+        for old in scenarios:
+            batches = _batches(old.history)
+            fresh = Scenario(old.name, old.base, old.product_code, version, old.head, policy, old.note,
+                             scenario_id=old.scenario_id)
+            reason = None if old.base in known else f"製品 {old.base} がグループに無い"
+            if reason is None:
+                try:
+                    fresh.calculate()
+                except ValueError as exc:
+                    reason = str(exc)
+            if reason is not None:
+                for records in batches:
+                    drop(old, records, reason)
+                if old.scenario_id is not None:
+                    removed.append(old.scenario_id)
+                continue
+            for records in batches:
+                changes = [r.change for r in records]
+                problem = change_problem(fresh, changes)
+                if problem is None:
+                    first = records[0]
+                    try:
+                        fresh.apply_batch(changes, first.recorded_at, first.volume, first.allocation)
+                    except ValueError as exc:
+                        problem = str(exc)
+                if problem is not None:
+                    drop(old, records, problem)
+            kept.append(fresh)
+        return kept, removed, dropped
+
+    def _import_json(self, plan: dict[str, Any]) -> dict[str, Any]:
+        v = plan["imp"].version
+        kept, removed, dropped = plan["refit"]
+        unused = plan["unused"]
+        return {
+            "group_id": plan["info"].group_id,
+            "label": group_label(plan["version"]),
+            "copied_from": plan["info"].copied_from,
+            "source_name": v.source_name,
+            "files": plan["used"],
+            "tables": [t for t in TABLE_FIELDS if t in plan["tables"]],
+            "counts": {"items": len(v.items), "lines": len(v.lines), "costs": len(v.cost_rows),
+                       "volumes": len(v.volumes)},
+            "warnings": [_warning_json(w) for w in plan["warnings"]],
+            "warning_count": len(plan["warnings"]),
+            "diff": plan["diff"],
+            "dropped": dropped,
+            "kept_changes": sum(len(_batches(s.history)) for s in kept),
+            "unused_master": {"count": len(unused), "codes": unused},
+        }
+
+    def check_import(self, params: dict[str, str], body: dict[str, Any]) -> Response:
+        """取り込む前の確認: 表ごとの件数・流用元との差（追加・変更・削除）・写した変更のうち新しい構成で効かない物・
+        使われないマスタ登録。何も保存しない。"""
+        return _json_response(self._import_json(self._import_plan(body)))
+
+    def import_files(self, params: dict[str, str], body: dict[str, Any]) -> Response:
+        """何本かのファイルを、その表がまだ入っていないグループの BOM に入れる（決定）。使った列の対応づけを保存する。
+
+        確認（check_import）と同じ中身を作り直して入れる。写した変更のうち新しい構成で効かない物はグループから外す。
+        """
+        plan = self._import_plan(body)
+        kept, removed, _ = plan["refit"]
+        imp = plan["imp"]
+        self.store.import_bom(plan["info"].group_id, imp.version, plan["tables"], plan["warnings"], kept, removed)
+        for column_map in plan["maps"]:
+            self.store.save_column_map(column_map)
+        return _json_response(self._import_json(plan), 201)
+
+    # グループ ----------------------------------------------------------------
+
+    def _group_info(self, params: dict[str, Any], key: str = "group") -> GroupInfo:
+        group_id = _optional_text(params, key)
+        if not group_id:
+            raise ApiError(400, f"グループ（{key}）が空")
+        try:
+            return self.store.group_info(group_id)
+        except KeyError:
+            raise ApiError(404, f"グループ {group_id} は無い") from None
+
+    def create_group(self, params: dict[str, str], body: dict[str, Any]) -> Response:
+        """新しいグループを作る。from（流用元のグループ）を付けると、copy の tables（BOM の表）・master（マスタ登録・型費・
+        流用先・対応表）・changes（②の変更）を写す。写した後は元とつながらない（copied_from に残すだけ）。
+
+        開発番号・名称を省けば流用元の値。写した変更は新しい構成で当て直し、効かない物は写さず dropped に並べる
+        （構成の表を外した時は、構成を取り込む時に当て直す）。
+        """
+        source_id = _optional_text(body, "from")
+        source = self._group_info({"group": source_id}) if source_id else None
+        copy = body.get("copy") or {}
+        if not isinstance(copy, dict):
+            raise ApiError(400, "写すもの（copy）は tables・master・changes のオブジェクトにする")
+        tables = copy.get("tables") or []
+        if not isinstance(tables, list) or any(t not in TABLE_FIELDS for t in tables):
+            raise ApiError(400, f"写す表（copy.tables）は {'・'.join(TABLE_FIELDS)} の並びにする")
+        if source is None and (tables or copy.get("master") or copy.get("changes")):
+            raise ApiError(400, "流用元（from）が無いと写せない")
+        dev_number = _optional_text(body, "dev_number") or ("" if source is None else source.dev_number)
+        if not dev_number:
+            raise ApiError(400, "開発番号が空")
+        dev_name = _optional_text(body, "dev_name") or ("" if source is None else source.dev_name)
+        note = _optional_text(body, "note")
+        group_id = self.store.new_group_id()
+        tables = [t for t in TABLE_FIELDS if t in tables and source is not None and t in source.bom_tables]
+        dropped: list[dict[str, Any]] = []
+        if source is None:
+            self.store.create_group(dev_number, dev_name, note, group_id=group_id)
+        else:
+            bom = bom_subset(self.store.load_bom(source.group_id), tables, group_id)
+            bom.note, bom.dev_number, bom.dev_name = note, dev_number, dev_name
+            manual = self.store.load_manual(source.group_id) if _flag(copy.get("master")) else None
+            version = overlay_manual(bom, manual or Version(group_id))
+            scenarios: list[Scenario] = []
+            if _flag(copy.get("changes")):
+                old = [self.store.load_scenario(s.scenario_id) for s in self.store.list_scenarios(source.group_id)]
+                if "bom_line" in tables or "bom_line" not in source.bom_tables:
+                    scenarios, _, dropped = self._refit(old, version)
+                else:
+                    scenarios = [retarget(s, version) for s in old]
+            self.store.create_group(
+                dev_number, dev_name, note, group_id=group_id, copied_from=source.group_id, bom=bom, bom_tables=tables,
+                warnings=self.store.group_warnings(source.group_id) if tables else (), manual=manual,
+                molds=self.store.mold_costs(source.group_id).values() if manual is not None else (),
+                reuse=self.store.reuse_targets(source.group_id) if manual is not None else (),
+                part_maps=self.store.part_map_keys(source.group_id) if manual is not None else (),
+                scenarios=scenarios,
+            )
+        info = self.store.group_info(group_id)
+        return _json_response({"group_id": group_id, "label": group_text(info.dev_number, info.dev_name, info.note),
+                               "copied_from": info.copied_from, "bom_tables": list(info.bom_tables),
+                               "scenario_count": len(self.store.list_scenarios(group_id)), "dropped": dropped}, 201)
+
+    def group_detail(self, params: dict[str, str]) -> Response:
+        info = self._group_info(params)
         return _json_response(
             {
-                "version_id": info.version_id,
+                "group_id": info.group_id,
+                "label": group_text(info.dev_number, info.dev_name, info.note),
                 "dev_number": info.dev_number,
                 "dev_name": info.dev_name,
-                "revision": info.revision,
+                "note": info.note,
+                "created_at": None if info.created_at is None else info.created_at.isoformat(),
+                "copied_from": info.copied_from,
                 "imported_at": None if info.imported_at is None else info.imported_at.isoformat(),
                 "source_name": info.source_name,
-                "note": info.note,
+                "bom_tables": list(info.bom_tables),
                 "warning_count": info.warning_count,
-                "warnings": [_warning_json(w) for w in self.store.version_warnings(version_id)],
-                "used_by": [s.name for s in self.store.list_scenarios() if s.version_id == version_id],
-                **self._locks_json(version_id),
+                "warnings": [_warning_json(w) for w in self.store.group_warnings(info.group_id)],
+                "products": [s.base for s in self.store.list_scenarios(info.group_id)],
             }
         )
 
-    def _locks_json(self, version_id: str) -> dict[str, Any]:
-        here, others = self.store.version_locks(version_id)
-        labels = {v.version_id: v for v in self.store.list_versions()}
-        return {
-            "locked_here": here,
-            "locked_others": [{"name": n, "version_id": v,
-                               "version_label": version_label(labels[v]) if v in labels else v} for n, v in others],
-        }
+    def delete_group(self, params: dict[str, str]) -> Response:
+        """グループと中身（BOM・マスタ登録・変更）を消し、グループの一覧を返す。流用したグループは残る。"""
+        self.store.delete_group(self._group_info(params).group_id)
+        return self.api.groups({})
 
-    def delete_version(self, params: dict[str, str]) -> Response:
-        """試算が使っている版は VersionInUseError（400）で消せない。cascade=1 ならロックしている検討案ごと消す。"""
-        self.store.delete_version(_param(params, "version", "版"), cascade=_flag(params.get("cascade")))
-        return self.api.versions({})
+    def put_group_note(self, params: dict[str, str], body: dict[str, Any]) -> Response:
+        """グループの検討内容（メモ）だけを書き換え、グループの一覧を返す。"""
+        self.store.set_group_note(self._group_info(params).group_id, _optional_text(body, "note"))
+        return self.api.groups({})
 
-    def put_version_note(self, params: dict[str, str], body: dict[str, Any]) -> Response:
-        """版のメモだけを書き換え、版の一覧を返す。"""
-        version_id = _param(params, "version", "版")
-        try:
-            self.store.set_version_note(version_id, _optional_text(body, "note"))
-        except KeyError:
-            raise ApiError(404, f"版 {version_id} は無い") from None
-        return self.api.versions({})
+    # マスタ登録（グループごと） ------------------------------------------------
 
-    # 手入力 ------------------------------------------------------------------
-
-    def _dev_number(self, params: dict[str, Any], body: dict[str, Any] | None = None) -> str:
-        """登録の開発番号（空は共通）。dev_number か、version（その版の開発番号）で受ける。"""
+    def _group_id(self, params: dict[str, Any], body: dict[str, Any] | None = None) -> str:
+        """登録の入るグループ。group（問い合わせ）か group_id（送る内容）で受ける。無いグループは 404。"""
         data = {**params, **(body or {})}
-        version_id = _optional_text(data, "version")
-        if version_id:
-            info = next((v for v in self.store.list_versions() if v.version_id == version_id), None)
-            if info is None:
-                raise ApiError(404, f"版 {version_id} は無い")
-            return info.dev_number
-        return _optional_text(data, "dev_number")
+        key = "group_id" if _optional_text(data, "group_id") else "group"
+        return self._group_info(data, key).group_id
 
-    def _product_kind(self, versions: dict[str, Version | None], dev_number: str = "") -> str:
-        """手入力の製品に付ける区分の記号。一番新しい版（マスタ登録を敷く）で製品とみなす記号、版が無い・決まらなければ PRODUCT_KIND_CODE。
+    def _product_kind(self, group_id: str, version: Version | None = None) -> str:
+        """手入力の製品に付ける区分の記号。グループ（マスタ登録を重ねる）で製品とみなす記号、決まらなければ PRODUCT_KIND_CODE。
 
-        開発番号を渡せば、その開発番号の一番新しい版（無ければ全体の一番新しい版）で見る。
-        製品群は版ごとに記号を選ぶので、版の記号に合わせないと手入力の製品が製品の一覧から外れる。
+        製品群はグループごとに記号を選ぶので、グループの記号に合わせないと手入力の製品が製品の一覧から外れる。
         """
-        latest = self.store.list_versions()
-        own = self.store.latest_revision(dev_number) if dev_number else None
-        if own is not None:
-            latest = [own]
-        version = self._cached_version(versions, latest[0].version_id) if latest else None
-        if version is None:
-            return PRODUCT_KIND_CODE
+        version = version or self.store.load_group(group_id)
         return Group.product_kind(version, _Structure(version)) or PRODUCT_KIND_CODE
 
-    def _cached_version(self, versions: dict[str, Version | None], version_id: str) -> Version | None:
-        if version_id not in versions:
-            try:
-                versions[version_id] = self.store.load_version(version_id)
-            except KeyError:
-                versions[version_id] = None
-        return versions[version_id]
-
-    def _trials(self, versions: dict[str, Version | None], dev_number: str = "") -> list[dict[str, Any]]:
-        """試算（新製品）の一覧。製品群の試作品も「新しい試算」で作ったものも1本1行。
-
-        開発番号を渡せば、その開発番号の版の試算だけ（空なら全部）。
-        """
+    def _trials(self, version: Version) -> list[dict[str, Any]]:
+        """グループの試算（②の変更でできた新製品）の一覧。1本1行。"""
         rows = []
-        devs = {v.version_id: v.dev_number for v in self.store.list_versions()}
-        for s in self.store.list_scenarios():
-            if dev_number and devs.get(s.version_id) != dev_number:
-                continue
-            version = self._cached_version(versions, s.version_id)
-            base = None if version is None else version.items.get(s.base)
-            rows.append(
-                {
-                    "scenario_id": s.scenario_id,
-                    "code": s.product_code,
-                    "name": "" if base is None else base.name,
-                    "base": s.base,
-                    "trial_name": s.name,
-                    "version_id": s.version_id,
-                }
-            )
+        for s in self.store.list_scenarios(version.version_id):
+            base = version.items.get(s.base)
+            rows.append({"scenario_id": s.scenario_id, "code": s.product_code,
+                         "name": "" if base is None else base.name, "base": s.base})
         return rows
 
     def manual(self, params: dict[str, str]) -> Response:
-        """手入力の品目（role で製品・部品に分ける）と試算（新製品）の一覧ほか。
+        """グループのマスタ登録の品目（role で製品・部品に分ける）・年間台数・型費・流用先・対応表と試算（新製品）の一覧。
 
-        dev_number（空は共通）の登録だけを返す。in_bom は BOM に入った登録の品番 → [{開発番号, 第何版から}]。
+        in_bom は登録の品番のうち BOM にもある品番（計算はマスタ登録の値を使い、空の費目だけ BOM の値）。
         """
-        dev = self._dev_number(params)
-        manual = self.store.load_manual(dev)
-        versions: dict[str, Version | None] = {}
-        product_kind = self._product_kind(versions, dev)
+        group_id = self._group_id(params)
+        manual = self.store.load_manual(group_id)
+        version = self.store.load_group(group_id)
+        product_kind = self._product_kind(group_id, version)
         codes = list(manual.items) + [r.code for r in manual.cost_rows if r.code not in manual.items]
         items = []
         for code in codes:
@@ -529,26 +623,22 @@ class Screens:
                     "costs": {h.name: _s(manual.cost_value(code, h)) for h in dict.fromkeys(HEADS + MASTER_HEADS)},
                 }
             )
-        in_bom = self.store.bom_entries([*codes, *manual.parents(), *manual.volumes], dev)
-        dev_numbers = list(dict.fromkeys([*(v.dev_number for v in self.store.list_versions()),
-                                          *self.store.master_dev_numbers()]))
+        bom = _known_codes(self.store.load_bom(group_id))
         return _json_response(
             {
-                "dev_number": dev,
-                "dev_numbers": dev_numbers,
+                "group_id": group_id,
                 "heads": [{"id": h.name, "label": h.value} for h in MASTER_HEADS],
                 "items": items,
                 "product_kind": product_kind,
-                "trials": self._trials(versions, dev),
+                "trials": self._trials(version),
                 "volumes": [{"product": v.product, "annual": _s(v.annual), "kind": v.kind.value}
                             for v in manual.volumes.values()],
                 "molds": [{"part": m.part, "amount": _s(m.amount), "years": _s(m.years),
-                           "annual_amount": _s(m.annual_amount)} for m in self.store.mold_costs(dev).values()],
+                           "annual_amount": _s(m.annual_amount)} for m in self.store.mold_costs(group_id).values()],
                 "reuse": [{"part": t.part, "product": t.product, "quantity": _s(t.quantity_per_unit),
-                           "replaced_part": t.replaced_part} for t in self.store.reuse_targets(dev_number=dev)],
-                "part_maps": self._part_map_rows(dev_number=dev),
-                "in_bom": {code: [{"dev_number": d, "revision": r} for d, r in entries]
-                           for code, entries in in_bom.items()},
+                           "replaced_part": t.replaced_part} for t in self.store.reuse_targets(group_id)],
+                "part_maps": self._part_map_rows(group_id),
+                "in_bom": [c for c in dict.fromkeys([*codes, *manual.parents(), *manual.volumes]) if c in bom],
                 "allocations": [{"id": a.name, "label": a.value} for a in Allocation],
             }
         )
@@ -556,13 +646,13 @@ class Screens:
     def put_manual_item(self, params: dict[str, str], body: dict[str, Any]) -> Response:
         """試作品の品目と原価を足す・直す（同じ品番は入れ替え）。マスタ登録に入る。
 
-        dev_number（空は共通）か version（その版の開発番号）の登録に入る。
+        group（問い合わせ）か group_id（送る内容）のグループの登録に入る。
         role（product・part）を送ると区分はそれで決まる: product は製品とみなす記号、part は kind（製品の記号は不可・
         空なら part_kind）。
         role が無ければ kind をそのまま区分にする。
         original（{"code": 直す元の品番}）があれば、その行を消して code の行に置き換える。
         """
-        dev = self._dev_number(params, body)
+        group_id = self._group_id(params, body)
         code = to_code(_text_field(body, "code", "品番"))
         original = _original_code(body, "code", "直す元の品番") or code
         name = _text_field(body, "name", "名称")
@@ -579,7 +669,7 @@ class Screens:
         kind = _optional_text(body, "kind")
         role = _optional_text(body, "role")
         if role:
-            product_kind = self._product_kind({}, dev)
+            product_kind = self._product_kind(group_id)
             if role == "product":
                 kind = product_kind
             elif role != "part":
@@ -588,7 +678,7 @@ class Screens:
                 raise ApiError(400, f"部品の区分に製品の記号 {kind} は使えない")
             else:
                 kind = part_kind(product_kind, kind)
-        manual = self.store.load_manual(dev)
+        manual = self.store.load_manual(group_id)
         kept = manual.items.get(original) or manual.items.get(code)
         result = _manual_copy(manual, drop_items={code, original})
         result.add_item(Item(code, name, kind,
@@ -597,44 +687,44 @@ class Screens:
                              specification=_optional_text(body, "specification")))
         if any(v is not None for v in values.values()):
             result.add_cost(CostRow(code, values))
-        self.store.save_manual(result, dev)
-        return self.manual({"dev_number": dev})
+        self.store.save_manual(result, group_id)
+        return self.manual({"group": group_id})
 
     def delete_manual_item(self, params: dict[str, str]) -> Response:
-        dev = self._dev_number(params)
+        group_id = self._group_id(params)
         code = to_code(_param(params, "code", "品番"))
-        manual = self.store.load_manual(dev)
+        manual = self.store.load_manual(group_id)
         if code not in manual.items and manual.cost_row(code) is None:
             raise ApiError(404, f"手入力の品目 {code} は無い")
-        self.store.save_manual(_manual_copy(manual, drop_items={code}), dev)
-        return self.manual({"dev_number": dev})
+        self.store.save_manual(_manual_copy(manual, drop_items={code}), group_id)
+        return self.manual({"group": group_id})
 
     def put_volume(self, params: dict[str, str], body: dict[str, Any]) -> Response:
         """新製品の年間台数（計画）を足す・直す。original（{"product": 直す元の品番}）があればその行を置き換える。"""
-        dev = self._dev_number(params, body)
+        group_id = self._group_id(params, body)
         product = to_code(_text_field(body, "product", "製品の品番"))
         original = _original_code(body, "product", "直す元の品番") or product
         annual = _required_number(body.get("annual"), "年間台数")
         if annual < 0:
             raise ApiError(400, "年間台数は 0 以上にする")
-        manual = self.store.load_manual(dev)
+        manual = self.store.load_manual(group_id)
         result = _manual_copy(manual, drop_volumes={product, original})
         result.add_volume(Volume(product, annual))
-        self.store.save_manual(result, dev)
-        return self.manual({"dev_number": dev})
+        self.store.save_manual(result, group_id)
+        return self.manual({"group": group_id})
 
     def delete_volume(self, params: dict[str, str]) -> Response:
-        dev = self._dev_number(params)
+        group_id = self._group_id(params)
         product = to_code(_param(params, "product", "製品の品番"))
-        manual = self.store.load_manual(dev)
+        manual = self.store.load_manual(group_id)
         if product not in manual.volumes:
             raise ApiError(404, f"手入力の年間台数 {product} は無い")
-        self.store.save_manual(_manual_copy(manual, drop_volumes={product}), dev)
-        return self.manual({"dev_number": dev})
+        self.store.save_manual(_manual_copy(manual, drop_volumes={product}), group_id)
+        return self.manual({"group": group_id})
 
     def put_mold(self, params: dict[str, str], body: dict[str, Any]) -> Response:
         """型費を足す・直す。original（{"part": 直す元の品番}）があればその行を置き換える。"""
-        dev = self._dev_number(params, body)
+        group_id = self._group_id(params, body)
         part = to_code(_text_field(body, "part", "部品の品番"))
         original = _original_code(body, "part", "直す元の品番")
         amount = _required_number(body.get("amount"), "型費")
@@ -644,21 +734,21 @@ class Screens:
         if years <= 0:
             raise ApiError(400, "償却年数は正の数にする")
         if original is not None and original != part:
-            self.store.delete_mold_cost(original, dev)
-        self.store.save_mold_cost(MoldCost(part, amount, years), dev)
-        return self.manual({"dev_number": dev})
+            self.store.delete_mold_cost(original, group_id)
+        self.store.save_mold_cost(MoldCost(part, amount, years), group_id)
+        return self.manual({"group": group_id})
 
     def delete_mold(self, params: dict[str, str]) -> Response:
-        dev = self._dev_number(params)
+        group_id = self._group_id(params)
         part = to_code(_param(params, "part", "部品の品番"))
-        if part not in self.store.mold_costs(dev):
+        if part not in self.store.mold_costs(group_id):
             raise ApiError(404, f"型費 {part} は無い")
-        self.store.delete_mold_cost(part, dev)
-        return self.manual({"dev_number": dev})
+        self.store.delete_mold_cost(part, group_id)
+        return self.manual({"group": group_id})
 
     def put_reuse(self, params: dict[str, str], body: dict[str, Any]) -> Response:
         """流用先を足す・直す。同じ部品と流用先の組は入れ替える。original があればその組を消してから足す。"""
-        dev = self._dev_number(params, body)
+        group_id = self._group_id(params, body)
         part = to_code(_text_field(body, "part", "部品の品番"))
         product = to_code(_text_field(body, "product", "流用先の品番"))
         quantity = _required_number(body.get("quantity"), "使用数")
@@ -668,28 +758,28 @@ class Screens:
         target = ReuseTarget(part, product, quantity, replaced)
         original = body.get("original")
         if isinstance(original, dict) and original.get("part") and original.get("product"):
-            self.store.delete_reuse_target(ReuseTarget(original["part"], original["product"], 1), dev)
-        self.store.delete_reuse_target(target, dev)
-        self.store.add_reuse_target(target, dev)
-        return self.manual({"dev_number": dev})
+            self.store.delete_reuse_target(ReuseTarget(original["part"], original["product"], 1), group_id)
+        self.store.delete_reuse_target(target, group_id)
+        self.store.add_reuse_target(target, group_id)
+        return self.manual({"group": group_id})
 
     def delete_reuse(self, params: dict[str, str]) -> Response:
-        dev = self._dev_number(params)
+        group_id = self._group_id(params)
         target = ReuseTarget(_param(params, "part", "部品の品番"), _param(params, "product", "流用先の品番"), 1)
-        if not any(t.product == target.product for t in self.store.reuse_targets(target.part, dev)):
+        if not any(t.product == target.product for t in self.store.reuse_targets(group_id, target.part)):
             raise ApiError(404, f"流用先 {target.part} → {target.product} は無い")
-        self.store.delete_reuse_target(target, dev)
-        return self.manual({"dev_number": dev})
+        self.store.delete_reuse_target(target, group_id)
+        return self.manual({"group": group_id})
 
     # 部品の対応表 ------------------------------------------------------------
 
-    def _part_map_rows(self, pair: tuple[str, str] | None = None, dev_number: str = "") -> list[dict[str, Any]]:
-        pairs = [pair] if pair is not None else self.store.part_map_pairs(dev_number)
+    def _part_map_rows(self, group_id: str, pair: tuple[str, str] | None = None) -> list[dict[str, Any]]:
+        pairs = [pair] if pair is not None else self.store.part_map_pairs(group_id)
         return [
             {"old_product": old, "new_product": new, "old_part": r.old_part, "new_part": r.new_part,
              "old_balloon": r.old_balloon, "new_balloon": r.new_balloon}
             for old, new in pairs
-            for r in self.store.part_map_rows(old, new, dev_number)
+            for r in self.store.part_map_rows(group_id, old, new)
         ]
 
     @staticmethod
@@ -706,20 +796,20 @@ class Screens:
     def part_maps(self, params: dict[str, str]) -> Response:
         old, new = params.get("old_product"), params.get("new_product")
         pair = (to_code(old), to_code(new)) if old and new else None
-        return _json_response(self._part_map_rows(pair, self._dev_number(params)))
+        return _json_response(self._part_map_rows(self._group_id(params), pair))
 
     def add_part_map(self, params: dict[str, str], body: dict[str, Any]) -> Response:
-        dev = self._dev_number(params, body)
+        group_id = self._group_id(params, body)
         key = self._part_map_key(body)
         if key[0] == key[1]:
             raise ApiError(400, "元の製品と新しい製品は別の品番にする")
         if key[2] == key[3]:
             raise ApiError(400, "同じ品番どうしは対応表に入れなくても自動で対応する")
-        self.store.add_part_map(*key, dev_number=dev)
-        return _json_response(self._part_map_rows(dev_number=dev), 201)
+        self.store.add_part_map(group_id, *key)
+        return _json_response(self._part_map_rows(group_id), 201)
 
     def update_part_map(self, params: dict[str, str], body: dict[str, Any]) -> Response:
-        dev = self._dev_number(params, body)
+        group_id = self._group_id(params, body)
         original = body.get("original")
         if not isinstance(original, dict):
             raise ApiError(400, "直す元の行（original）が空")
@@ -727,38 +817,38 @@ class Screens:
         new_key = self._part_map_key(body)
         if new_key[2] == new_key[3]:
             raise ApiError(400, "同じ品番どうしは対応表に入れなくても自動で対応する")
-        if self.store.delete_part_map(*old_key, dev_number=dev) == 0:
+        if self.store.delete_part_map(group_id, *old_key) == 0:
             raise ApiError(404, "直す元の対応表の行が無い")
-        self.store.add_part_map(*new_key, dev_number=dev)
-        return _json_response(self._part_map_rows(dev_number=dev))
+        self.store.add_part_map(group_id, *new_key)
+        return _json_response(self._part_map_rows(group_id))
 
     def delete_part_map(self, params: dict[str, str]) -> Response:
-        dev = self._dev_number(params)
-        if self.store.delete_part_map(*self._part_map_key(dict(params)), dev_number=dev) == 0:
+        group_id = self._group_id(params)
+        if self.store.delete_part_map(group_id, *self._part_map_key(dict(params))) == 0:
             raise ApiError(404, "対応表の行が無い")
-        return _json_response(self._part_map_rows(dev_number=dev))
+        return _json_response(self._part_map_rows(group_id))
 
     # マスタのブック（Excel で開いて打ち込み、まとめて取り込む） ----------------
 
-    def _book_path(self, dev_number: str = "") -> Path:
-        """ブックの置き場。開発番号ごとの登録はファイル名に開発番号を入れる（共通は今までの名前）。"""
+    def _book_path(self, group_id: str) -> Path:
+        """ブックの置き場。グループごとに1つ（ファイル名にグループの ID を入れる）。"""
         folder = self.api.master_dir
         if folder is None:
             if self.store.path is None:
                 raise ApiError(400, "DB がファイルでないのでブックの置き場が無い")
             folder = self.store.path.parent
         stem = "bom-cost" if self.store.path is None else self.store.path.stem
-        suffix = "" if not dev_number else "-" + re.sub(r'[\\/:*?"<>|\s]', "_", dev_number)
+        suffix = "-" + re.sub(r'[\\/:*?"<>|\s]', "_", group_id)
         return Path(folder) / f"{stem}-master{suffix}.xlsx"
 
     def write_master_book(self, params: dict[str, str], body: dict[str, Any]) -> Response:
-        """今の登録（dev_number の分・空は共通）をブックに書き、Windows では既定のアプリで開く。
+        """グループの今の登録をブックに書き、Windows では既定のアプリで開く。
 
         開けない環境ではパスを返すだけ。
         """
-        dev = self._dev_number(params, body)
-        path = self._book_path(dev)
-        data = book_bytes(self.store, self._product_kind({}, dev), dev)
+        group_id = self._group_id(params, body)
+        path = self._book_path(group_id)
+        data = book_bytes(self.store, self._product_kind(group_id), group_id)
         try:
             save_book(path, data)
         except PermissionError:
@@ -769,7 +859,7 @@ class Screens:
 
     def open_master_book(self, params: dict[str, str], body: dict[str, Any]) -> Response:
         """置き場のブックを書き直さずに開く。無ければ 404。"""
-        path = self._book_path(self._dev_number(params, body))
+        path = self._book_path(self._group_id(params, body))
         if not path.is_file():
             raise ApiError(404, "ブックがまだ無い（先に［Excel で開く］）")
         return self._open_book(path)
@@ -785,14 +875,14 @@ class Screens:
         return _json_response({"path": str(path), "opened": opened})
 
     def _master_plan(self, params: dict[str, str], body: dict[str, Any]) -> tuple[str, MasterPlan]:
-        """body に content があれば送られたブック、無ければ置き場のブックを読む。dev_number の登録と比べる。"""
-        dev = self._dev_number(params, body)
+        """body に content があれば送られたブック、無ければ置き場のブックを読む。グループの登録と比べる。"""
+        group_id = self._group_id(params, body)
         if body.get("content"):
             name, data = self._upload_bytes(body)
             if not name.lower().endswith((".xlsx", ".xlsm")):
                 raise ApiError(400, f"{name} は Excel のブック（.xlsx）でない")
         else:
-            path = self._book_path(dev)
+            path = self._book_path(group_id)
             name = str(path)
             try:
                 data = path.read_bytes()
@@ -801,7 +891,7 @@ class Screens:
             except PermissionError:
                 raise ApiError(409, "ブックを読めない（Excel が開いたまま？）") from None
         try:
-            plan = plan_book(self.store, self._product_kind({}, dev), data, dev)
+            plan = plan_book(self.store, self._product_kind(group_id), data, group_id)
         except Exception:  # 壊れた .xlsx は zipfile などの例外で落ちるので、まとめて読めないとする
             raise ApiError(400, f"{name} を Excel のブックとして読めない") from None
         return name, plan
@@ -818,14 +908,15 @@ class Screens:
             return _json_response({"error": f"行の誤りが {len(plan.errors)} 件あるので取り込まない",
                                    "source": name, **plan_json(plan)}, 400)
         apply_plan(self.store, plan)
-        return _json_response({"source": name, **plan_json(plan), "manual": self.manual({"dev_number": plan.dev_number}).json()})
+        return _json_response({"source": name, **plan_json(plan), "manual": self.manual({"group": plan.group_id}).json()})
 
     # 部品から見る ------------------------------------------------------------
 
     def part_view(self, params: dict[str, str]) -> Response:
         """部品を使う製品・流用先と、型費の載り方・原価の今と後（費目5つ）。設計書 6章の図4。
 
-        scenario を選ぶと、その試算の製品は「土台＋変更」の仮の構成で使用数を数える。
+        group（グループ）か scenario（その試算のグループ）で見る。scenario を選ぶと、その試算の製品は「土台＋変更」の仮の構成で
+        使用数を数える。
         head は主に見る費目（既定は材料費）。費目5つの値は heads に並べる。材料費のほかは製品を一番上にした式の値で、
         流用先の部品の差は部品の材料費がその費目に効く分。
         """
@@ -835,16 +926,16 @@ class Screens:
         scenario: Scenario | None = None
         if params.get("scenario"):
             scenario = self.api._load_scenario(_scenario_id(params["scenario"]))
-        version_id = params.get("version") or (scenario.version.version_id if scenario else "")
-        if not version_id:
-            raise ApiError(400, "版（version）が空")
-        version = self.api._load_version(version_id)
+        group_id = params.get("group") or (scenario.version.version_id if scenario else "")
+        if not group_id:
+            raise ApiError(400, "グループ（group）が空")
+        version = self.api._load_group(group_id)
         if part not in _known_codes(version):
-            raise ApiError(400, f"品番 {part} は版 {version_id} に無い")
+            raise ApiError(400, f"品番 {part} はグループに無い")
         policy = self.store.load_scope_policy()
         overrides = scenario.overrides() if scenario is not None else None
-        reuse = self.store.reuse_targets_for(version.dev_number, part)
-        mold = self.store.mold_costs_for(version.dev_number).get(part)
+        reuse = self.store.reuse_targets(version.version_id, part)
+        mold = self.store.mold_costs(version.version_id).get(part)
         users, unknown = part_users(version, part, reuse, overrides)
         alloc = None if mold is None else allocate_mold_cost(version, mold, allocation, reuse, overrides)
         # 原価は「製品から」の画面と同じ見方（材料費の足し上げと式）で出す
@@ -883,7 +974,7 @@ class Screens:
                                     "after": _s(after), "difference": _s(difference),
                                     "difference_with_amortization": _s(total)}
             item = version.items.get(user.product)
-            name = scenario.name if is_trial and item is None else ("" if item is None else item.name)
+            name = _item_name(version, scenario.base) if is_trial and item is None else ("" if item is None else item.name)
             rows.append(
                 {
                     "product": user.product,
@@ -918,14 +1009,15 @@ class Screens:
                 "reuse": [{"product": t.product, "quantity": _s(t.quantity_per_unit),
                            "replaced_part": t.replaced_part} for t in reuse],
                 "premises": {
-                    "version_id": version.version_id,
+                    "group_id": version.version_id,
+                    "group_label": group_label(version),
                     "head": head.name,
                     "head_label": head.value,
                     "allocation": allocation.name,
                     "allocation_label": allocation.value,
                     "volumes": [{"product": u.product, "kind": u.volume_kind.value} for u in users],
                     "scenario_id": None if scenario is None else scenario.scenario_id,
-                    "scenario_name": None if scenario is None else scenario.name,
+                    "scenario_base": None if scenario is None else scenario.base,
                     "reference": "参考値",
                     "amortization_excluded": True,
                     # 製品の償却費は登録値を式に入れる（③の［償却費を無視］は 0 とするので、登録があれば製造原価が違う）
@@ -937,7 +1029,10 @@ class Screens:
     # モデルチェンジ ----------------------------------------------------------
 
     def model_change(self, params: dict[str, str]) -> Response:
-        """元の製品と新製品（または試算）の構成を、同じ品番・対応表・片方だけの3段で並べる。設計書 8章。"""
+        """元の製品と新製品（または試算）の構成を、同じ品番・対応表・片方だけの3段で並べる。設計書 8章。
+
+        old_group・new_group は元・新しい製品のグループ（新しい側を省けば元と同じ）。対応表は新しい側のグループの分を使う。
+        """
         scenario: Scenario | None = None
         if params.get("scenario"):
             scenario = self.api._load_scenario(_scenario_id(params["scenario"]))
@@ -945,31 +1040,27 @@ class Screens:
         if not old_text:
             raise ApiError(400, "元の製品の品番（old）が空")
         old_product = to_code(old_text)
-        old_version_id = params.get("old_version") or (scenario.version.version_id if scenario else "")
-        if not old_version_id:
-            raise ApiError(400, "元の製品の版（old_version）が空")
-        old_version = self.api._load_version(old_version_id)
+        old_group = params.get("old_group") or (scenario.version.version_id if scenario else "")
+        if not old_group:
+            raise ApiError(400, "元の製品のグループ（old_group）が空")
+        old_version = self.api._load_group(old_group)
         if scenario is not None:
             new_product = scenario.product_code
-            new_version = self.api._load_version(params.get("new_version") or scenario.version.version_id)
+            new_version = scenario.version
             new_overrides = scenario.overrides()
         else:
             new_product = to_code(_param(params, "new", "新しい製品の品番"))
-            new_version = self.api._load_version(params.get("new_version") or old_version_id)
+            new_version = self.api._load_group(params.get("new_group") or old_group)
             new_overrides = None
         if old_product == new_product:
             raise ApiError(400, "元の製品と新しい製品は別の品番にする")
         for code, version in ((old_product, old_version), (new_product, new_version)):
             if not (scenario is not None and code == new_product) and not version.children(code):
-                raise ApiError(400, f"製品 {code} の構成が版 {version.version_id} に無い")
+                raise ApiError(400, f"製品 {code} の構成がグループ {group_label(version)} に無い")
         direct_only = str(params.get("direct_only", "")).lower() in ("1", "true", "yes")
-        # 対応表は新しい製品の版の開発番号の分と共通を使う
-        dev = new_version.dev_number
-        mapping = self.store.part_map_for(dev, old_product, new_product)
-        map_rows = [{**r, "dev_number": dev} for r in self._part_map_rows((old_product, new_product), dev)] if dev else []
-        own = {(r["old_part"], r["new_part"], r["old_balloon"], r["new_balloon"]) for r in map_rows}
-        map_rows += [{**r, "dev_number": ""} for r in self._part_map_rows((old_product, new_product))
-                     if (r["old_part"], r["new_part"], r["old_balloon"], r["new_balloon"]) not in own]
+        group_id = new_version.version_id
+        mapping = self.store.part_map(group_id, old_product, new_product)
+        map_rows = self._part_map_rows(group_id, (old_product, new_product))
         rows = compare_structures(old_version, old_product, new_version, new_product, mapping, direct_only,
                                   new_overrides=new_overrides)
 
@@ -982,11 +1073,13 @@ class Screens:
         return _json_response(
             {
                 "old_product": old_product,
-                "old_version": old_version.version_id,
+                "old_group": old_version.version_id,
+                "old_group_label": group_label(old_version),
                 "new_product": new_product,
-                "new_version": new_version.version_id,
+                "new_group": new_version.version_id,
+                "new_group_label": group_label(new_version),
                 "scenario_id": None if scenario is None else scenario.scenario_id,
-                "scenario_name": None if scenario is None else scenario.name,
+                "scenario_base": None if scenario is None else scenario.base,
                 "direct_only": direct_only,
                 "rows": [
                     {
@@ -1002,7 +1095,6 @@ class Screens:
                     }
                     for r in rows
                 ],
-                "new_dev_number": dev,
                 "part_maps": map_rows,
             }
         )

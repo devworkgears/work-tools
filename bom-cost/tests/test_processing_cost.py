@@ -68,8 +68,8 @@ class StoreAndImport(unittest.TestCase):
                                             {"mbom_code": "MBOM品番", "material": "材料費", "processing": "加工"}))
         self.assertEqual((version.cost_value("P-1", P), version.cost_value("P-2", P)), (D(25), None))
         with tempfile.TemporaryDirectory() as directory, Store(Path(directory) / "x.sqlite") as store:
-            store.save_version(version)
-            loaded = store.load_version("v1")
+            store.save_group(version)
+            loaded = store.load_group("v1")
             self.assertEqual((loaded.cost_value("P-1", P), loaded.cost_value("P-2", P)), (D(25), None))
             self.assertEqual(loaded.cost_value("P-1", CostHead.MATERIAL), D(100))
 
@@ -84,21 +84,21 @@ class StoreAndImport(unittest.TestCase):
 class Api(SampleDbCase):
     def test_master_heads_have_processing(self) -> None:
         labels = ["材料費", "償却費", "直接費", "社内加工費"]
-        self.assertEqual([h["label"] for h in self.ok("GET", "/api/manual")["heads"]], labels)
+        self.assertEqual([h["label"] for h in self.ok("GET", "/api/manual", "group=2026-10")["heads"]], labels)
         self.assertEqual([h["label"] for h in self.ok("GET", "/api/meta")["master_heads"]], labels)
 
     def test_register_and_use_in_formula_and_lookup(self) -> None:
         # A-100 は BOM で材料費 200・償却費と直接費は未登録。社内加工費は登録で埋まる
-        self.ok("PUT", "/api/manual/items", body={"code": "A-100", "name": "製品A", "costs": {"PROCESSING": "30"}})
-        manual = {i["code"]: i for i in self.ok("GET", "/api/manual")["items"]}
+        self.ok("PUT", "/api/manual/items", body={"group_id": "2026-10", "code": "A-100", "name": "製品A", "costs": {"PROCESSING": "30"}})
+        manual = {i["code"]: i for i in self.ok("GET", "/api/manual", "group=2026-10")["items"]}
         self.assertEqual(manual["A-100"]["costs"]["PROCESSING"], "30")
-        item = self.ok("GET", "/api/lookup", "version=2026-10&q=A-100")["item"]
+        item = self.ok("GET", "/api/lookup", "group=2026-10&q=A-100")["item"]
         costs = {c["head"]: (c["value"], c["source"], c["label"]) for c in item["costs"]}
-        self.assertEqual(costs["PROCESSING"], ("30", "common", "社内加工費"))
+        self.assertEqual(costs["PROCESSING"], ("30", "master", "社内加工費"))
         calc = {c["head"]: (c["value"], c["incomplete"]) for c in item["calculated"]}
         self.assertEqual(calc["PROCESSING"], ("30", False))
         self.assertEqual(calc["MANUFACTURING"][0], "262.959")  # (200 ＋ 30) × 1.03 × 1.11
-        brief = self.ok("GET", "/api/lookup", "version=2026-10&q=A-100&brief=1")["item"]
+        brief = self.ok("GET", "/api/lookup", "group=2026-10&q=A-100&brief=1")["item"]
         self.assertIn(("PROCESSING", "30"), [(c["head"], c["value"]) for c in brief["costs"]])
 
 
@@ -106,22 +106,22 @@ class Book(DemoDbCase):
     @unittest.skipUnless(HAS_OPENPYXL, "openpyxl が無い")
     def test_master_book_round_trip(self) -> None:
         self.api.open_file = None
-        self.ok("PUT", "/api/manual/items", body={"role": "part", "code": "MQ-1", "name": "部品1", "kind": "B",
+        self.ok("PUT", "/api/manual/items", body={"group_id": "2026-10", "role": "part", "code": "MQ-1", "name": "部品1", "kind": "B",
                                                   "costs": {"MATERIAL": "10", "PROCESSING": "4"}})
-        path = Path(self.ok("POST", "/api/master/book")["path"])
+        path = Path(self.ok("POST", "/api/master/book", body={"group_id": "2026-10"})["path"])
         wb = load_openpyxl().load_workbook(path)
         ws = wb["部品"]
         headers = [c.value for c in ws[1]]
         column = headers.index("社内加工費") + 1
         row = next(r for r in range(2, ws.max_row + 1) if ws.cell(r, 1).value == "MQ-1")
         self.assertEqual(ws.cell(row, column).value, 4)
-        self.assertEqual(self.ok("POST", "/api/master/check")["changed"], 0)
+        self.assertEqual(self.ok("POST", "/api/master/check", body={"group_id": "2026-10"})["changed"], 0)
         ws.cell(row, column).value = 6.5
         wb.save(path)
         wb.close()
-        self.assertEqual(self.ok("POST", "/api/master/check")["changed"], 1)
-        self.ok("POST", "/api/master/apply")
-        self.assertEqual(self.store.load_manual().cost_value("MQ-1", P), D("6.5"))
+        self.assertEqual(self.ok("POST", "/api/master/check", body={"group_id": "2026-10"})["changed"], 1)
+        self.ok("POST", "/api/master/apply", body={"group_id": "2026-10"})
+        self.assertEqual(self.store.load_manual("2026-10").cost_value("MQ-1", P), D("6.5"))
 
 
 if __name__ == "__main__":

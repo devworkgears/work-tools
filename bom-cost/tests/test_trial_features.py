@@ -2,28 +2,28 @@
 
 from bomcost.api import Response
 from bomcost.scenario import Scenario
-from test_group import NAME, SampleDbCase
+from test_group import SampleDbCase
 
 
 class TrialFeatures(SampleDbCase):
     def grouped(self, query: str = "") -> dict:
-        return self.ok("GET", "/api/group/parts/by-code", "version=2026-10&part=部品" + query)
+        return self.ok("GET", "/api/group/parts/by-code", "group=2026-10&part=部品" + query)
 
     def replace_code(self, part: str, **extra: str) -> Response:
         return self.call("POST", "/api/group/changes/by-code", body={
-            "version_id": "2026-10", "name": NAME, "part": part, "replacement": "X-610", **extra,
+            "group_id": "2026-10", "part": part, "replacement": "X-610", **extra,
         })
 
     def test_brief_uses_lookup_values_and_sources(self) -> None:
-        self.ok("PUT", "/api/manual/items", body={"code": "B-200", "name": "部品B",
+        self.ok("PUT", "/api/manual/items", body={"group_id": "2026-10", "code": "B-200", "name": "部品B",
                                                   "specification": "M6", "costs": {"INDIRECT": "7"}})
-        query = "version=2026-10&q=B-200"
+        query = "group=2026-10&q=B-200"
         full = self.ok("GET", "/api/lookup", query)["item"]
         brief = self.ok("GET", "/api/lookup", query + "&brief=1")["item"]
         self.assertEqual(brief, {key: full[key] for key in ("code", "name", "specification", "costs")})
         costs = {c["head"]: (c["value"], c["source"]) for c in brief["costs"]}
         self.assertEqual(costs["MATERIAL"], ("1600", "bom"))
-        self.assertEqual(costs["INDIRECT"], ("7", "common"))
+        self.assertEqual(costs["INDIRECT"], ("7", "master"))
         self.assertEqual(costs["AMORTIZATION"], (None, None))
 
     def test_group_counts_all_places_before_limit(self) -> None:
@@ -37,7 +37,7 @@ class TrialFeatures(SampleDbCase):
 
     def test_grouped_trial_scope_and_replacements(self) -> None:
         self.change("A-100", kind="REPLACE", part="B-200", replacement="X-610")
-        rows = {r["part"]: r for r in self.grouped(f"&name={NAME}&trial=1")["rows"]}
+        rows = {r["part"]: r for r in self.grouped(f"&trial=1")["rows"]}
         self.assertEqual(rows["B-200"]["product_count"], 1)
         self.assertEqual(rows["B-200"]["replaced_by"], ["X-610"])
         filtered = self.grouped("&q=新しい")

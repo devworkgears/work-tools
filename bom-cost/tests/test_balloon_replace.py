@@ -1,14 +1,6 @@
-"""風船番号の場所ごとの置換（1か所を複数の部品に）と、その記録・取り消し・古い DB の読み戻し。品番・数値は架空。"""
-
-import json
-import sqlite3
-import tempfile
-import unittest
-from pathlib import Path
+"""風船番号の場所ごとの置換（1か所を複数の部品に）と、その記録・取り消し。品番・数値は架空。"""
 
 from bomcost import BomLine, CostHead, CostRow, Item, Version
-from bomcost.api import Api
-from bomcost.store import Store
 from test_screens import EmptyDbCase
 
 NAME = "場所の検討"
@@ -40,27 +32,27 @@ BASE_TOTAL = "10500"
 class BalloonCase(EmptyDbCase):
     def setUp(self) -> None:
         super().setUp()
-        self.store.save_version(balloon_version())
+        self.store.save_group(balloon_version())
 
     def change(self, **change: object) -> dict:
-        return self.ok("POST", "/api/group/changes", body={"version_id": "2026-11", "name": NAME, "product": "A-100",
+        return self.ok("POST", "/api/group/changes", body={"group_id": "2026-11", "product": "A-100",
                                                            "head": "MATERIAL", **change})
 
     def tree(self, query: str = "") -> dict:
-        return self.ok("GET", "/api/group/tree", f"version=2026-11&product=A-100&name={NAME}&by_balloon=1" + query)
+        return self.ok("GET", "/api/group/tree", f"group=2026-11&product=A-100&by_balloon=1" + query)
 
     def total(self) -> str:
-        return self.ok("GET", "/api/group/products", f"version=2026-11&name={NAME}&q=A-100")["products"][0]["after"]
+        return self.ok("GET", "/api/group/products", f"group=2026-11&q=A-100")["products"][0]["after"]
 
     def changes(self) -> dict:
-        return self.ok("GET", "/api/group/changes", f"version=2026-11&name={NAME}")
+        return self.ok("GET", "/api/group/changes", f"group=2026-11")
 
 
 class ReplaceAtBalloon(BalloonCase):
     def test_tree_rows_by_balloon(self) -> None:
         rows = [(c["balloon"], c["code"], c["quantity"]) for c in self.tree()["children"]]
         self.assertEqual(rows, [("3", "C-300", "2"), ("7", "C-300", "1"), ("5", "S-500", "2")])
-        merged = self.ok("GET", "/api/group/tree", "version=2026-11&product=A-100")["children"]
+        merged = self.ok("GET", "/api/group/tree", "group=2026-11&product=A-100")["children"]
         self.assertEqual([(c["balloon"], c["code"], c["quantity"]) for c in merged],
                          [(None, "C-300", "3"), (None, "S-500", "2")])  # 付けなければ今のまま
 
@@ -80,7 +72,7 @@ class ReplaceAtBalloon(BalloonCase):
         self.assertEqual((c["count"], c["difference"]), (1, "-340"))
         # 同じ場所はもう置換できない。#3 は別の場所なので置換できる
         self.assert_error(self.call("POST", "/api/group/changes", body={
-            "version_id": "2026-11", "name": NAME, "product": "A-100", "kind": "REPLACE", "part": "C-300",
+            "group_id": "2026-11", "product": "A-100", "kind": "REPLACE", "part": "C-300",
             "parent": "A-100", "balloon": "7", "replacement": "N-999"}), 400, "もう置換した")
         self.assertEqual(self.change(kind="REPLACE", part="C-300", parent="A-100", balloon="3",
                                      replacement="N-999", quantity="2")["summary"]["total"], "9360")  # −1,000＋200
@@ -120,7 +112,7 @@ class ReplaceAtBalloon(BalloonCase):
     def test_input_errors(self) -> None:
         def bad(words: str, **change: object) -> None:
             self.assert_error(self.call("POST", "/api/group/changes", body={
-                "version_id": "2026-11", "name": NAME, "product": "A-100", **change}), 400, words)
+                "group_id": "2026-11", "product": "A-100", **change}), 400, words)
 
         bad("構成に無い", kind="REPLACE", part="C-300", parent="A-100", balloon="9", replacement="N-999")
         bad("構成に無い", kind="REPLACE", part="C-300", parent="A-100", replacement="N-999")  # 風船番号の無い行は無い
@@ -131,57 +123,3 @@ class ReplaceAtBalloon(BalloonCase):
         bad("代わりの品番", kind="REPLACE", part="C-300", parent="A-100", balloon="7", replacements=[{"code": "ZZ"}])
         bad("replacements", kind="REPLACE", part="C-300", parent="A-100", balloon="7", replacements=[])
         self.assertEqual(self.store.list_scenarios(), [])
-
-
-class OldDatabaseOpens(unittest.TestCase):
-    def test_db_without_new_columns_opens_with_same_costs(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "old.sqlite"
-            with Store(path) as store:
-                store.save_version(balloon_version())
-                api = Api(store)
-                for change in ({"kind": "REPLACE", "part": "C-300", "replacement": "N-999", "quantity": "3"},
-                               {"kind": "ADD", "part": "N-998", "quantity": "2"}):
-                    api.handle("POST", "/api/group/changes", "", _body(change))
-                before = api.handle("GET", "/api/group/changes", f"version=2026-11&name={NAME}").json()
-            _drop_new_columns(path)
-            conn = sqlite3.connect(str(path))
-            self.assertNotIn("batch", {r[1] for r in conn.execute("PRAGMA table_info(change)")})
-            conn.close()
-            with Store(path) as store:
-                api = Api(store)
-                after = api.handle("GET", "/api/group/changes", f"version=2026-11&name={NAME}").json()
-                products = api.handle("GET", "/api/group/products", f"version=2026-11&name={NAME}&q=A-100").json()
-                # 開くと列が足され、今ある行は空のまま
-                cols = {r[1] for r in store._conn.execute("PRAGMA table_info(change)")}
-                nulls = store._conn.execute("SELECT parent, balloon, batch FROM change").fetchall()
-        self.assertEqual(after, before)
-        self.assertEqual(products["products"][0]["after"], "9360")  # 10,500 ＋ 3×(100−500) ＋ 2×30
-        self.assertTrue({"parent", "balloon", "batch"} <= cols)
-        self.assertEqual(nulls, [(None, None, None)] * 2)
-
-
-def _body(change: dict) -> bytes:
-    return json.dumps({"version_id": "2026-11", "name": NAME, "product": "A-100", "head": "MATERIAL", **change},
-                      ensure_ascii=False).encode("utf-8")
-
-
-def _drop_new_columns(path: Path) -> None:
-    """change の表を、列を足す前の形に作り直す。"""
-    conn = sqlite3.connect(str(path))
-    with conn:
-        conn.executescript(
-            """
-            CREATE TABLE change_old (
-                scenario_id INTEGER NOT NULL REFERENCES scenario(scenario_id) ON DELETE CASCADE,
-                sequence INTEGER NOT NULL, recorded_at TEXT NOT NULL, kind TEXT NOT NULL, part TEXT NOT NULL,
-                replacement TEXT, quantity TEXT NOT NULL, cost_before TEXT, cost_after TEXT,
-                version_id TEXT NOT NULL REFERENCES version(version_id), head TEXT NOT NULL, volume TEXT,
-                allocation TEXT, PRIMARY KEY (scenario_id, sequence));
-            INSERT INTO change_old SELECT scenario_id, sequence, recorded_at, kind, part, replacement, quantity,
-                cost_before, cost_after, version_id, head, volume, allocation FROM change;
-            DROP TABLE change;
-            ALTER TABLE change_old RENAME TO change;
-            """
-        )
-    conn.close()

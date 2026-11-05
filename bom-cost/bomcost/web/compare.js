@@ -1,10 +1,10 @@
-// ③原価を見る: 上に検討案ごとの数字のタイル、左に製品ごとの差の横棒、右に選んだ製品の8費目（式の並び）と変更の一覧。
+// ③原価を見る: 上に変更後の数字のタイル、左に製品ごとの差の横棒、右に選んだ製品の8費目（式の並び）と変更の一覧。
 // 分析は製造原価か材料費の内訳（大きい順・差の寄与・使い回し）で、部品の下へ降りられる。製造原価の時は製品の費目をその場で変えられる。
 // 差・合計は API が Decimal で出したものを使い、ここで数にするのは棒の長さと並べ替えだけ。app.js・screens.js・trial.js の関数を使う。
 "use strict";
 
 // layout は グラフ（chart）・表（table）・分析（analysis）。画面を開いている間は覚える。data・table はそれぞれの API の返事（要る時に読む）
-// 分析: picks は選んだ製品（null は試算のある製品の全部）、by・weight は内訳のまとめ方と数え方、name は差を見る検討案、
+// 分析: picks は選んだ製品（null は試算のある製品の全部）、by・weight は内訳のまとめ方と数え方、name は差を見る列（API の names の1つ目）、
 // path は降りた部品の並び（{ codes, label }）、view は 大きい順（size）・差の寄与（diff）・使い回し（reach）、analysis はその API の返事。
 // cost は 製造原価（manufacturing）・材料費（material）
 const compareState = {
@@ -14,38 +14,23 @@ const compareState = {
 };
 
 async function enterCompare() {
-  const version = document.getElementById("cmp-version");
-  versionOptions(version, { value: version.value || state.summary?.scenario.version_id });
-  await loadCompareNames();
-}
-
-async function loadCompareNames() {
-  const version = document.getElementById("cmp-version").value;
-  const box = document.getElementById("cmp-names");
-  const checked = new Set([...box.querySelectorAll("input:checked")].map((i) => i.value));
-  const names = version ? await api("GET", `/api/group/names?${qs({ version })}`) : [];
-  box.replaceChildren(...names.map((n) =>
-    el("label", {}, el("input", { type: "checkbox", value: n, checked: checked.has(n) }), ` ${n}`)));
+  const group = document.getElementById("cmp-group");
+  groupOptions(group, { value: group.value || state.summary?.scenario.group_id });
 }
 
 async function drawCompareTable() {
-  const version = document.getElementById("cmp-version").value;
-  if (!version) throw new Error("版が空");
-  const names = [...document.querySelectorAll("#cmp-names input:checked")].map((i) => i.value);
-  if (!names.length) throw new Error("検討案を選ぶ");
+  const group = document.getElementById("cmp-group").value;
+  if (!group) throw new Error("グループが空");
   const ignore = document.getElementById("cmp-ignore").checked;
-  compareState.query = {
-    version, names: JSON.stringify(names), q: document.getElementById("cmp-q").value.trim(),
-    ignore_amortization: ignore ? "1" : "",
-  };
+  compareState.query = { group, q: document.getElementById("cmp-q").value.trim(), ignore_amortization: ignore ? "1" : "" };
   compareState.data = null;
   compareState.table = null;
   compareState.product = null;
   compareState.picks = null;
-  compareState.name = names[0];
+  compareState.name = null;
   compareState.path = [];
   compareState.analysis = null;
-  await Promise.all([loadCompareLayout(), loadCodeNames(version)]);
+  await Promise.all([loadCompareLayout(), loadCodeNames(group)]);
   drawCompareView();
 }
 
@@ -57,23 +42,24 @@ async function loadCompareLayout() {
     compareState.table ?? api("GET", `/api/group/compare/table?${query}`),
     needData ? compareState.data ?? api("GET", `/api/group/compare?${query}`) : compareState.data,
   ]);
+  compareState.name ??= compareState.table.names[0];
   if (compareState.layout === "analysis" && !compareState.analysis) await loadAnalysis(false);
 }
 
-// 償却費の欄から、その検討案の試算を選んで型費配賦を開く。部品はその製品で置換・追加した最初の部品
-async function compareToPart(version, name, product, scenarioId) {
-  const changes = await api("GET", `/api/group/changes?${qs({ version, name, product, head: TRIAL_HEAD })}`);
+// 償却費の欄から、その製品の試算を選んで型費配賦を開く。部品はその製品で置換・追加した最初の部品
+async function compareToPart(group, product, scenarioId) {
+  const changes = await api("GET", `/api/group/changes?${qs({ group, product, head: TRIAL_HEAD })}`);
   const c = changes.rows.find((x) => x.kind === "ADD" || (x.kind === "REPLACE" && x.replacements.length));
-  await openPart({ part: c ? (c.kind === "ADD" ? c.part : c.replacements[0].code) : "", version, scenarioId, from: "compare" });
+  await openPart({ part: c ? (c.kind === "ADD" ? c.part : c.replacements[0].code) : "", group, scenarioId, from: "compare" });
 }
 
-function moldLink(td, version, name, product, scenarioId) {
+function moldLink(td, group, product, scenarioId) {
   td.replaceChildren(el("button", { type: "button", class: "look-link", title: "型費配賦",
-    onclick: () => guarded(() => compareToPart(version, name, product, scenarioId)) }, ...td.childNodes));
+    onclick: () => guarded(() => compareToPart(group, product, scenarioId)) }, ...td.childNodes));
   return td;
 }
 
-// 上の段: 検討案ごとの製造原価の差（1台あたりを製品で足した値）と年間効果額の合計。未登録で除いた製品の数を添える
+// 上の段: 変更後の製造原価の差（1台あたりを製品で足した値）と年間効果額の合計。未登録で除いた製品の数を添える
 function compareHeadline(t) {
   const value = (text) => (text === null ? el("span", { class: "missing" }, "未登録")
     : el("span", { class: signClass(text) }, fmt(text, { sign: true, yen: true })));
@@ -104,7 +90,7 @@ async function exportCompareXlsx(path = "/api/group/compare/table/xlsx") {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-// 分析用のブック: ③で選んでいる版・検討案（製品の絞り込み・償却費を無視も）を範囲に、ピボットで切れる縦長の表
+// 分析用のブック: ③で選んでいるグループ（製品の絞り込み・償却費を無視も）を範囲に、ピボットで切れる縦長の表
 const analysisBookButton = () => el("button", { type: "button",
   onclick: () => guarded(() => exportCompareXlsx("/api/group/compare/analysis/xlsx")) }, "Excel に出す（分析用）");
 
@@ -120,7 +106,7 @@ function compareLayoutSeg() {
   return el("div", { class: "seg cmp-layout" }, button("chart", "グラフ"), button("table", "表"), button("analysis", "分析"));
 }
 
-// 製品ごとに、元の行と検討名 → 新の行をまとめる（API の並びのまま）
+// 製品ごとに、元の行と変更後の行をまとめる（API の並びのまま）
 function compareProducts(r) {
   const products = [];
   for (const row of r.rows) {
@@ -244,7 +230,7 @@ function compareBars(r, products, head) {
     onkeydown: (e) => e.key === "Enter" && selectCompareProduct(p.code),
   },
   el("div", { class: "cmp-bar-label" },
-    el("span", { class: "code", title: codeTitle(r.version_id, p.code) }, p.code), el("span", { class: "name" }, p.name)),
+    el("span", { class: "code", title: codeTitle(r.group_id, p.code) }, p.code), el("span", { class: "name" }, p.name)),
   el("div", { class: "cmp-bar-lines" }, r.names.map((n) => {
     const trial = p.trials[n];
     const text = trial?.differences[head];
@@ -284,7 +270,7 @@ function drawCompareDetail() {
       const diff = cell(d, h.id, { sign: true });
       if (signClass(d) && !isIgnored(r, h.id)) diff.classList.add(signClass(d));
       const after = cell(p.trials[n].costs[h.id], h.id);
-      if (h.id === "AMORTIZATION") moldLink(after, r.version_id, n, p.code, p.trials[n].scenario_id);
+      if (h.id === "AMORTIZATION") moldLink(after, r.group_id, p.code, p.trials[n].scenario_id);
       return [after, diff];
     }),
     el("td", { class: "cmp-mini" }, names.map((n) =>
@@ -336,7 +322,7 @@ function compareGrid(t, head) {
   for (const p of t.products) {
     const span = 1 + p.trials.length * 4;
     rows.push(el("tr", { class: "cmp-grid-first" },
-      el("td", { rowspan: span }, codeSpan(t.version_id, p.product)),
+      el("td", { rowspan: span }, codeSpan(t.group_id, p.product)),
       el("td", { rowspan: span }, p.product_name, el("div", { class: `cmp-grid-volume ${p.volume === null ? "missing" : ""}` },
         p.volume === null ? "年間台数 未登録" : `年間 ${fmt(p.volume)} 台`)),
       el("td", { rowspan: span }, p.specification),
@@ -350,7 +336,7 @@ function compareGrid(t, head) {
         el("tr", {}, label("変更後", tr.name),
           t.heads.map((h) => {
             const td = cell(tr.after[h.id], h.id, { excluded: ex(h.id), partial });
-            return h.id === "AMORTIZATION" ? moldLink(td, t.version_id, tr.name, p.product, tr.scenario_id) : td;
+            return h.id === "AMORTIZATION" ? moldLink(td, t.group_id, p.product, tr.scenario_id) : td;
           })),
         el("tr", {}, label("差", tr.name),
           t.heads.map((h) => cell(tr.difference[h.id], h.id, { sign: true, excluded: ex(h.id), partial }))),
@@ -391,7 +377,7 @@ function compareGrid(t, head) {
 }
 
 // 分析: 選んだ製品の製造原価か材料費の内訳（製品の直の子か、降りた部品の直の子）。並び・割合・累積・差・年間は API が出す。
-// 製品の候補はグラフの返事の製品（試算なしも）で、始めは差を見る検討案の試算がある製品の全部
+// 製品の候補はグラフの返事の製品（試算なしも）で、始めは②に入れた製品の全部
 function analysisProducts() {
   return compareProducts(compareState.data);
 }
@@ -408,7 +394,7 @@ async function loadAnalysis(draw = true) {
   const products = analysisProducts().map((p) => p.code).filter((c) => picks.has(c));
   const path = compareState.path;
   compareState.analysis = products.length ? await api("GET", `/api/group/compare/analysis?${qs({
-    version: compareState.query.version, names: JSON.stringify([compareState.name]), products: JSON.stringify(products),
+    group: compareState.query.group, products: JSON.stringify(products),
     by: compareState.by, weight: compareState.weight, parts: path.length ? JSON.stringify(path[path.length - 1].codes) : "",
     cost: compareState.cost, ignore_amortization: compareState.query.ignore_amortization,
   })}`) : null;
@@ -456,14 +442,6 @@ function analysisPicker() {
       onchange: (e) => set([p.code], e.target.checked) }), ` ${p.code} `, el("span", { class: "muted" }, p.name)))));
 }
 
-function analysisNameSelect() {
-  const names = JSON.parse(compareState.query.names);
-  if (names.length < 2) return null;
-  return el("label", {}, "検討案 ", el("select", {
-    onchange: (e) => guarded(async () => { compareState.name = e.target.value; await loadAnalysis(); }),
-  }, names.map((n) => el("option", { value: n, selected: n === compareState.name }, n))));
-}
-
 // 降りた所: 製品 › 部品 › … 。押すとその段へ戻る
 function analysisCrumbs() {
   const path = compareState.path;
@@ -485,7 +463,7 @@ function drillAnalysis(row) {
 function analysisCode(a, row) {
   const many = row.codes.length > 1;
   const text = many ? `${row.codes[0]} 他${row.codes.length - 1}` : row.code;
-  return el("td", { title: many ? row.codes.join("・") : codeTitle(a.version_id, row.code) }, row.has_children
+  return el("td", { title: many ? row.codes.join("・") : codeTitle(a.group_id, row.code) }, row.has_children
     ? el("button", { type: "button", class: "look-link", onclick: () => drillAnalysis(row) }, text) : text);
 }
 
@@ -493,7 +471,7 @@ function analysisCode(a, row) {
 function swapCell(row) {
   const word = row.codes.length > 1 ? row.name || row.code : row.code;
   return el("td", {}, el("button", { type: "button",
-    onclick: () => guarded(() => openTrialPart(compareState.query.version, compareState.name, word)) }, "②で差し替える"));
+    onclick: () => guarded(() => openTrialPart(compareState.query.group, word)) }, "②で差し替える"));
 }
 
 function analysisAmount(row) {
@@ -523,7 +501,7 @@ const rowCode = (a, r) => (isHeadRow(r) ? el("td", {}) : analysisCode(a, r));
 const rowAmount = (r) => (r.ignored ? el("td", { class: "num muted" }, "—") : analysisAmount(r));
 const rowClass = (r) => (isHeadRow(r) ? "cmp-bd-head" : "");
 
-// 製品の費目の入力欄: 選んだ製品の全部に、検討案の費目変更（1台あたりの値）として入れる。値が1つにそろう時はそれを薄く出す
+// 製品の費目の入力欄: 選んだ製品の全部に、②の費目変更（1台あたりの値）として入れる。値が1つにそろう時はそれを薄く出す
 const EDITABLE_ANALYSIS_HEADS = new Set(["PROCESSING", "AMORTIZATION", "DIRECT"]);
 function headEdit(a, row) {
   if (!EDITABLE_ANALYSIS_HEADS.has(row.head) || !compareState.name) return el("td", {});
@@ -534,7 +512,7 @@ function headEdit(a, row) {
   const send = () => guarded(async () => {
     const value = pastedNumber(input.value.trim());
     if (!value) throw new Error("値を入れてください。");
-    await api("POST", "/api/group/heads/bulk", { version_id: compareState.query.version, name: compareState.name,
+    await api("POST", "/api/group/heads/bulk", { group_id: compareState.query.group,
       head: TRIAL_HEAD, items: a.products.map((product) => ({ product, values: { [row.head]: value } })) });
     await reloadCompare();
   });
@@ -543,7 +521,7 @@ function headEdit(a, row) {
 }
 const rowAction = (a, r) => (isHeadRow(r) ? headEdit(a, r) : swapCell(r));
 
-// 大きい順: 現行の金額の高い順に割合と累積（製造原価の時は部品の後に製品の費目）。差を見る検討案の変更後を横に（変更後に無い行は 0）。
+// 大きい順: 現行の金額の高い順に割合と累積（製造原価の時は部品の後に製品の費目）。変更後を横に（変更後に無い行は 0）。
 // 変更後にだけある行（置換・追加で入った部品）は現行を 0 として部品の行の後ろに足す（変更後の列の和が計になる）
 function analysisSize(a) {
   const [s, after] = a.series;
@@ -603,7 +581,7 @@ function analysisReach(a) {
 function drawAnalysis() {
   const box = document.getElementById("cmp-an");
   if (!box) return;
-  const tools = el("div", { class: "cmp-an-tools" }, analysisPicker(), analysisNameSelect(),
+  const tools = el("div", { class: "cmp-an-tools" }, analysisPicker(),
     analysisSeg("cost", [["manufacturing", "製造原価"], ["material", "材料費"]]),
     analysisSeg("by", [["code", "品番"], ["name", "名称"], ["name_spec", "名称＋記号・寸法"]]),
     analysisSeg("weight", [["unit", "1台ずつ"], ["volume", "年間台数"]]));
@@ -630,7 +608,6 @@ function drawAnalysis() {
 function wireCompare() {
   document.getElementById("cmp-show").addEventListener("click", () => guarded(drawCompareTable));
   document.getElementById("cmp-q").addEventListener("keydown", (e) => e.key === "Enter" && guarded(drawCompareTable));
-  document.getElementById("cmp-version").addEventListener("change", () => guarded(loadCompareNames));
 }
 
 wireCompare();

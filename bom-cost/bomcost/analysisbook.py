@@ -1,9 +1,9 @@
-"""③の版と検討案を範囲に、ピボットで切れる縦長のブック（分析用）を作る。
+"""③のグループの今と変更後を範囲に、ピボットで切れる縦長のブック（分析用）を作る。
 
 シートはどれも Excel のテーブル（見出し1行）で、数は数値のセル・未登録は空のセル。
 構成の「材料費」はその場所が製品の材料費小計に足す分（下位込みの登録値がある組立品の下は 0、
 未登録の部品は空）で、製品ごとに足すと製品原価の材料費小計になる。「製造原価への寄与」はそれに
-(1＋調整費の率)×(1＋間接費の率) を掛けた値。検討案の行は版の構成（土台 ×1）に変更の行（抜く分は負の数）を足したもの。
+(1＋調整費の率)×(1＋間接費の率) を掛けた値。変更後の行はグループの構成（土台 ×1）に変更の行（抜く分は負の数）を足したもの。
 """
 
 import io
@@ -12,7 +12,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
-from .api import MASTER_HEADS, _View, version_label
+from .api import MASTER_HEADS, _View, group_label
 from .comparebook import _UNSAFE
 from .formula import ADJUSTMENT_RATE, INDIRECT_RATE, Head
 from .group import _Structure
@@ -43,7 +43,7 @@ SHEETS: dict[str, tuple[str, tuple[str, ...]]] = {
     CHANGES: ("Changes", ("検討案", "製品", "種類", "場所", "元", "先", "値")),
     ITEMS: ("Items", ("品番", "名称", "記号・寸法", "区分", "子部品の有無", *(h.value for h in MASTER_HEADS))),
     PRODUCTS: ("Products", ("品番", "名称", "開発番号", "年間台数")),
-    TRIALS: ("Trials", ("案名", "版", "変更の件数")),
+    TRIALS: ("Trials", ("案名", "グループ", "変更の件数")),
     PREMISES: ("Premises", ("項目", "値")),
 }
 
@@ -61,8 +61,8 @@ class Place:
     material: Decimal | None
 
 
-def analysis_file_name(version_text: str, names: list[str]) -> str:
-    return _UNSAFE.sub("_", f"原価分析_{version_text}_{'・'.join(names)}") + ".xlsx"
+def analysis_file_name(group_text: str, names: list[str]) -> str:
+    return _UNSAFE.sub("_", f"原価分析_{group_text}_{'・'.join(names)}") + ".xlsx"
 
 
 def places(version: Version, policy: ScopePolicy, view: _View, structure: _Structure, product: str,
@@ -131,9 +131,7 @@ def _place_text(parent: str | None, balloon: str | None) -> str:
 
 
 def analysis_book(group: "Group", params: dict[str, str], now: datetime) -> tuple[Version, list[str], bytes]:
-    """compare/table と同じ問い合わせ（版・検討名・製品の絞り込み・償却費を無視）で、試算のある製品を範囲にしたブック。
-
-    試算が無い検討案の製品は現行の構成と値で数える（③の分析と同じ）。
+    """compare/table と同じ問い合わせ（グループ・製品の絞り込み・償却費を無視）で、試算のある製品を範囲にしたブック。
     """
     version, names, ignore, _, _, rows = group._compare_rows(params, with_changes=False)
     costs: dict[tuple[str, str], dict[str, str | None]] = {}
@@ -147,7 +145,7 @@ def analysis_book(group: "Group", params: dict[str, str], now: datetime) -> tupl
     products = [c for c in bases if any((n, c) in costs for n in names)]
     store = group.store
     policy = store.load_scope_policy()
-    scenario_ids = {n: group._scenarios(version, n) for n in names}
+    scenario_ids = {n: group._scenarios(version) for n in names}
     scenarios: dict[tuple[str, str], Scenario] = {
         (n, c): store.load_scenario(scenario_ids[n][c], version) for n in names for c in products if c in scenario_ids[n]}
     annual = {c: None if (v := version.volume(c)) is None else v.annual for c in products}
@@ -195,9 +193,9 @@ def analysis_book(group: "Group", params: dict[str, str], now: datetime) -> tupl
         CHANGES: changes,
         ITEMS: items,
         PRODUCTS: [[c, group._name(version, c), version.dev_number, annual[c]] for c in products],
-        TRIALS: [[n, version_label(version), counts[n]] for n in names],
+        TRIALS: [[n, group_label(version), counts[n]] for n in names],
         PREMISES: [
-            ["版", version_label(version)],
+            ["グループ", group_label(version)],
             ["検討案", "・".join(names)],
             ["製品の絞り込み", (params.get("q") or "").strip() or "なし"],
             ["製品", len(products)],

@@ -17,21 +17,21 @@ class MasterBook(DemoDbCase):
         super().setUp()
         self.api.open_file = None
         for code, name in (("MP-1", "新製品1"), ("MP-2", "新製品2"), ("MP-3", "新製品3")):
-            self.ok("PUT", "/api/manual/items", body={"role": "product", "code": code, "name": name,
+            self.ok("PUT", "/api/manual/items", body={"group_id": "2026-10", "role": "product", "code": code, "name": name,
                                                       "costs": {"MATERIAL": "100"}})
         for code, name in (("MQ-1", "部品1"), ("MQ-2", "部品2"), ("MQ-3", "部品3")):
-            self.ok("PUT", "/api/manual/items", body={"role": "part", "code": code, "name": name, "kind": "B",
+            self.ok("PUT", "/api/manual/items", body={"group_id": "2026-10", "role": "part", "code": code, "name": name, "kind": "B",
                                                       "costs": {"MATERIAL": "10", "DIRECT": "2"}})
         for code in ("MP-1", "MP-2", "MP-3"):
-            self.ok("PUT", "/api/manual/volumes", body={"product": code, "annual": "1000"})
-            self.ok("PUT", "/api/molds", body={"part": code.replace("P", "Q"), "amount": "50000", "years": "2"})
-            self.ok("PUT", "/api/reuse", body={"part": code.replace("P", "Q"), "product": code, "quantity": "1"})
+            self.ok("PUT", "/api/manual/volumes", body={"group_id": "2026-10", "product": code, "annual": "1000"})
+            self.ok("PUT", "/api/molds", body={"group_id": "2026-10", "part": code.replace("P", "Q"), "amount": "50000", "years": "2"})
+            self.ok("PUT", "/api/reuse", body={"group_id": "2026-10", "part": code.replace("P", "Q"), "product": code, "quantity": "1"})
         for i in (1, 2, 3):
-            self.ok("POST", "/api/partmaps", body={"old_product": "MP-1", "new_product": "MP-2",
+            self.ok("POST", "/api/partmaps", body={"group_id": "2026-10", "old_product": "MP-1", "new_product": "MP-2",
                                                     "old_part": f"MQ-{i}", "new_part": f"MR-{i}"})
 
     def write_book(self) -> Path:
-        result = self.ok("POST", "/api/master/book")
+        result = self.ok("POST", "/api/master/book", body={"group_id": "2026-10"})
         self.assertFalse(result["opened"])
         path = Path(result["path"])
         self.assertEqual(path.parent, self.path.parent)
@@ -52,7 +52,7 @@ class MasterBook(DemoDbCase):
             wb.close()
 
     def manual(self) -> dict:
-        return self.ok("GET", "/api/manual")
+        return self.ok("GET", "/api/manual", "group=2026-10")
 
     def test_book_has_six_sheets_with_screen_headers_and_no_trials(self) -> None:
         path = self.write_book()
@@ -68,7 +68,7 @@ class MasterBook(DemoDbCase):
         for trial in m["trials"]:
             self.assertNotIn(trial["code"], products + self.sheet_codes(path, "部品"))
         # 書き出したまま取り込めば、何も変わらない
-        check = self.ok("POST", "/api/master/check")
+        check = self.ok("POST", "/api/master/check", body={"group_id": "2026-10"})
         self.assertEqual((check["added"], check["changed"], check["errors"]), (0, 0, []))
 
     def test_master_heads_are_formula_inputs(self) -> None:
@@ -76,7 +76,7 @@ class MasterBook(DemoDbCase):
         self.assertEqual(labels[:3], ["材料費", "償却費", "直接費"])
         self.assertEqual(SHEETS["製品"], ("品番", "名称", *labels, "記号・寸法"))
         self.assertEqual(SHEETS["部品"], ("品番", "名称", "区分", *labels, "記号・寸法"))
-        self.ok("PUT", "/api/manual/items", body={"role": "part", "code": "MQ-4", "name": "部品4",
+        self.ok("PUT", "/api/manual/items", body={"group_id": "2026-10", "role": "part", "code": "MQ-4", "name": "部品4",
                                                   "costs": {"MATERIAL": "10", "AMORTIZATION": "3", "DIRECT": "2"}})
         items = {i["code"]: i for i in self.manual()["items"]}
         self.assertEqual({k: items["MQ-4"]["costs"][k] for k in ("MATERIAL", "AMORTIZATION", "DIRECT")},
@@ -122,7 +122,7 @@ class MasterBook(DemoDbCase):
             t.append(["MP-1", "MP-2", "MQ-9", 3, "MR-9", 4])
 
         self.edit(path, change)
-        check = self.ok("POST", "/api/master/check")
+        check = self.ok("POST", "/api/master/check", body={"group_id": "2026-10"})
         self.assertEqual(check["errors"], [])
         by_sheet = {s["sheet"]: (s["added"], s["changed"], s["unchanged"], s["removed"]) for s in check["sheets"]}
         # 変わらない行は、デモの登録があるシートでは MP-2 などより多い
@@ -133,7 +133,7 @@ class MasterBook(DemoDbCase):
         self.assertEqual(check["removed"], len(SHEETS))
         self.assertEqual(self.manual(), before)  # 確認では何も保存しない
 
-        done = self.ok("POST", "/api/master/apply")
+        done = self.ok("POST", "/api/master/apply", body={"group_id": "2026-10"})
         self.assertEqual((done["added"], done["changed"]), (check["added"], check["changed"]))
         m = self.manual()
         self.assertEqual(done["manual"], m)
@@ -161,7 +161,7 @@ class MasterBook(DemoDbCase):
         self.assertNotIn(("MQ-3", "MR-3", None, None), maps)
         self.assertIn(("MQ-1", "MR-1", None, None), maps)
         # 入れた後は同じブックの差が無い
-        again = self.ok("POST", "/api/master/check")
+        again = self.ok("POST", "/api/master/check", body={"group_id": "2026-10"})
         self.assertEqual((again["added"], again["changed"], again["removed"]), (0, 0, 0))
 
     def test_removal_only_can_be_applied(self) -> None:
@@ -172,10 +172,10 @@ class MasterBook(DemoDbCase):
             ws.delete_rows(next(r for r in range(2, ws.max_row + 1) if ws.cell(r, 1).value == "MQ-2"))
 
         self.edit(path, change)
-        check = self.ok("POST", "/api/master/check")
+        check = self.ok("POST", "/api/master/check", body={"group_id": "2026-10"})
         self.assertEqual((check["added"], check["changed"], check["removed"]), (0, 0, 1))
         self.assertEqual(next(s for s in check["sheets"] if s["sheet"] == "型費")["removed"], 1)
-        done = self.ok("POST", "/api/master/apply")
+        done = self.ok("POST", "/api/master/apply", body={"group_id": "2026-10"})
         self.assertEqual(done["removed"], 1)
         self.assertEqual({x["part"] for x in done["manual"]["molds"] if x["part"].startswith("MQ-")}, {"MQ-1", "MQ-3"})
         self.assertEqual(len([i for i in done["manual"]["items"] if i["code"].startswith("M")]), 6)
@@ -189,7 +189,7 @@ class MasterBook(DemoDbCase):
             ws.append(["MP-1", "たくさん"])
 
         self.edit(path, change)
-        check = self.ok("POST", "/api/master/check")
+        check = self.ok("POST", "/api/master/check", body={"group_id": "2026-10"})
         self.assertEqual([e["sheet"] for e in check["errors"]], ["年間台数"])
         self.assertEqual(check["removed"], 0)
 
@@ -208,20 +208,20 @@ class MasterBook(DemoDbCase):
             wb["製品"].append(["MP-8", "二度目", 10])
 
         self.edit(path, change)
-        check = self.ok("POST", "/api/master/check")
+        check = self.ok("POST", "/api/master/check", body={"group_id": "2026-10"})
         errors = {(e["sheet"], e["row"]) for e in check["errors"]}
         n_products = len(self.sheet_codes(path, "製品"))
         self.assertIn(("製品", n_products + 1), errors)  # 同じ品番が2回
         self.assertEqual({s for s, _ in errors}, set(SHEETS))
         self.assertTrue(all(e["message"] for e in check["errors"]))
 
-        response = self.call("POST", "/api/master/apply")
+        response = self.call("POST", "/api/master/apply", body={"group_id": "2026-10"})
         self.assertEqual(response.status, 400)
         self.assertEqual(len(response.json()["errors"]), len(check["errors"]))
         self.assertEqual(self.manual(), before)
 
     def test_uploaded_book_and_missing_parts(self) -> None:
-        self.assert_status(self.call("POST", "/api/master/check"), 404)
+        self.assert_status(self.call("POST", "/api/master/check", body={"group_id": "2026-10"}), 404)
         path = self.write_book()
 
         def change(wb) -> None:
@@ -231,37 +231,37 @@ class MasterBook(DemoDbCase):
         self.edit(path, change)
         content = base64.b64encode(path.read_bytes()).decode("ascii")
         path.unlink()
-        body = {"filename": "別の場所.xlsx", "content": content}
+        body = {"group_id": "2026-10", "filename": "別の場所.xlsx", "content": content}
         check = self.ok("POST", "/api/master/check", body=body)
         self.assertEqual(check["errors"], [{"sheet": "型費", "row": None, "message": "シートが無い"}])
         self.assert_status(self.call("POST", "/api/master/apply", body=body), 400)
-        bad = self.call("POST", "/api/master/check", body={"filename": "x.xlsx", "content": "aGVsbG8="})
+        bad = self.call("POST", "/api/master/check", body={"group_id": "2026-10", "filename": "x.xlsx", "content": "aGVsbG8="})
         self.assert_status(bad, 400)
 
     def test_open_and_locked_book(self) -> None:
         opened: list[Path] = []
         self.api.open_file = opened.append
-        result = self.ok("POST", "/api/master/book")
+        result = self.ok("POST", "/api/master/book", body={"group_id": "2026-10"})
         self.assertTrue(result["opened"])
         self.assertEqual(opened, [Path(result["path"])])
         with mock.patch("bomcost.masterbook.os.replace", side_effect=PermissionError):
-            response = self.call("POST", "/api/master/book")
+            response = self.call("POST", "/api/master/book", body={"group_id": "2026-10"})
         self.assert_status(response, 409)
         self.assertIn("開いたまま", response.json()["error"])
         self.assertEqual([p.name for p in self.path.parent.iterdir() if p.suffix == ".tmp"], [])
 
     def test_open_only_does_not_rewrite(self) -> None:
-        self.assert_status(self.call("POST", "/api/master/open"), 404)
+        self.assert_status(self.call("POST", "/api/master/open", body={"group_id": "2026-10"}), 404)
         path = self.write_book()
         self.edit(path, lambda wb: wb["製品"].append(["MP-9", "新製品9", 1]))
         edited = path.read_bytes()
         opened: list[Path] = []
         self.api.open_file = opened.append
-        result = self.ok("POST", "/api/master/open")
+        result = self.ok("POST", "/api/master/open", body={"group_id": "2026-10"})
         self.assertTrue(result["opened"])
         self.assertEqual(opened, [path])
         self.assertEqual(path.read_bytes(), edited)
-        self.assertEqual(self.ok("POST", "/api/master/check")["added"], 1)
+        self.assertEqual(self.ok("POST", "/api/master/check", body={"group_id": "2026-10"})["added"], 1)
 
     def assert_status(self, response, status: int) -> None:
         self.assertEqual(response.status, status, response.body.decode("utf-8"))
@@ -270,7 +270,8 @@ class MasterBook(DemoDbCase):
 class MemoryDb(unittest.TestCase):
     def test_no_folder_for_memory_db(self) -> None:
         with Store(":memory:") as store:
-            response = Api(store).handle("POST", "/api/master/book")
+            store.create_group("D-1", group_id="g")
+            response = Api(store).handle("POST", "/api/master/book", "", b'{"group_id": "g"}')
         self.assertEqual(response.status, 400)
         self.assertIn("置き場", response.json()["error"])
 

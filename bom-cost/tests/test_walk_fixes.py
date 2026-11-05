@@ -23,9 +23,9 @@ class WalkCase(SampleDbCase):
 
     def walk(self) -> None:
         heads = lambda **v: self.ok("POST", "/api/group/heads/bulk", body={
-            "version_id": V, "name": NAME, "head": "MANUFACTURING", "items": [{"product": "V-110", "values": v}]})
+            "group_id": V, "head": "MANUFACTURING", "items": [{"product": "V-110", "values": v}]})
         heads(PROCESSING="100")
-        self.ok("POST", "/api/group/changes/by-code", body={"version_id": V, "name": NAME, "head": "MANUFACTURING",
+        self.ok("POST", "/api/group/changes/by-code", body={"group_id": V, "head": "MANUFACTURING",
                                                             "part": "B-200", "replacement": "F-600", "q": "V-110"})
         heads(DIRECT="280")
         self.change("V-110", head="MANUFACTURING", kind="ADD", part="F-600", quantity="2")
@@ -34,7 +34,7 @@ class WalkCase(SampleDbCase):
                     replacement="B-200", quantity="1")
 
     def analysis(self, cost: str, parts: str = "") -> dict:
-        return self.ok("GET", "/api/group/compare/analysis", f"version={V}&names={quote(json.dumps([NAME]))}"
+        return self.ok("GET", "/api/group/compare/analysis", f"group={V}&names={quote(json.dumps([NAME]))}"
                        f"&products=V-110&ignore_amortization=1&cost={cost}" + (f"&parts={parts}" if parts else ""))
 
 
@@ -64,7 +64,7 @@ class AnalysisAfterRows(WalkCase):
             self.assertEqual(rows["F-600"]["quantity"], "2")
 
     def test_removed_part_is_zero_after_and_totals_stay(self) -> None:
-        table = self.ok("GET", "/api/group/compare/table", f"version={V}&names={quote(json.dumps([NAME]))}"
+        table = self.ok("GET", "/api/group/compare/table", f"group={V}&names={quote(json.dumps([NAME]))}"
                         "&ignore_amortization=1")
         after = table["products"][0]["trials"][0]["after"]
         for cost, head in (("material", "MATERIAL"), ("manufacturing", "MANUFACTURING")):
@@ -81,7 +81,8 @@ class AnalysisAfterRows(WalkCase):
 
     def test_partial_remove_is_shared_by_place(self) -> None:
         # 使用数 2（A-100 の中 3・直下 −1）のうち 1 だけ消すと、場所ごとの割合で半分ずつ減る（計は 1 個分）
-        self.ok("DELETE", "/api/group/trials", f"version={V}&name={quote(NAME)}")
+        for info in self.store.list_scenarios(V):
+            self.store.delete_scenario(info.scenario_id)
         self.change("V-110", kind="REMOVE", part="C-300", quantity="1")
         current, after = self.analysis("material")["series"]
         self.assertEqual(Decimal(after["total"]) - Decimal(current["total"]), Decimal(-500))
@@ -103,16 +104,16 @@ class AmortizationPremise(SampleDbCase):
 
     def setUp(self) -> None:
         super().setUp()
-        self.ok("PUT", "/api/manual/items", body={"code": "V-110", "name": "新しい製品",
+        self.ok("PUT", "/api/manual/items", body={"group_id": "2026-10", "code": "V-110", "name": "新しい製品",
                                                    "costs": {"AMORTIZATION": "50", "DIRECT": "300"}})
-        self.ok("PUT", "/api/manual/volumes", body={"product": "V-110", "annual": "10000"})  # 型費配賦は台数のある製品を並べる
+        self.ok("PUT", "/api/manual/volumes", body={"group_id": "2026-10", "product": "V-110", "annual": "10000"})  # 型費配賦は台数のある製品を並べる
         self.change("V-110", kind="ADD", part="F-600", quantity="1")
 
     def compare(self, query: str = "") -> dict:
-        return self.ok("GET", "/api/group/compare/table", f"version={V}&names={quote(json.dumps([NAME]))}" + query)
+        return self.ok("GET", "/api/group/compare/table", f"group={V}&names={quote(json.dumps([NAME]))}" + query)
 
     def test_same_premise_same_value_and_premise_shown(self) -> None:
-        view = self.ok("GET", "/api/parts/view", f"part=F-600&version={V}&head=MANUFACTURING")
+        view = self.ok("GET", "/api/parts/view", f"part=F-600&group={V}&head=MANUFACTURING")
         mold = {r["product"]: r for r in view["rows"]}["V-110"]["current"]
         # 未登録の咎めは V-110 だけなので、無視しなくても③は出る。償却費の登録値を使えば同じ値
         current = self.compare()["products"][0]["current"]["MANUFACTURING"]
@@ -123,9 +124,9 @@ class AmortizationPremise(SampleDbCase):
         self.assertIn("償却費は登録値", js("screens.js"))
 
     def test_missing_amortization_names_only_chosen_products(self) -> None:
-        self.ok("PUT", "/api/manual/items", body={"code": "V-110", "name": "新しい製品", "costs": {"DIRECT": "300"}})
+        self.ok("PUT", "/api/manual/items", body={"group_id": "2026-10", "code": "V-110", "name": "新しい製品", "costs": {"DIRECT": "300"}})
         for path in ("/api/group/compare", "/api/group/compare/table"):
-            r = self.call("GET", path, f"version={V}&names={quote(json.dumps([NAME]))}")
+            r = self.call("GET", path, f"group={V}&names={quote(json.dumps([NAME]))}")
             self.assert_error(r, 400, "V-110")
             message = r.json()["error"]
             self.assertNotIn("K-200", message)
@@ -138,10 +139,10 @@ class PlaceChangedRows(SampleDbCase):
 
     def test_quantity_changed_place_is_marked_and_message_says_so(self) -> None:
         self.change("A-100", kind="SET_QUANTITY", part="C-300", parent="A-100", balloon="2", quantity="5")
-        rows = self.parts(f"&part=C-300&name={NAME}&trial=1")["rows"]
+        rows = self.parts(f"&part=C-300&trial=1")["rows"]
         self.assertEqual([(r["product"], r["place_changes"]) for r in rows],
                          [("A-100", [{"kind": "SET_QUANTITY", "label": "員数変更"}])])
-        r = self.call("POST", "/api/group/changes/bulk", body={"version_id": V, "name": NAME, "replacement": "F-600",
+        r = self.call("POST", "/api/group/changes/bulk", body={"group_id": V, "replacement": "F-600",
                                                                "items": [{"product": "A-100", "part": "C-300"}]})
         self.assert_error(r, 400, "もう員数変更した")
         self.assertNotIn("置換した", r.json()["error"])
@@ -150,7 +151,7 @@ class PlaceChangedRows(SampleDbCase):
 
 
 class ScreenWording(unittest.TestCase):
-    """6・7・9・10・11: 画面の文言と既定の版・簡易照会・主ボタン。"""
+    """6・7・9・10・11: 画面の文言と既定のグループ・簡易照会・主ボタン。"""
 
     def test_change_log_puts_head_values_in_their_own_cell(self) -> None:
         trial = js("trial.js")
@@ -158,15 +159,16 @@ class ScreenWording(unittest.TestCase):
         self.assertIn('c.kind === "SET_HEAD" ? el("td", { colspan: 3 }, headValues(c)', log)
         self.assertIn('c.kind === "SET_HEAD" ? "" : fmt(c.quantity)', log)
 
-    def test_imported_version_becomes_default_unless_picked(self) -> None:
+    def test_made_or_imported_group_becomes_default_unless_picked(self) -> None:
         screens = js("screens.js")
-        run = screens[screens.index("async function runImport"):screens.index("function warningList")]
-        self.assertIn("followImported(result.version_id)", run)
-        follow = screens[screens.index("function followImported"):]
-        self.assertIn("if (!select.dataset.picked) versionOptions(select, { value: versionId })", follow)
-        for id_ in ("group-version", "change-old-version", "look-version"):
-            self.assertIn(f'"{id_}"', screens[screens.index("const FOLLOW_VERSION_SELECTS"):])
-        self.assertIn("screenState.importedVersion", screens[screens.index("function manualDefaultDev"):])
+        run = screens[screens.index("async function decideImport"):screens.index("function warningList")]
+        self.assertIn("followGroup(result.group_id)", run)
+        self.assertIn("followGroup(r.group_id)", screens[screens.index("function drawGroupForm"):])
+        follow = screens[screens.index("function followGroup"):]
+        self.assertIn("if (!select.dataset.picked) groupOptions(select, { value: groupId })", follow)
+        for id_ in ("group-pick", "change-old-group", "look-group", "import-group"):
+            self.assertIn(f'"{id_}"', screens[screens.index("const FOLLOW_GROUP_SELECTS"):])
+        self.assertIn("screenState.importedGroup", screens[screens.index("function manualDefaultGroup"):])
 
     def test_lookup_opens_only_on_code_click(self) -> None:
         trial = js("trial.js")

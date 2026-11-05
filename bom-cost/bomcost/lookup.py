@@ -1,6 +1,6 @@
-"""品目照会の API: 版と品番1つで、その品の基本・原価（費目ごとの出どころ）・使われ方・構成・履歴をまとめて返す。
+"""品目照会の API: グループと品番1つで、その品の基本・原価（費目ごとの出どころ）・使われ方・構成・変更をまとめて返す。
 
-原価の重ね方は Store.overlay_master と同じ（費目ごとに BOM ＞ 開発番号の登録 ＞ 共通の登録）。
+原価の重ね方は Store.overlay_master と同じ（費目ごとにマスタ登録 ＞ BOM）。
 """
 
 from decimal import Decimal
@@ -17,11 +17,11 @@ if TYPE_CHECKING:
     from .api import Api
 
 MAX_CANDIDATES = 100
-SOURCES = {"bom": "BOM", "dev": "開発番号の登録", "common": "共通の登録"}
+SOURCES = {"master": "マスタ登録", "bom": "BOM"}
 
 
 class Lookup:
-    """品目照会の画面の API の中身。api は Api（保存と版の読み込みを借りる）。"""
+    """品目照会の画面の API の中身。api は Api（保存とグループの読み込みを借りる）。"""
 
     def __init__(self, api: "Api") -> None:
         self.api = api
@@ -33,25 +33,25 @@ class Lookup:
     def lookup(self, params: dict[str, str]) -> Response:
         """q は品番か、品番・名称の一部（空白で区切った語の全部を含む）。
 
-        品番がそのまま版にあればその品を返す。無ければ語で引き、1つならその品、何件も当たれば candidates だけを返す。
+        品番がそのままグループにあればその品を返す。無ければ語で引き、1つならその品、何件も当たれば candidates だけを返す。
         """
-        version_id = (params.get("version") or "").strip()
-        if not version_id:
-            raise ApiError(400, "版（version）が空")
+        group_id = (params.get("group") or "").strip()
+        if not group_id:
+            raise ApiError(400, "グループ（group）が空")
         needle = (params.get("q") or "").strip()
         if not needle:
             raise ApiError(400, "品番・名称（q）が空")
-        version = self.api._load_version(version_id)
+        version = self.api._load_group(group_id)
         known = _known_codes(version)
         code = to_code(needle)
         if code not in known:
             hits = sorted(c for c in known if _matches((c, _name(version, c)), needle))
             if not hits:
-                raise ApiError(404, f"「{needle}」に当たる品が版 {version_id} に無い")
+                raise ApiError(404, f"「{needle}」に当たる品がグループに無い")
             if len(hits) > 1:
                 view = self._view(version, hits[0])
                 return _json_response({
-                    "version_id": version_id, "q": needle, "item": None,
+                    "group_id": group_id, "q": needle, "item": None,
                     "candidates": [{"code": c, "name": _name(version, c),
                                     "specification": _specification(version, c),
                                     "material": _s(view.cost(c, CostHead.MATERIAL)),
@@ -64,13 +64,13 @@ class Lookup:
         item = self.item(version, code, brief=brief)
         if brief and params.get("summary") == "1":
             item["summary"] = self.summary(version, code, item["costs"])
-        return _json_response({"version_id": version_id, "q": needle, "candidates": [], "truncated": False,
+        return _json_response({"group_id": group_id, "q": needle, "candidates": [], "truncated": False,
                                "item": item})
 
     def item(self, version: Version, code: str, brief: bool = False) -> dict[str, Any]:
-        """照会の中身（基本・原価・使われ方・構成・履歴）。version はマスタ登録を敷いた版。"""
-        raw = self.store.load_version(version.version_id, with_manual=False)
-        layers = (("bom", raw), ("dev", self.store.load_manual(version.dev_number)), ("common", self.store.load_manual()))
+        """照会の中身（基本・原価・使われ方・構成・変更）。version はマスタ登録を重ねたグループの版。"""
+        raw = self.store.load_group(version.version_id, with_manual=False)
+        layers = (("master", self.store.load_manual(version.version_id)), ("bom", raw))
         basics = {"code": code, "name": _name(version, code),
                   "specification": _specification(version, code), "costs": _costs(code, layers)}
         if brief:
@@ -78,7 +78,6 @@ class Lookup:
         structure = _Structure(version)
         item = version.items.get(code)
         item_source = next((key for key, layer in layers if code in layer.items), None)
-        entries = self.store.bom_entries([code])
         product_kind = Group.product_kind(version, structure)
         return {
             **basics,
@@ -90,10 +89,8 @@ class Lookup:
             "in_bom": code in _known_codes(raw),
             "item_source": item_source,
             "item_source_label": None if item_source is None else SOURCES[item_source],
-            "entries": [{"dev_number": d, "revision": r} for d, r in entries.get(code, [])],
             "used_in": _used_in(version, structure, code, product_kind),
             "structure": _tree(version, code),
-            "revisions": self._revisions(version, code),
             "changes": self._changes(version, code),
         }
 
@@ -132,37 +129,16 @@ class Lookup:
                  "incomplete": calculated.is_incomplete(h)} for h in Head]
 
     def _view(self, version: Version, code: str) -> _View:
-        """版の構成のまま（一括の見方）で原価を出す見方。"""
+        """グループの構成のまま（一括の見方）で原価を出す見方。"""
         scenario = Scenario("", code, f"{code}#", version, CostHead.MATERIAL, self.store.load_scope_policy())
         return _View(scenario, "bulk", CostHead.MATERIAL, False)
 
-    def _revisions(self, version: Version, code: str) -> list[dict[str, Any]]:
-        """同じ開発番号の各版（版の番号の順）での、この品の原価（マスタ登録を敷いた値）。"""
-        rows = []
-        infos = sorted((v for v in self.store.list_versions() if v.dev_number == version.dev_number),
-                       key=lambda v: v.revision)
-        for info in infos:
-            other = version if info.version_id == version.version_id else self.store.load_version(info.version_id)
-            rows.append({
-                "version_id": info.version_id,
-                "revision": info.revision,
-                "found": code in _known_codes(other),
-                "costs": {h.name: _s(other.cost_value(code, h)) for h in CostHead},
-            })
-        return rows
-
     def _changes(self, version: Version, code: str) -> list[dict[str, Any]]:
-        """同じ開発番号の版の試算で、この品を置換元・置換先・削除・追加・員数変更にしている変更（1回の操作に1行）。"""
-        ids = {v.version_id for v in self.store.list_versions() if v.dev_number == version.dev_number}
-        cache: dict[str, Version] = {version.version_id: version}
+        """グループの試算で、この品を置換元・置換先・削除・追加・員数変更にしている変更（1回の操作に1行）。"""
         rows: list[dict[str, Any]] = []
         seen: set[tuple[int, int, str]] = set()
-        for info in self.store.list_scenarios():
-            if info.version_id not in ids:
-                continue
-            if info.version_id not in cache:
-                cache[info.version_id] = self.store.load_version(info.version_id)
-            scenario = self.store.load_scenario(info.scenario_id, cache[info.version_id])
+        for info in self.store.list_scenarios(version.version_id):
+            scenario = self.store.load_scenario(info.scenario_id, version)
             for record in scenario.history:
                 role = _role(record.change.kind, record.change.part, record.change.replacement, code)
                 if role is None:
@@ -173,9 +149,8 @@ class Lookup:
                 seen.add(key)
                 rows.append({
                     "scenario_id": info.scenario_id,
-                    "name": info.name,
                     "product": info.base,
-                    "version_id": info.version_id,
+                    "group_id": info.group_id,
                     "sequence": record.sequence,
                     "role": role,
                     "kind": record.change.kind.name,
@@ -204,7 +179,7 @@ def _role(kind: ChangeKind, part: str, replacement: str | None, code: str) -> st
 
 
 def _costs(code: str, layers: tuple[tuple[str, Version], ...]) -> list[dict[str, Any]]:
-    """登録できる全費目（CostHead）の値と出どころ。費目ごとに、強い層（BOM ＞ 開発番号 ＞ 共通）から最初に値のある層を採る。"""
+    """登録できる全費目（CostHead）の値と出どころ。費目ごとに、強い層（マスタ登録 ＞ BOM）から最初に値のある層を採る。"""
     rows = []
     for head in CostHead:
         value, source = None, None

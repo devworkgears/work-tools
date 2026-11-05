@@ -1,24 +1,24 @@
-// ②部品・費目を変える: 検討案を開き、その検討案の試算がある製品を1つの表に並べる。行に製品の費目の欄（まとめて送る）、
-// 行を開くと版の構成で置換・削除・員数変更・追加。表は部品の名前で探した製品×部品の行（選んだ所をまとめて置換）にも切り替える。
+// ②部品・費目を変える: グループを選び、②に入れた製品を1つの表に並べる。行に製品の費目の欄（まとめて送る）、
+// 行を開くとグループの構成で置換・削除・員数変更・追加。表は部品の名前で探した製品×部品の行（選んだ所をまとめて置換）にも切り替える。
 // 変更の記録は画面の下に留める。原価は③原価を見るで見る。
 // 差は製造原価（TRIAL_HEAD・group.js）。app.js・screens.js・compare.js の関数を使う。
 "use strict";
 
-let trialOpened = null; // 開いた { version, name }。選び直しても［開く］までは前の検討案へ変更を送る
-let trialPending = null; // ①製品を選ぶの画面から開く検討案
+let trialOpened = null; // 開いた { group }
+let trialPending = null; // ①グループを選ぶの画面から開くグループ
 let trialResume = false; // 型費配賦から戻る時は描いてある中身をそのまま見せる
 
-// ①製品を選ぶの画面の検討案の行から、その検討案を開いた状態で移る
-async function openTrial(version, name) {
-  trialPending = { version, name };
+// ①グループを選ぶの画面から、そのグループを開いた状態で移る
+async function openTrial(group) {
+  trialPending = { group };
   await showScreen("trial");
 }
 
-// ③の分析の行から、その検討案を開いて製品×部品の表示で部品を探した状態で移る
-async function openTrialPart(version, name, part) {
+// ③の分析の行から、そのグループを開いて製品×部品の表示で部品を探した状態で移る
+async function openTrialPart(group, part) {
   trialMode = "part";
   trialPart = part;
-  await openTrial(version, name);
+  await openTrial(group);
 }
 
 async function enterTrial() {
@@ -26,31 +26,22 @@ async function enterTrial() {
     trialResume = false;
     if (trialOpened) return;
   }
-  const version = document.getElementById("trial-version");
+  const group = document.getElementById("trial-group");
   const pending = trialPending;
   trialPending = null;
-  versionOptions(version, { value: pending?.version || version.value || state.summary?.scenario.version_id });
-  await loadTrialNames(pending?.name);
-  await loadCodes(version.value);
+  groupOptions(group, { value: pending?.group || group.value || state.summary?.scenario.group_id });
+  await loadCodes(group.value);
   trialChangedOnly.clear();
   closeTrialLookup();
   trialOpen.clear();  // 開いたときは製品の行を全部閉じて並べる
-  if (pending) await openSelectedTrial();
-  else if (trialOpened && trialOpened.version === version.value) await drawTrial();
-}
-
-async function loadTrialNames(value) {
-  const version = document.getElementById("trial-version").value;
-  const trials = version ? await api("GET", `/api/group/trials?${qs({ version })}`) : [];
-  options(document.getElementById("trial-name"), trials.map((t) => [t.name, `${t.name}（${t.count} 製品）`]), { value });
+  if (pending || trialOpened?.group !== group.value) await openSelectedTrial();
+  else await drawTrial();
 }
 
 async function openSelectedTrial() {
-  const version = document.getElementById("trial-version").value;
-  const name = document.getElementById("trial-name").value;
-  if (!version) throw new Error("版が空");
-  if (!name) throw new Error("検討案を選ぶ");
-  trialOpened = { version, name };
+  const group = document.getElementById("trial-group").value;
+  if (!group) throw new Error("グループが空");
+  trialOpened = { group };
   trialChangedOnly.clear();
   closeTrialLookup();
   trialOpen.clear();
@@ -62,7 +53,7 @@ async function openSelectedTrial() {
 
 async function trialChange(product, change) {
   const t = trialOpened;
-  await api("POST", "/api/group/changes", { version_id: t.version, name: t.name, head: TRIAL_HEAD, product, ...change });
+  await api("POST", "/api/group/changes", { group_id: t.group, head: TRIAL_HEAD, product, ...change });
   await loadLists();
   await drawTrial();
 }
@@ -78,26 +69,21 @@ async function trialBulk(rows, change) {
   const items = rows.filter((r) => trialChecked.has(checkKey(r))).map((r) => ({ product: r.product, part: r.part }));
   if (!items.length) throw new Error("置換する行にチェックを入れてください。");
   const t = trialOpened;
-  await api("POST", "/api/group/changes/bulk", { version_id: t.version, name: t.name, head: TRIAL_HEAD, items, ...change });
+  await api("POST", "/api/group/changes/bulk", { group_id: t.group, head: TRIAL_HEAD, items, ...change });
   trialChecked.clear();
   await loadLists();
   await drawTrial();
 }
 
-// ③原価を見るへ、今の版と検討案を選んだ状態で移る（compare.js の入口を使う）
+// ③原価を見るへ、今のグループを選んだ状態で移る（compare.js の入口を使う）
 async function trialToCompare() {
   const t = trialOpened;
   await showScreen("compare");
-  const version = document.getElementById("cmp-version");
-  if (version.value !== t.version) {
-    version.value = t.version;
-    await loadCompareNames();
-  }
-  for (const box of document.querySelectorAll("#cmp-names input")) box.checked = box.value === t.name;
+  document.getElementById("cmp-group").value = t.group;
   await drawCompareTable();
 }
 
-// 製品の行の下に開く版の構成。開いた所は道筋（製品/風船:品番#版の並び順）で持ち、表を取り直しても開いたままにする
+// 製品の行の下に開くグループの構成。開いた所は道筋（製品/風船:品番#構成の並び順）で持ち、表を取り直しても開いたままにする
 const trialOpen = new Set();
 const trialChecked = new Set(); // 部品の絞り込みでチェックした「製品\t部品」
 let trialSort = { key: null, desc: false }; // 構成の表の並べ替え（# は風船番号）
@@ -108,7 +94,7 @@ let trialPartsLayout = "place";
 let trialLookupRequest = 0;
 
 const trialCode = (code) => el("button", { type: "button", class: "trial-code",
-  title: codeTitle(trialOpened?.version, code), onclick: () => guarded(() => openTrialLookup(code)) }, code);
+  title: codeTitle(trialOpened?.group, code), onclick: () => guarded(() => openTrialLookup(code)) }, code);
 
 function closeTrialLookup() {
   trialLookupRequest += 1;
@@ -118,8 +104,8 @@ function closeTrialLookup() {
 
 async function openTrialLookup(code) {
   const request = ++trialLookupRequest;
-  const version = trialOpened.version;
-  const result = await api("GET", `/api/lookup?${qs({ version, q: code, brief: "1", summary: "1" })}`);
+  const group = trialOpened.group;
+  const result = await api("GET", `/api/lookup?${qs({ group, q: code, brief: "1", summary: "1" })}`);
   if (request !== trialLookupRequest) return;
   const x = result.item;
   if (!x) throw new Error("品番を選ぶ");
@@ -149,8 +135,8 @@ async function openTrialLookup(code) {
       : el("p", { class: "muted" }, "なし"),
     el("button", { type: "button", onclick: () => guarded(async () => {
       await showScreen("lookup");
-      document.getElementById("look-version").value = version;
-      await loadCodes(version);
+      document.getElementById("look-group").value = group;
+      await loadCodes(group);
       await lookupCode(code);
     }) }, "品目照会で開く"));
   const screen = document.getElementById("screen-trial");
@@ -161,7 +147,7 @@ async function openTrialLookup(code) {
 async function trialReplaceCode(part, change) {
   const t = trialOpened;
   await api("POST", "/api/group/changes/by-code", {
-    version_id: t.version, name: t.name, trial: "1", head: TRIAL_HEAD, part, ...change,
+    group_id: t.group, trial: "1", head: TRIAL_HEAD, part, ...change,
   });
   trialChecked.clear();
   await loadLists();
@@ -206,7 +192,7 @@ function sortTrial(key) {
 }
 
 function trialTree(t, product, code) {
-  return api("GET", `/api/group/tree?${qs({ version: t.version, head: TRIAL_HEAD, product, code, by_balloon: "1" })}`);
+  return api("GET", `/api/group/tree?${qs({ group: t.group, head: TRIAL_HEAD, product, code, by_balloon: "1" })}`);
 }
 
 function twistyCell(path, canOpen) {
@@ -247,7 +233,7 @@ const replaceOp = (part, qty) => {
   return { label: "置換", text: [`${part} を `, code, " に置換　員数 ", q], inputs: [code, q], code,
     change: () => ({ kind: "REPLACE", part, replacement: code.value.trim(), quantity: q.value }) };
 };
-// 版の構成の場所（親・風船番号）の置換。代わりの部品は「+ 行を足す」で増やせ、行ごとに無い品番を登録できる
+// グループの構成の場所（親・風船番号）の置換。代わりの部品は「+ 行を足す」で増やせ、行ごとに無い品番を登録できる
 const placeReplaceOp = (parent, balloon, part, qty) => {
   const op = { label: "置換", entries: [], onInput: null };
   const list = el("div", { class: "change-replacements" });
@@ -269,7 +255,7 @@ const placeReplaceOp = (parent, balloon, part, qty) => {
 };
 const removeOp = (part, qty) => ({ label: "削除", text: [`${part} を構成から削除`], inputs: [],
   change: () => ({ kind: "REMOVE", part, quantity: qty }) });
-// 版の構成の場所（親・風船番号）の員数を変える
+// グループの構成の場所（親・風船番号）の員数を変える
 const quantityOp = (parent, balloon, part, qty) => {
   const q = qtyInput(qty);
   return { label: "員数変更", text: [`${balloon ? `#${balloon} の ` : ""}${part} の員数を `, q, " にする"], inputs: [q],
@@ -290,7 +276,7 @@ const bulkReplaceOp = () => {
     change: () => ({ replacement: code.value.trim(), quantity: q.value.trim() }) };
 };
 
-// 品番の候補（loadCodes が版の品番を入れた datalist）に無い品番か。空は登録の対象にしない
+// 品番の候補（loadCodes がグループの品番を入れた datalist）に無い品番か。空は登録の対象にしない
 function unknownCode(input) {
   const code = input.value.trim();
   return Boolean(code) && ![...document.getElementById("code-list-2").options].some((o) => o.value === code);
@@ -350,8 +336,8 @@ function openChangeForm(row, product, ops, send = (change) => trialChange(produc
     const line = lines.find((l) => l.radio.checked);
     const regs = toRegister(line);
     if (regs.length) {
-      for (const r of regs) await api("PUT", "/api/manual/items", { ...r.reg.body(), version: trialOpened.version });
-      await loadCodes(trialOpened.version);
+      for (const r of regs) await api("PUT", "/api/manual/items", { ...r.reg.body(), group_id: trialOpened.group });
+      await loadCodes(trialOpened.group);
       sync();
     }
     await send(line.op.change());
@@ -386,11 +372,11 @@ function changeText(c) {
 
 const undoButton = (change) => el("button", { type: "button", onclick: () => guarded(() => trialUndo(change)) }, "取り消す");
 
-// 置換・追加で入れた部品ごとに、その部品・版・この製品の試算を選んで型費配賦を開くボタン
+// 置換・追加で入れた部品ごとに、その部品・グループ・この製品の試算を選んで型費配賦を開くボタン
 function moldButtons(change) {
   const codes = change.kind === "ADD" ? [change.part] : change.kind === "REPLACE" ? change.replacements.map((r) => r.code) : [];
   return codes.map((code) => el("button", { type: "button", title: `${code} の型費配賦`,
-    onclick: () => guarded(() => openPart({ part: code, version: trialOpened.version, scenarioId: change.scenario_id, from: "trial" })) },
+    onclick: () => guarded(() => openPart({ part: code, group: trialOpened.group, scenarioId: change.scenario_id, from: "trial" })) },
   codes.length > 1 ? `型費 ${code}` : "型費配賦"));
 }
 
@@ -458,7 +444,7 @@ function trialNodeRow(ctx, node, path, depth) {
   );
 }
 
-// 版の構成の子を並べ（並べ替えは同じ親の子の中）、開いた所はたどる。rowsOf は1つの子の行を作る
+// グループの構成の子を並べ（並べ替えは同じ親の子の中）、開いた所はたどる。rowsOf は1つの子の行を作る
 async function addTrialChildren(rows, ctx, data, path, depth, rowsOf, gone = false) {
   for (const { node, index } of sortedChildren(data.children)) {
     const childPath = `${path}/${node.balloon ?? ""}:${node.code}#${index}`;
@@ -472,7 +458,7 @@ async function addTrialChildren(rows, ctx, data, path, depth, rowsOf, gone = fal
   }
 }
 
-// 足した部品（と場所の無い員数変更）は版の構成に無いので、構成の後ろに出す
+// 足した部品（と場所の無い員数変更）はグループの構成に無いので、構成の後ろに出す
 const rootExtras = (changes) => changes.filter((c) => c.kind === "ADD" || (c.kind === "SET_QUANTITY" && c.parent === null));
 
 function addedRows(changes) {
@@ -543,7 +529,7 @@ function layoutSeg() {
   return el("div", { class: "seg trial-layout" }, button("list", "一覧"), button("pair", "左右"));
 }
 
-// 開いた製品の中身: 変えた所に印を付けた版の構成（一覧か左右）。行の［変更］と下の［追加］から変える
+// 開いた製品の中身: 変えた所に印を付けたグループの構成（一覧か左右）。行の［変更］と下の［追加］から変える
 async function trialProductPanel(t, product, changes, colspan, locks) {
   const root = await trialTree(t, product);
   const ctx = { t, product, changes, locks };
@@ -668,7 +654,7 @@ function headInput(product, head) {
   return input;
 }
 
-// 製品の表: 行ごとに差と、製品の費目（社内加工費・償却費・直接費）の現行・変更後・入力欄。行を押すと下に版の構成が開く。
+// 製品の表: 行ごとに差と、製品の費目（社内加工費・償却費・直接費）の現行・変更後・入力欄。行を押すと下にグループの構成が開く。
 // 費目は打った所だけを製品ごとに1回の費目変更（まとめて取り消せる）で入れる
 async function productTable(t, p, changes, heads) {
   const byProduct = new Map();
@@ -693,7 +679,7 @@ async function productTable(t, p, changes, heads) {
       values: Object.fromEntries(grid[r].map((input, c) => [heads.heads[c].id, input.value.trim()]).filter(([, v]) => v)) }))
       .filter((x) => Object.keys(x.values).length);
     if (!items.length) throw new Error("変える費目の値を入れてください。");
-    await api("POST", "/api/group/heads/bulk", { version_id: t.version, name: t.name, head: TRIAL_HEAD, items });
+    await api("POST", "/api/group/heads/bulk", { group_id: t.group, head: TRIAL_HEAD, items });
     trialHeadValues.clear();
     await drawTrial();
   });
@@ -740,7 +726,7 @@ const trialBook = { file: null, fileShown: false, check: null }; // check: { bod
 async function trialBookBody() {
   const t = trialOpened;
   const file = trialBook.file?.files[0];
-  const body = { version_id: t.version, name: t.name, head: TRIAL_HEAD };
+  const body = { group_id: t.group, head: TRIAL_HEAD };
   if (!file) return body;
   if (file.size > MAX_FILE_BYTES) throw new Error(`${file.name} が大きすぎる（上限 16 MB）`);
   return { ...body, filename: file.name, content: await readAsBase64(file) };
@@ -749,7 +735,7 @@ async function trialBookBody() {
 function trialBookBar() {
   trialBook.file ??= el("input", { type: "file", accept: ".xlsx,.xlsm" });
   const t = trialOpened;
-  const base = { version_id: t.version, name: t.name };
+  const base = { group_id: t.group };
   const open = () => guarded(async () => {
     // 置き場のブックに取り込んでいない差があるなら、作り直して消す前に確かめる（ブックが無い・読めない時は作り直す）
     const diff = await api("POST", "/api/group/heads/book/check", base).catch(() => null);
@@ -846,19 +832,19 @@ function changeLog(changes, headLabel) {
 
 async function drawTrial() {
   const t = trialOpened;
-  if (!t) throw new Error("検討案を開く");
+  if (!t) throw new Error("グループが空");
   const part = trialMode === "part" ? trialPart : "";
-  const base = { version: t.version, name: t.name, trial: "1" };
+  const base = { group: t.group, trial: "1" };
   const [p, parts, changes, heads] = await Promise.all([
     api("GET", `/api/group/products?${qs({ ...base, head: TRIAL_HEAD })}`),
     part ? api("GET", `/api/group/parts${trialPartsLayout === "code" ? "/by-code" : ""}?${qs({ ...base, part })}`) : null,
-    api("GET", `/api/group/changes?${qs({ version: t.version, name: t.name, head: TRIAL_HEAD })}`),
-    trialMode === "product" ? api("GET", `/api/group/heads/all?${qs({ version: t.version, name: t.name })}`) : null,
+    api("GET", `/api/group/changes?${qs({ group: t.group, head: TRIAL_HEAD })}`),
+    trialMode === "product" ? api("GET", `/api/group/heads/all?${qs({ group: t.group })}`) : null,
   ]);
   const products = heads ? await productTable(t, p, changes, heads) : null;
   trialForm = null;  // 表を描き直すと開いていた欄は消える
   const top = el("div", { class: "trial-top" },
-    el("p", { class: "premise-line" }, `前提: ${versionLabel(p.version_id)}・検討案 ${p.name}・${p.head_label}・参考値`),
+    el("p", { class: "premise-line" }, `前提: ${groupLabel(p.group_id)}・${p.head_label}・参考値`),
     el("span", { class: "spacer" }),
     el("span", { class: "trial-top-total" },
       `差の合計${p.missing_count ? `（未登録 ${p.missing_count} 製品を除く）` : ""} `,
@@ -877,10 +863,9 @@ async function drawTrial() {
 }
 
 function wireTrial() {
-  document.getElementById("trial-open").addEventListener("click", () => guarded(openSelectedTrial));
-  document.getElementById("trial-version").addEventListener("change", (e) => guarded(async () => {
-    await loadTrialNames();
+  document.getElementById("trial-group").addEventListener("change", (e) => guarded(async () => {
     await loadCodes(e.target.value);
+    await openSelectedTrial();
   }));
 }
 

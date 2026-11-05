@@ -7,13 +7,12 @@ from bomcost.app import static_response
 from bomcost.group import Group, _Structure
 from bomcost.lookup import Lookup, _used_in
 from bomcost.model import BomLine, Item, Version
-from test_group import NAME, SampleDbCase
-from test_screens import csv_file
+from test_group import SampleDbCase
 
 
 class LookupCase(SampleDbCase):
     def look(self, q: str, version: str = "2026-10") -> dict:
-        return self.ok("GET", "/api/lookup", f"version={version}&q={q}")
+        return self.ok("GET", "/api/lookup", f"group={version}&q={q}")
 
     def item(self, q: str, version: str = "2026-10") -> dict:
         found = self.look(q, version)
@@ -26,17 +25,16 @@ class Basics(LookupCase):
         b = self.item("B-200")
         self.assertEqual((b["code"], b["name"], b["kind"], b["in_bom"], b["item_source"], b["is_product"]),
                          ("B-200", "部品B", "B", True, "bom", False))
-        self.assertEqual(b["entries"], [{"dev_number": "2026-10", "revision": 1}])
         self.assertTrue(self.item("A-100")["is_product"])
 
     def test_registration_only_item(self) -> None:
         x = self.item("X-610")
-        self.assertEqual((x["name"], x["in_bom"], x["item_source"], x["item_source_label"], x["entries"]),
-                         ("試作品", False, "common", "共通の登録", []))
+        self.assertEqual((x["name"], x["in_bom"], x["item_source"], x["item_source_label"]),
+                         ("試作品", False, "master", "マスタ登録"))
         self.assertEqual(x["used_in"], [])
         self.assertEqual(x["structure"], [])
         material = next(c for c in x["costs"] if c["head"] == "MATERIAL")
-        self.assertEqual((material["value"], material["source"]), ("200", "common"))
+        self.assertEqual((material["value"], material["source"]), ("200", "master"))
 
     def test_name_search_and_candidates(self) -> None:
         # 名称の一部で1つに決まればその品
@@ -48,31 +46,28 @@ class Basics(LookupCase):
         self.assertEqual(many["candidates"][0]["name"], "部品B")
 
     def test_input_errors(self) -> None:
-        self.assert_error(self.call("GET", "/api/lookup", "q=B-200"), 400, "版")
-        self.assert_error(self.call("GET", "/api/lookup", "version=2026-10"), 400, "q")
-        self.assert_error(self.call("GET", "/api/lookup", "version=2026-10&q=ZZZ"), 404, "ZZZ")
-        self.assert_error(self.call("GET", "/api/lookup", "version=nothing&q=B-200"), 404, "nothing")
+        self.assert_error(self.call("GET", "/api/lookup", "q=B-200"), 400, "グループ")
+        self.assert_error(self.call("GET", "/api/lookup", "group=2026-10"), 400, "q")
+        self.assert_error(self.call("GET", "/api/lookup", "group=2026-10&q=ZZZ"), 404, "ZZZ")
+        self.assert_error(self.call("GET", "/api/lookup", "group=nothing&q=B-200"), 404, "nothing")
 
 
 class Costs(LookupCase):
-    def test_sources_mixed_by_head(self) -> None:
-        # 開発番号の登録: 材料費は BOM に隠れ、直接費は採る。共通の登録: 直接費は開発番号に隠れ、間接費は採る
-        self.ok("PUT", "/api/manual/items", body={"dev_number": "2026-10", "code": "B-200", "name": "部品B",
-                                                  "costs": {"MATERIAL": "9", "DIRECT": "30"}})
-        self.ok("PUT", "/api/manual/items", body={"code": "B-200", "name": "部品B",
-                                                  "costs": {"DIRECT": "99", "INDIRECT": "7"}})
+    def test_master_over_bom_by_head(self) -> None:
+        # マスタ登録に値のある費目はマスタ登録、空の費目は BOM
+        self.ok("PUT", "/api/manual/items", body={"group_id": "2026-10", "code": "B-200", "name": "部品B",
+                                                  "costs": {"MATERIAL": "9", "INDIRECT": "7"}})
         costs = {c["head"]: (c["value"], c["source"], c["source_label"]) for c in self.item("B-200")["costs"]}
-        self.assertEqual({k: costs[k] for k in ("MATERIAL", "DIRECT", "INDIRECT", "ADJUSTMENT", "AMORTIZATION",
-                                                 "MANUFACTURING")}, {
-            "MATERIAL": ("1600", "bom", "BOM"),
-            "DIRECT": ("30", "dev", "開発番号の登録"),
-            "INDIRECT": ("7", "common", "共通の登録"),
+        self.assertEqual({k: costs[k] for k in ("MATERIAL", "DIRECT", "INDIRECT", "ADJUSTMENT")}, {
+            "MATERIAL": ("9", "master", "マスタ登録"),
+            "DIRECT": (None, None, "未登録"),
+            "INDIRECT": ("7", "master", "マスタ登録"),
             "ADJUSTMENT": (None, None, "未登録"),
-            "AMORTIZATION": (None, None, "未登録"),
-            "MANUFACTURING": (None, None, "未登録"),
         })
+        material = next(c for c in self.item("C-300")["costs"] if c["head"] == "MATERIAL")
+        self.assertEqual(material["source"], "bom")  # 登録の無い品は BOM のまま
         # 値は overlay_master と同じ
-        overlaid = self.store.load_version("2026-10")
+        overlaid = self.store.load_group("2026-10")
         self.assertEqual({h: v for h, (v, _, _) in costs.items()},
                          {h.name: None if (x := overlaid.cost_value("B-200", h)) is None else str(x)
                           for h in overlaid.cost_row("B-200").values})
@@ -125,7 +120,7 @@ class Summary(LookupCase):
         self.assertEqual((k["parents"], k["product_count"], k["child_count"], k["annual_volume"]), ([], 0, 0, "5000"))
 
     def test_imported_manufacturing_and_difference(self) -> None:
-        self.ok("PUT", "/api/manual/items", body={"code": "B-200", "name": "部品B", "costs": {"MANUFACTURING": "1700"}})
+        self.ok("PUT", "/api/manual/items", body={"group_id": "2026-10", "code": "B-200", "name": "部品B", "costs": {"MANUFACTURING": "1700"}})
         s = self.summary("B-200")
         computed = next(c["value"] for c in s["calculated"] if c["head"] == "MANUFACTURING")
         self.assertEqual(s["imported"]["value"], "1700")
@@ -161,17 +156,6 @@ class Summary(LookupCase):
 
 
 class History(LookupCase):
-    def test_costs_across_revisions(self) -> None:
-        self.ok("POST", "/api/import", body={"dev_number": "2026-10", "cost_only": True, "files": [
-            csv_file("原価2.csv", "MBOM品番,材料費,直接費\nB-200,1700,40\n", table="cost",
-                     columns={"mbom_code": "MBOM品番", "material": "材料費", "direct": "直接費"})]})
-        revisions = self.item("B-200")["revisions"]
-        self.assertEqual([(r["revision"], r["found"], r["costs"]["MATERIAL"], r["costs"]["DIRECT"]) for r in revisions],
-                         [(1, True, "1600", None), (2, True, "1700", "40")])
-        # 新しい版から引いても同じ並び
-        newest = revisions[-1]["version_id"]
-        self.assertEqual([r["revision"] for r in self.item("B-200", newest)["revisions"]], [1, 2])
-
     def test_changes_that_touch_the_item(self) -> None:
         self.change("A-100", kind="REPLACE", part="B-200", replacement="F-600", quantity="2")
         self.change("A-100", kind="REMOVE", part="C-300", quantity="1")
@@ -179,15 +163,15 @@ class History(LookupCase):
         self.change("V-110", kind="SET_QUANTITY", part="F-600", quantity="2")
 
         def roles(code: str) -> list[tuple[str, str, str]]:
-            return [(c["name"], c["product"], c["role"]) for c in self.item(code)["changes"]]
+            return [(c["product"], c["role"]) for c in self.item(code)["changes"]]
 
-        self.assertEqual(roles("B-200"), [(NAME, "A-100", "置換元")])
-        self.assertEqual(roles("F-600"), [(NAME, "A-100", "置換先"), (NAME, "V-110", "員数変更")])
-        self.assertEqual(roles("C-300"), [(NAME, "A-100", "削除")])
-        self.assertEqual(roles("X-610"), [(NAME, "K-200", "追加")])
+        self.assertEqual(roles("B-200"), [("A-100", "置換元")])
+        self.assertEqual(roles("F-600"), [("A-100", "置換先"), ("V-110", "員数変更")])
+        self.assertEqual(roles("C-300"), [("A-100", "削除")])
+        self.assertEqual(roles("X-610"), [("K-200", "追加")])
         self.assertEqual(roles("K-200"), [])
         change = self.item("B-200")["changes"][0]
-        self.assertEqual((change["kind"], change["replacement"], change["version_id"]), ("REPLACE", "F-600", "2026-10"))
+        self.assertEqual((change["kind"], change["replacement"], change["group_id"]), ("REPLACE", "F-600", "2026-10"))
 
 
 class Screen(unittest.TestCase):

@@ -14,7 +14,7 @@ from bomcost import BomLine, CostHead, CostRow, Item, Scenario, Store, Version
 from bomcost.scenario import Change, ChangeKind
 from bomcost.api import Api, Response
 from bomcost.app import HOST, bind, main, make_handler, static_response
-from bomcost.demo import DEMO_SCENARIO_NAME, build_demo
+from bomcost.demo import build_demo
 from bomcost.importer import load_openpyxl
 
 
@@ -45,20 +45,20 @@ class DemoDbCase(unittest.TestCase):
 
 class DemoDb(DemoDbCase):
     def test_same_content_as_example_data(self) -> None:
-        for version_id, expected in (("2026-10", ex.version_2026_10()), ("2026-12", ex.version_2026_12())):
-            with self.subTest(version=version_id):
-                v = self.store.load_version(version_id)
+        for group_id, expected in (("2026-10", ex.version_2026_10()), ("2026-12", ex.version_2026_12())):
+            with self.subTest(group=group_id):
+                v = self.store.load_group(group_id)
                 self.assertEqual(set(v.items), set(expected.items))
                 self.assertEqual({l.key: l.quantity for l in v.lines}, {l.key: l.quantity for l in expected.lines})
                 self.assertEqual({r.code: dict(r.values) for r in v.cost_rows},
                                  {r.code: dict(r.values) for r in expected.cost_rows})
                 self.assertEqual({p: x.annual for p, x in v.volumes.items()},
                                  {p: x.annual for p, x in expected.volumes.items()})
-        self.assertEqual(self.store.mold_costs()["X-610"], ex.mold_x610())
-        self.assertEqual(self.store.reuse_targets("X-610"), [ex.reuse_k200()])
+                self.assertEqual(self.store.mold_costs(group_id)["X-610"], ex.mold_x610())
+                self.assertEqual(self.store.reuse_targets(group_id, "X-610"), [ex.reuse_k200()])
         self.assertEqual(self.store.load_scope_policy().overrides, ex.policy().overrides)
         scenario = self.store.load_scenario(self.scenario_id)
-        self.assertEqual(scenario.name, DEMO_SCENARIO_NAME)
+        self.assertEqual((scenario.base, scenario.version.version_id), ("A-100", "2026-10"))
         self.assertEqual(scenario.calculate().total, Decimal("4650"))
 
     def test_refuses_existing_file(self) -> None:
@@ -76,16 +76,18 @@ class DemoDb(DemoDbCase):
 
 
 class ListsAndTree(DemoDbCase):
-    def test_versions_and_scenarios(self) -> None:
-        versions = self.ok("GET", "/api/versions")
-        self.assertEqual([v["version_id"] for v in versions], ["2026-12", "2026-10"])
-        # デモの2つの版は同じ開発番号の第2版・第1版
-        self.assertEqual({v["dev_number"] for v in versions}, {"D-100"})
-        self.assertEqual([v["revision"] for v in versions], [2, 1])
+    def test_groups_and_scenarios(self) -> None:
+        groups = self.ok("GET", "/api/groups")
+        self.assertEqual([g["group_id"] for g in groups], ["2026-12", "2026-10"])
+        # デモの2つのグループは同じ開発番号
+        self.assertEqual({g["dev_number"] for g in groups}, {"D-100"})
+        self.assertEqual([(g["label"], g["scenario_count"]) for g in groups],
+                         [("D-100 例のユニット（原価の更新）", 0), ("D-100 例のユニット（架空の例）", 1)])
         scenarios = self.ok("GET", "/api/scenarios")
-        self.assertEqual([(s["name"], s["base"], s["version_id"]) for s in scenarios],
-                         [("V-110 検討", "A-100", "2026-10")])
-        items = {i["code"]: i["name"] for i in self.ok("GET", "/api/items", "version=2026-10")}
+        self.assertEqual([(s["base"], s["product_code"], s["group_id"]) for s in scenarios],
+                         [("A-100", "V-110", "2026-10")])
+        self.assertEqual(self.ok("GET", "/api/scenarios", "group=2026-12"), [])
+        items = {i["code"]: i["name"] for i in self.ok("GET", "/api/items", "group=2026-10")}
         self.assertEqual(items["X-610"], "試作品")
 
     def test_tree_root_and_children(self) -> None:
@@ -144,7 +146,7 @@ class Changes(DemoDbCase):
         self.assertEqual(len(after["history"]), 3)
         last = after["history"][-1]
         self.assertEqual((last["cost_before"], last["cost_after"], last["difference"]), ("4650", "4600", "-50"))
-        self.assertEqual((last["version_id"], last["head_label"], last["volume"]), ("2026-10", "材料費", "10000"))
+        self.assertEqual((last["group_id"], last["head_label"], last["volume"]), ("2026-10", "材料費", "10000"))
         self.assertEqual(after["last"]["difference"], "-50")
 
         with Store(self.path) as other:  # SQLite に残っている
@@ -174,34 +176,24 @@ class Changes(DemoDbCase):
         self.assertIn("取り消す変更が無い", response.json()["error"])
 
     def test_new_scenario(self) -> None:
+        # 2026-10 の A-100 にはもう試算があるので、2026-10 を写したグループで作る
+        group = self.ok("POST", "/api/groups", body={"from": "2026-10", "copy": {
+            "tables": ["item", "bom_line", "cost", "volume"], "master": True}})["group_id"]
         created = self.call("POST", "/api/scenarios", body={
-            "name": "例の検討", "base": "A-100", "product_code": "Z-900", "version_id": "2026-10", "head": "MATERIAL",
+            "base": "A-100", "product_code": "Z-900", "group_id": group, "head": "MATERIAL",
         })
         self.assertEqual(created.status, 201)
         data = created.json()
         self.assertEqual((data["total"], data["history"]), ("4900", []))
         self.assertEqual(len(self.ok("GET", "/api/scenarios")), 2)
+        # 同じグループの同じ製品は1つだけ。品番を省けば重ならない品番を振る
+        again = self.call("POST", "/api/scenarios", body={"base": "A-100", "group_id": group})
+        self.assertEqual(again.status, 409)
+        auto = self.ok("POST", "/api/scenarios", body={"base": "B-200", "group_id": group})
+        self.assertEqual(auto["scenario"]["product_code"], "B-200#")
 
 
-class VersionsSwitch(DemoDbCase):
-    def test_switch_version_and_compare(self) -> None:
-        cmp = self.ok("GET", self.url("/compare"), "version=2026-12")
-        self.assertEqual((cmp["version_a"], cmp["version_b"]), ("2026-10", "2026-12"))
-        self.assertEqual((cmp["total_a"], cmp["total_b"], cmp["difference"]), ("4650", "4690", "40"))
-        by_part = {l["part"]: l for l in cmp["lines"]}
-        self.assertEqual(by_part["A-100"]["difference"], "60")
-        self.assertEqual(by_part["F-600"]["difference"], "0")
-        self.assertEqual((by_part["C-300"]["amount_a"], by_part["C-300"]["amount_b"]), ("-500", "-520"))
-
-        switched = self.ok("PUT", self.url(), body={"version_id": "2026-12"})
-        self.assertEqual(switched["total"], "4690")
-        self.assertEqual(switched["scenario"]["version_id"], "2026-12")
-        # 履歴は変更した時の前提のまま
-        self.assertEqual({r["version_id"] for r in switched["history"]}, {"2026-10"})
-        with Store(self.path) as other:
-            self.assertEqual(other.load_scenario(self.scenario_id).version.version_id, "2026-12")
-        self.assertEqual(self.ok("GET", self.url("/tree"))["node"]["cost"], "4690")
-
+class HeadSwitch(DemoDbCase):
     def test_switch_head(self) -> None:
         switched = self.ok("PUT", self.url(), body={"head": "DIRECT"})
         self.assertEqual(switched["scenario"]["head_label"], "直接費")
@@ -238,8 +230,8 @@ class TableMode(DemoDbCase):
         v.add_items([Item("P-1", "土台"), Item("X-1", "部品")])
         v.add_bom_lines([BomLine("P-1", "1", "X-1", 1), BomLine("P-1", "2", "X-1", 2)])
         v.add_cost(CostRow("X-1", {CostHead.MATERIAL: 100}))
-        store.save_version(v)
-        sid = store.save_scenario(Scenario("例", "P-1", "Q-1", store.load_version("T")))
+        store.save_group(v)
+        sid = store.save_scenario(Scenario("例", "P-1", "Q-1", store.load_group("T")))
         api = Api(store)
         merged = api.handle("GET", f"/api/scenarios/{sid}/table", "mode=bulk&by_balloon=0").json()["rows"]
         split = api.handle("GET", f"/api/scenarios/{sid}/table", "mode=bulk&by_balloon=1").json()["rows"]
@@ -266,7 +258,7 @@ class TableMode(DemoDbCase):
         self.assertEqual(values[2][:4], ["V-110", "新しい製品", 1, 4650])
         self.assertEqual(len(values), 3)
         premises = dict(wb["前提"].iter_rows(values_only=True))
-        self.assertEqual(premises["計算に使った版"], "D-100 例のユニット（第1版）")
+        self.assertEqual(premises["グループ"], "D-100 例のユニット（架空の例）")
         self.assertEqual(premises["値の扱い"], "参考値")
 
     def test_export_rejects_unknown_column(self) -> None:
@@ -283,7 +275,7 @@ class BadInput(DemoDbCase):
 
     def test_errors_are_4xx_in_japanese(self) -> None:
         self.assert_error(self.call("POST", self.url("/changes"), body={"kind": "ADD", "part": "NOPE-1"}),
-                          400, "品番 NOPE-1 は版 2026-10 に無い")
+                          400, "品番 NOPE-1 はグループに無い")
         self.assert_error(self.call("POST", self.url("/changes"), body={"kind": "ADD", "part": "B-200", "quantity": "abc"}),
                           400, "数量を数として読めない")
         self.assert_error(self.call("POST", self.url("/changes"), body={"kind": "ADD", "part": "B-200", "quantity": [1]}),
@@ -298,17 +290,17 @@ class BadInput(DemoDbCase):
                           400, "試算の製品そのもの")
         self.assert_error(self.call("GET", self.url("/tree"), "head=XYZ"), 400, "費目が分からない")
         self.assert_error(self.call("GET", self.url("/tree"), "mode=other"), 400, "モードが分からない")
-        self.assert_error(self.call("GET", self.url("/compare"), "version=1999-01"), 404, "版 1999-01 は無い")
         self.assert_error(self.call("GET", "/api/scenarios/999"), 404, "試算 999 は無い")
-        self.assert_error(self.call("PUT", self.url(), body={"version_id": "1999-01"}), 404, "版 1999-01 は無い")
+        self.assert_error(self.call("POST", "/api/scenarios", body={"base": "A-100", "group_id": "1999-01"}), 404,
+                          "グループ 1999-01 は無い")
         self.assert_error(self.api.handle("POST", self.url("/changes"), "", b"{not json"), 400, "JSON として読めない")
         self.assert_error(self.call("GET", "/api/nothing"), 404, "API が無い")
         self.assert_error(self.call("DELETE", self.url()), 405, "使えない")
-        self.assert_error(self.call("POST", "/api/scenarios", body={"name": "x", "base": "A-100", "product_code": "A-100",
-                                                                   "version_id": "2026-10"}), 400, "別の品番")
+        self.assert_error(self.call("POST", "/api/scenarios", body={"base": "A-100", "product_code": "A-100",
+                                                                   "group_id": "2026-12"}), 400, "別の品番")
         # 循環する構成（土台の子に試算の製品を置く）は弾く
-        self.assert_error(self.call("POST", "/api/scenarios", body={"name": "x", "base": "V-110", "product_code": "A-100",
-                                                                   "version_id": "2026-10"}), 400, "循環")
+        self.assert_error(self.call("POST", "/api/scenarios", body={"base": "V-110", "product_code": "A-100",
+                                                                   "group_id": "2026-10"}), 400, "循環")
         # 誤りの後も同じ API で続けて使える。誤りは履歴に残らない
         data = self.ok("GET", self.url())
         self.assertEqual((data["total"], len(data["history"])), ("4650", 2))

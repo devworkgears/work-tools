@@ -99,38 +99,11 @@ class ChangeRecord:
         return self.cost_after - self.cost_before
 
 
-@dataclass(frozen=True)
-class LineComparison:
-    part: str
-    quantity: Decimal
-    amount_a: Decimal | None  # 数量 × 版 a の原価
-    amount_b: Decimal | None
-
-    @property
-    def difference(self) -> Decimal | None:
-        if self.amount_a is None or self.amount_b is None:
-            return None
-        return self.amount_b - self.amount_a
-
-
-@dataclass(frozen=True)
-class VersionComparison:
-    version_a: str
-    version_b: str
-    head: CostHead
-    lines: tuple[LineComparison, ...]
-    total_a: Decimal | None
-    total_b: Decimal | None
-
-    @property
-    def difference(self) -> Decimal | None:
-        if self.total_a is None or self.total_b is None:
-            return None
-        return self.total_b - self.total_a
-
-
 class Scenario:
-    """試算ケース。土台の製品と、計算に使う版・費目・計上範囲を持つ。"""
+    """試算ケース（グループ × 製品の変更）。土台の製品と、計算に使う版（グループ）・費目・計上範囲を持つ。
+
+    name は画面の表示だけに使う（保存しない）。
+    """
 
     def __init__(
         self,
@@ -370,26 +343,6 @@ class Scenario:
     def clear(self) -> None:
         self._history.clear()
 
-    def compare_versions(
-        self, version_a: Version, version_b: Version, head: CostHead | None = None
-    ) -> VersionComparison:
-        """同じ試算を2つの版で計算し直し、直下の品目ごとの差を出す。"""
-        head = head or self.head
-        result_a = self.calculate(version_a, head)
-        result_b = self.calculate(version_b, head)
-        lines = tuple(
-            LineComparison(
-                part=line.child,
-                quantity=line.quantity,
-                amount_a=_amount(line.quantity, result_a.item_costs.get(line.child)),
-                amount_b=_amount(line.quantity, result_b.item_costs.get(line.child)),
-            )
-            for line in self.root_lines()
-        )
-        return VersionComparison(
-            version_a.version_id, version_b.version_id, head, lines, result_a.total, result_b.total
-        )
-
 
 _PART_CHANGES = (ChangeKind.REMOVE, ChangeKind.REPLACE, ChangeKind.SET_QUANTITY)  # 部品そのものを変える変更
 
@@ -398,10 +351,6 @@ def _label(change: Change) -> str:
     if change.parent is None:
         return change.part
     return f"{change.parent} の {change.part}" if change.balloon is None else f"{change.parent} の #{change.balloon} {change.part}"
-
-
-def _amount(quantity: Decimal, unit: Decimal | None) -> Decimal | None:
-    return None if unit is None else quantity * unit
 
 
 def _apply(entries: list[list], change: Change) -> None:

@@ -1,16 +1,14 @@
-"""画面の2段目の API（取り込み・手入力・部品から見る・モデルチェンジ・版の削除）。ソケットは開かない。データはすべて架空。"""
+"""画面の2段目の API（取り込み・手入力・部品から見る・モデルチェンジ・グループのメモ）。ソケットは開かない。データはすべて架空。"""
 
 import base64
 import io
 import json
 import unittest
-from dataclasses import replace
 from pathlib import Path
 
-from bomcost import Scenario, Store
+from bomcost import Store
 from bomcost.api import Api, Response
 from bomcost.importer import load_openpyxl
-from bomcost.model import CostHead
 from test_app import DemoDbCase
 
 SAMPLES = Path(__file__).resolve().parent.parent / "samples"
@@ -61,6 +59,16 @@ class EmptyDbCase(unittest.TestCase):
             self.assertEqual(response.status, low)
         self.assertIn(words, response.json()["error"])
 
+    def new_group(self, dev_number: str = "D-1", **extra: object) -> str:
+        """空のグループを作り、ID を返す。"""
+        return self.ok("POST", "/api/groups", body={"dev_number": dev_number, **extra})["group_id"]
+
+    def swap_bom(self, version: object) -> None:
+        """グループ version.version_id の BOM だけを書き換える（画面からはできない。変更・マスタ登録は残す下ごしらえ）。"""
+        with self.store._conn:
+            self.store._delete_rows(version.version_id, "bom")
+            self.store._insert_rows(version.version_id, "bom", version)
+
 
 class Import(EmptyDbCase):
     def test_preview_csv_and_xlsx(self) -> None:
@@ -77,9 +85,9 @@ class Import(EmptyDbCase):
         self.assertEqual((x["headers"], x["sheets"], x["sheet"]), (["製品品番", "年間生産台数", "集計年度"], ["一覧"], "一覧"))
 
     def test_import_saves_map_and_reuses_it(self) -> None:
+        group = self.new_group(note="試し")
         body = {
-            "version_id": "2026-11",
-            "note": "試し",
+            "group_id": group,
             "files": [
                 csv_file("品目.csv", ITEM_CSV, table="item", columns={"code": "品番", "name": "品名", "kind": "区分"}),
                 csv_file("構成.csv", BOM_CSV, table="bom_line",
@@ -97,9 +105,9 @@ class Import(EmptyDbCase):
         self.assertEqual(result["warnings"][0]["row"], 3)
         self.assertIn("読み飛ばした", result["warnings"][0]["message"])
 
-        versions = self.ok("GET", "/api/versions")
-        self.assertEqual([(v["version_id"], v["warning_count"]) for v in versions], [("2026-11", 1)])
-        info = self.ok("GET", "/api/versions/info", "version=2026-11")
+        groups = self.ok("GET", "/api/groups")
+        self.assertEqual([(g["group_id"], g["warning_count"]) for g in groups], [(group, 1)])
+        info = self.ok("GET", "/api/groups/info", f"group={group}")
         self.assertEqual(info["note"], "試し")
         self.assertIn("読み飛ばした", info["warnings"][0]["message"])
 
@@ -109,27 +117,29 @@ class Import(EmptyDbCase):
         self.assertEqual(p["suggested"], "item")
         self.assertEqual(next(t for t in p["tables"] if t["id"] == "item")["saved"],
                          {"code": "品番", "name": "品名", "kind": "区分"})
-        response = self.call("POST", "/api/import", body={"version_id": "2026-12",
+        other_group = self.new_group()
+        response = self.call("POST", "/api/import", body={"group_id": other_group,
                                                           "files": [csv_file("別の品目.csv", other)]})
         self.assertEqual(response.status, 201, response.body.decode("utf-8"))
-        items = {i["code"] for i in self.ok("GET", "/api/items", "version=2026-12")}
+        items = {i["code"] for i in self.ok("GET", "/api/items", f"group={other_group}")}
         self.assertEqual(items, {"R-1"})
         xlsx_again = xlsx_file("台数2.xlsx", [["製品品番", "年間生産台数", "集計年度"], ["R-1", 10, 2027]])
         self.assertEqual(self.ok("POST", "/api/import/preview", body=xlsx_again)["suggested"], "volume")
 
     def test_import_errors(self) -> None:
-        missing = {"version_id": "v1", "files": [csv_file("品目.csv", ITEM_CSV, table="item", columns={"code": "品番"})]}
+        group = self.new_group()
+        missing = {"group_id": group, "files": [csv_file("品目.csv", ITEM_CSV, table="item", columns={"code": "品番"})]}
         self.assert_error(self.call("POST", "/api/import", body=missing), 400, "必須の列が対応づいていない: 名称")
-        no_map = {"version_id": "v1", "files": [csv_file("品目.csv", ITEM_CSV, table="item")]}
+        no_map = {"group_id": group, "files": [csv_file("品目.csv", ITEM_CSV, table="item")]}
         self.assert_error(self.call("POST", "/api/import", body=no_map), 400, "対応づけが無い")
-        bad_header = {"version_id": "v1", "files": [csv_file("品目.csv", ITEM_CSV, table="item",
+        bad_header = {"group_id": group, "files": [csv_file("品目.csv", ITEM_CSV, table="item",
                                                              columns={"code": "品番", "name": "名前"})]}
         self.assert_error(self.call("POST", "/api/import", body=bad_header), 400, "列「名前」")
-        ok = {"version_id": "v1", "files": [csv_file("品目.csv", ITEM_CSV, table="item",
+        ok = {"group_id": group, "files": [csv_file("品目.csv", ITEM_CSV, table="item",
                                                       columns={"code": "品番", "name": "品名"})]}
         self.assertEqual(self.call("POST", "/api/import", body=ok).status, 201)
-        self.assert_error(self.call("POST", "/api/import", body=ok), 409, "版 v1 はもうある")
-        self.assert_error(self.call("POST", "/api/import", body={**ok, "version_id": "manual"}), 400, "手入力の版")
+        self.assert_error(self.call("POST", "/api/import", body={**ok, "group_id": "NOPE"}), 404, "NOPE")
+        self.assert_error(self.call("POST", "/api/import", body={"files": ok["files"]}), 400, "グループ")
         self.assert_error(self.call("POST", "/api/import/preview", body={"filename": "a.txt", "content": b64(b"x")}),
                           400, "読めないファイルの種類")
         self.assert_error(self.call("POST", "/api/import/preview", body={"filename": "a.xlsx", "content": b64(b"x")}),
@@ -137,108 +147,15 @@ class Import(EmptyDbCase):
         self.assert_error(self.call("POST", "/api/import/preview", body={"filename": "a.csv", "content": "@@"}),
                           400, "base64")
 
-    def test_import_by_dev_number(self) -> None:
-        def run(dev_number: str, dev_name: str = "", text: str = ITEM_CSV) -> dict:
-            return self.ok("POST", "/api/import", body={
-                "dev_number": dev_number, "dev_name": dev_name,
-                "files": [csv_file("品目.csv", text, table="item", columns={"code": "品番", "name": "品名"})]})
-
-        first = run("D-123", "新型ユニット")
-        self.assertEqual((first["dev_number"], first["dev_name"], first["revision"]), ("D-123", "新型ユニット", 1))
-        # 同じ開発番号は第2版。名称が空なら前の版の名称
-        second = run("D-123", text="品番,品名,区分,登録者,備考\nR-1,製品R,P,例,\n")
-        self.assertEqual((second["dev_name"], second["revision"]), ("新型ユニット", 2))
-        self.assertNotEqual(first["version_id"], second["version_id"])
-        renamed = run("D-123", "改名ユニット")
-        self.assertEqual((renamed["dev_name"], renamed["revision"]), ("改名ユニット", 3))
-        other = run("D-200")
-        self.assertEqual((other["dev_name"], other["revision"]), ("", 1))
-
-        versions = {v["version_id"]: v for v in self.ok("GET", "/api/versions")}
-        self.assertEqual(len(versions), 4)
-        # 前の版は残り、中身もそのまま
-        self.assertEqual((versions[first["version_id"]]["revision"], versions[first["version_id"]]["dev_name"]),
-                         (1, "新型ユニット"))
-        items = {i["code"] for i in self.ok("GET", "/api/items", f"version={first['version_id']}")}
-        self.assertEqual(items, {"Q-1", "Q-2"})
-        info = self.ok("GET", "/api/versions/info", f"version={second['version_id']}")
-        self.assertEqual((info["dev_number"], info["revision"]), ("D-123", 2))
-        self.assert_error(self.call("POST", "/api/import", body={"dev_number": " ", "files": []}), 400, "開発番号が空")
-
-    def test_cost_only_update(self) -> None:
-        cost_columns = {"mbom_code": "MBOM品番", "material": "材料費"}
-        self.ok("POST", "/api/import", body={"dev_number": "D-100", "dev_name": "架空ユニット", "files": [
-            csv_file("品目.csv", "品番,品名,区分\nP-1,製品P,P\nC-1,部品1,B\nC-2,部品2,B\n",
-                     table="item", columns={"code": "品番", "name": "品名", "kind": "区分"}),
-            csv_file("構成.csv", "親品番,子品番,員数\nP-1,C-1,2\nP-1,C-2,1\n",
-                     table="bom_line", columns={"parent": "親品番", "child": "子品番", "quantity": "員数"}),
-            csv_file("原価.csv", "MBOM品番,材料費\nC-1,10\nC-2,20\n", table="cost", columns=cost_columns),
-            csv_file("台数.csv", "製品品番,年間生産台数\nP-1,100\n",
-                     table="volume", columns={"product": "製品品番", "annual": "年間生産台数"}),
-        ]})
-        old_id = self.store.latest_revision("D-100").version_id
-        for change in ({"kind": "REPLACE", "part": "C-1", "replacement": "C-2"}, {"kind": "ADD", "part": "C-1"}):
-            self.ok("POST", "/api/group/changes",
-                    body={"name": "検討A", "product": "P-1", "version_id": old_id, **change})
-
-        result = self.ok("POST", "/api/import", body={"dev_number": "D-100", "cost_only": True, "files": [
-            csv_file("原価2.csv", "MBOM品番,材料費\nC-1,15\nX-9,5\n", table="cost", columns=cost_columns)]})
-        new_id = result["version_id"]
-        self.assertEqual((result["revision"], result["dev_name"], result["based_on"]), (2, "架空ユニット", old_id))
-        self.assertEqual((result["copied_scenarios"], result["copied_products"]), (1, 1))
-        self.assertTrue(any("X-9" in w["message"] for w in result["warnings"]))
-
-        old = self.store.load_version(old_id, with_manual=False)
-        new = self.store.load_version(new_id, with_manual=False)
-        # 構成・品目・年間台数は前の版のまま、原価はファイルにある品番だけ変わる
-        self.assertEqual((new.items, new.lines, new.volumes), (old.items, old.lines, old.volumes))
-        self.assertEqual(str(new.cost_row("C-1").value(CostHead.MATERIAL)), "15")
-        self.assertEqual(str(new.cost_row("C-2").value(CostHead.MATERIAL)), "20")
-        self.assertIsNone(new.cost_row("X-9"))
-
-        def changes(version_id: str) -> list[tuple]:
-            rows = self.ok("GET", "/api/group/changes", f"version={version_id}&name=検討A")["rows"]
-            return [(r["kind"], r["part"], r["replacement"], r["quantity"], r["cost_before"], r["cost_after"],
-                     r["version_id"]) for r in rows]
-
-        # 前の版の検討案は中身が変わらず、新しい版には同じ変更が新しい原価で並ぶ
-        self.assertEqual(changes(old_id), [("REPLACE", "C-1", "C-2", "1", "40", "50", old_id),
-                                           ("ADD", "C-1", None, "1", "50", "60", old_id)])
-        self.assertEqual(changes(new_id), [("REPLACE", "C-1", "C-2", "1", "50", "55", new_id),
-                                           ("ADD", "C-1", None, "1", "55", "70", new_id)])
-        scenarios = [(s.name, s.base, s.version_id) for s in self.store.list_scenarios()]
-        self.assertEqual(scenarios, [("検討A", "P-1", old_id), ("検討A", "P-1", new_id)])
-
-    def test_cost_only_keeps_heads_missing_from_the_file(self) -> None:
-        self.ok("POST", "/api/import", body={"dev_number": "D-200", "files": [
-            csv_file("原価.csv", "MBOM品番,材料費,直接費\nC-1,10,3\n", table="cost",
-                     columns={"mbom_code": "MBOM品番", "material": "材料費", "direct": "直接費"})]})
-        result = self.ok("POST", "/api/import", body={"dev_number": "D-200", "cost_only": True, "files": [
-            csv_file("原価2.csv", "MBOM品番,材料費\nC-1,15\n", table="cost",
-                     columns={"mbom_code": "MBOM品番", "material": "材料費"})]})
-        row = self.store.load_version(result["version_id"], with_manual=False).cost_row("C-1")
-        self.assertEqual((str(row.value(CostHead.MATERIAL)), str(row.value(CostHead.DIRECT))), ("15", "3"))
-
-    def test_cost_only_errors(self) -> None:
-        cost = csv_file("原価.csv", "MBOM品番,材料費\nC-1,10\n", table="cost",
-                        columns={"mbom_code": "MBOM品番", "material": "材料費"})
-        self.assert_error(self.call("POST", "/api/import", body={"dev_number": "D-900", "cost_only": True,
-                                                                 "files": [cost]}), 400, "既にある開発番号")
-        self.ok("POST", "/api/import", body={"dev_number": "D-900", "files": [cost]})
-        item = csv_file("品目.csv", ITEM_CSV, table="item", columns={"code": "品番", "name": "品名"})
-        self.assert_error(self.call("POST", "/api/import", body={"dev_number": "D-900", "cost_only": True,
-                                                                 "files": [cost, item]}), 400, "原価だけの更新")
-        self.assertEqual(len(self.ok("GET", "/api/versions")), 1)
-
     def test_conflict_is_a_warning(self) -> None:
         text = "親品番,風船番号,子品番,員数\nQ-1,1,Q-2,2\nQ-1,1,Q-2,3\n"
-        body = {"version_id": "c1", "files": [csv_file("構成.csv", text, table="bom_line",
+        body = {"group_id": self.new_group(), "files": [csv_file("構成.csv", text, table="bom_line",
                                                        columns={"parent": "親品番", "balloon": "風船番号",
                                                                 "child": "子品番", "quantity": "員数"})]}
         result = self.ok("POST", "/api/import", body=body)
         self.assertEqual(result["warning_count"], 1)
         self.assertIn("数量が食い違う", result["warnings"][0]["message"])
-        self.assertEqual(self.ok("GET", "/api/versions")[0]["warning_count"], 1)
+        self.assertEqual(self.ok("GET", "/api/groups")[0]["warning_count"], 1)
 
 
 class SampleProcedure(EmptyDbCase):
@@ -248,7 +165,8 @@ class SampleProcedure(EmptyDbCase):
         def sample(name: str, table: str, columns: dict) -> dict:
             return {"filename": name, "content": b64((SAMPLES / name).read_bytes()), "table": table, "columns": columns}
 
-        result = self.ok("POST", "/api/import", body={"version_id": "2026-10", "files": [
+        group = self.new_group("D-100", dev_name="見本")
+        result = self.ok("POST", "/api/import", body={"group_id": group, "files": [
             sample("部品マスタ.csv", "item", {"code": "品番", "name": "品名", "kind": "区分", "lifecycle": "状態",
                                               "has_children": "子部品有無"}),
             sample("構成マスタ.csv", "bom_line", {"parent": "親品番", "level": "レベル", "balloon": "風船番号",
@@ -259,12 +177,13 @@ class SampleProcedure(EmptyDbCase):
         self.assertEqual(result["counts"], {"items": 6, "lines": 5, "costs": 5, "volumes": 1})
         self.assertEqual(result["warning_count"], 5)  # 架空の品番は11桁でないので MBOM の変換をしない
 
-        self.ok("PUT", "/api/manual/items", body={"code": "X-610", "name": "試作品", "costs": {"MATERIAL": "200"}})
-        self.ok("PUT", "/api/manual/volumes", body={"product": "V-110", "annual": "10000"})
-        self.ok("PUT", "/api/molds", body={"part": "X-610", "amount": "2400000", "years": "2"})
-        self.ok("PUT", "/api/reuse", body={"part": "X-610", "product": "K-200", "quantity": "2", "replaced_part": "F-600"})
-        created = self.ok("POST", "/api/scenarios", body={"name": "V-110 検討", "base": "A-100", "product_code": "V-110",
-                                                          "version_id": "2026-10"})
+        g = {"group_id": group}
+        self.ok("PUT", "/api/manual/items", body={"code": "X-610", "name": "試作品", "costs": {"MATERIAL": "200"}, **g})
+        self.ok("PUT", "/api/manual/volumes", body={"product": "V-110", "annual": "10000", **g})
+        self.ok("PUT", "/api/molds", body={"part": "X-610", "amount": "2400000", "years": "2", **g})
+        self.ok("PUT", "/api/reuse", body={"part": "X-610", "product": "K-200", "quantity": "2", "replaced_part": "F-600",
+                                           **g})
+        created = self.ok("POST", "/api/scenarios", body={"base": "A-100", "product_code": "V-110", **g})
         sid = created["scenario"]["scenario_id"]
         for change in ({"kind": "ADD", "part": "F-600"}, {"kind": "REMOVE", "part": "C-300"},
                        {"kind": "REPLACE", "part": "F-600", "replacement": "X-610"}):
@@ -297,7 +216,7 @@ class PartView(DemoDbCase):
                           k200["difference_with_amortization"]), ("3000", "-100", "2900", "-100", "20"))
         self.assertEqual(v["mold"]["amount"], "2400000")
         p = v["premises"]
-        self.assertEqual((p["version_id"], p["head_label"], p["allocation_label"]), ("2026-10", "材料費", "使う数で分ける"))
+        self.assertEqual((p["group_id"], p["head_label"], p["allocation_label"]), ("2026-10", "材料費", "使う数で分ける"))
         self.assertEqual({x["product"]: x["kind"] for x in p["volumes"]}, {"V-110": "新製品の計画", "K-200": "量産の実績"})
         # 費目5つを並べる。材料費以外は未登録
         self.assertEqual(list(k200["heads"]), ["MATERIAL", "DIRECT", "INDIRECT", "ADJUSTMENT", "MANUFACTURING"])
@@ -320,89 +239,106 @@ class PartView(DemoDbCase):
         self.assertEqual(v["premises"]["head_label"], "直接費")
         self.assertIsNone({r["product"]: r for r in v["rows"]}["K-200"]["current"])
         self.assertEqual(self.call("GET", "/api/parts/view", "part=X-610&scenario=1&allocation=ALL").status, 400)
-        self.assertEqual(self.call("GET", "/api/parts/view", "part=NOPE&version=2026-10").status, 400)
+        self.assertEqual(self.call("GET", "/api/parts/view", "part=NOPE&group=2026-10").status, 400)
         self.assertEqual(self.call("GET", "/api/parts/view", "part=X-610").status, 400)
         # 試算を選ばなければ、V-110 の版の構成には X-610 が無いので流用先だけ
-        alone = self.ok("GET", "/api/parts/view", "part=X-610&version=2026-10")
+        alone = self.ok("GET", "/api/parts/view", "part=X-610&group=2026-10")
         self.assertEqual([r["product"] for r in alone["rows"]], ["K-200"])
 
 
 class Manual(DemoDbCase):
-    def test_trial_item_works_in_every_version(self) -> None:
+    G = {"group_id": "2026-10"}
+
+    def test_trial_item_works_in_its_group(self) -> None:
         data = self.ok("PUT", "/api/manual/items", body={"code": "Y-700", "name": "試作品Y",
-                                                         "costs": {"MATERIAL": "1,300", "DIRECT": ""}})
+                                                         "costs": {"MATERIAL": "1,300", "DIRECT": ""}, **self.G})
         y = next(i for i in data["items"] if i["code"] == "Y-700")
         self.assertEqual((y["costs"]["MATERIAL"], y["costs"]["DIRECT"]), ("1300", None))
-        for version in ("2026-10", "2026-12"):
-            self.assertIn("Y-700", {i["code"] for i in self.ok("GET", "/api/items", f"version={version}")})
+        self.assertIn("Y-700", {i["code"] for i in self.ok("GET", "/api/items", "group=2026-10")})
+        self.assertNotIn("Y-700", {i["code"] for i in self.ok("GET", "/api/items", "group=2026-12")})
         after = self.ok("POST", self.url("/changes"), body={"kind": "ADD", "part": "Y-700", "quantity": "1"})
         self.assertEqual(after["total"], "5950")
-        switched = self.ok("PUT", self.url(), body={"version_id": "2026-12"})
+        # 2026-12 のグループにも同じ登録と同じ変更を入れると、そのグループの原価で
+        twelve = {"group_id": "2026-12"}
+        self.ok("PUT", "/api/manual/items", body={"code": "Y-700", "name": "試作品Y", "costs": {"MATERIAL": "1,300"},
+                                                  **twelve})
+        sid = self.ok("POST", "/api/scenarios", body={"base": "A-100", "product_code": "V-110", **twelve})["scenario"]["scenario_id"]
+        for change in ({"kind": "ADD", "part": "F-600"}, {"kind": "REMOVE", "part": "C-300"}, {"kind": "ADD", "part": "Y-700"}):
+            switched = self.ok("POST", f"/api/scenarios/{sid}/changes", body={**change, "quantity": "1"})
         self.assertEqual(switched["total"], "5990")
         # 直す・消す（試作品 X-610 などほかの手入力は残る）
-        self.ok("PUT", "/api/manual/items", body={"code": "Y-700", "name": "試作品Y", "costs": {"MATERIAL": "1000"}})
-        self.assertEqual(self.ok("GET", self.url())["total"], "5690")
-        data = self.ok("DELETE", "/api/manual/items", "code=Y-700")
+        self.ok("PUT", "/api/manual/items", body={"code": "Y-700", "name": "試作品Y", "costs": {"MATERIAL": "1000"},
+                                                  **twelve})
+        self.assertEqual(self.ok("GET", f"/api/scenarios/{sid}")["total"], "5690")
+        self.assertEqual(self.ok("GET", self.url())["total"], "5950")
+        data = self.ok("DELETE", "/api/manual/items", "code=Y-700&group=2026-10")
         self.assertEqual({i["code"] for i in data["items"]}, {"X-610"})
         self.assertEqual([v["product"] for v in data["volumes"]], ["V-110"])
 
     def test_mold_volume_reuse_part_map_crud(self) -> None:
-        data = self.ok("PUT", "/api/molds", body={"part": "X-610", "amount": "3000000", "years": "3"})
+        g = self.G
+        data = self.ok("PUT", "/api/molds", body={"part": "X-610", "amount": "3000000", "years": "3", **g})
         self.assertEqual(data["molds"], [{"part": "X-610", "amount": "3000000", "years": "3", "annual_amount": "1000000"}])
-        data = self.ok("PUT", "/api/manual/volumes", body={"product": "V-110", "annual": "8000"})
+        data = self.ok("PUT", "/api/manual/volumes", body={"product": "V-110", "annual": "8000", **g})
         self.assertEqual(data["volumes"], [{"product": "V-110", "annual": "8000", "kind": "新製品の計画"}])
-        data = self.ok("PUT", "/api/reuse", body={"part": "X-610", "product": "K-200", "quantity": "3", "replaced_part": "F-600"})
+        data = self.ok("PUT", "/api/reuse", body={"part": "X-610", "product": "K-200", "quantity": "3", "replaced_part": "F-600",
+                                                  **g})
         self.assertEqual(data["reuse"], [{"part": "X-610", "product": "K-200", "quantity": "3", "replaced_part": "F-600"}])
         data = self.ok("PUT", "/api/reuse", body={"part": "X-610", "product": "K-300", "quantity": "1",
-                                                  "original": {"part": "X-610", "product": "K-200"}})
+                                                  "original": {"part": "X-610", "product": "K-200"}, **g})
         self.assertEqual([r["product"] for r in data["reuse"]], ["K-300"])
         data = self.ok("POST", "/api/partmaps", body={"old_product": "A-100", "new_product": "V-110",
-                                                      "old_part": "C-300", "new_part": "X-610"})
+                                                      "old_part": "C-300", "new_part": "X-610", **g})
         self.assertEqual(len(data), 1)
         data = self.ok("PUT", "/api/partmaps", body={"original": data[0], "old_product": "A-100", "new_product": "V-110",
-                                                     "old_part": "C-300", "new_part": "F-600", "new_balloon": "2"})
+                                                     "old_part": "C-300", "new_part": "F-600", "new_balloon": "2", **g})
         self.assertEqual((data[0]["new_part"], data[0]["new_balloon"]), ("F-600", "2"))
         with Store(self.path) as other:  # 保存されている
-            self.assertEqual(other.part_map("A-100", "V-110"), {"C-300": "F-600"})
-            self.assertEqual(other.mold_costs()["X-610"].years, 3)
+            self.assertEqual(other.part_map("2026-10", "A-100", "V-110"), {"C-300": "F-600"})
+            self.assertEqual(other.mold_costs("2026-10")["X-610"].years, 3)
         self.assertEqual(self.ok("DELETE", "/api/partmaps",
-                                 "old_product=A-100&new_product=V-110&old_part=C-300&new_part=F-600&new_balloon=2"), [])
-        self.ok("DELETE", "/api/reuse", "part=X-610&product=K-300")
-        self.ok("DELETE", "/api/molds", "part=X-610")
-        data = self.ok("DELETE", "/api/manual/volumes", "product=V-110")
+                                 "old_product=A-100&new_product=V-110&old_part=C-300&new_part=F-600&new_balloon=2"
+                                 "&group=2026-10"), [])
+        self.ok("DELETE", "/api/reuse", "part=X-610&product=K-300&group=2026-10")
+        self.ok("DELETE", "/api/molds", "part=X-610&group=2026-10")
+        data = self.ok("DELETE", "/api/manual/volumes", "product=V-110&group=2026-10")
         self.assertEqual((data["molds"], data["reuse"], data["volumes"], data["part_maps"]), ([], [], [], []))
 
     def test_edit_with_original_replaces_the_row(self) -> None:
         # 品番を変えて直すと元の行は消える（original が無ければ今どおり同じ品番を入れ替え）
+        g = self.G
         data = self.ok("PUT", "/api/manual/items", body={"code": "X-611", "name": "試作品改", "costs": {"MATERIAL": "250"},
-                                                         "original": {"code": "X-610"}})
+                                                         "original": {"code": "X-610"}, **g})
         items = {i["code"]: i for i in data["items"]}
         self.assertEqual(set(items), {"X-611"})
         self.assertEqual((items["X-611"]["name"], items["X-611"]["costs"]["MATERIAL"]), ("試作品改", "250"))
-        data = self.ok("PUT", "/api/manual/items", body={"code": "X-611", "name": "試作品改2", "original": {"code": ""}})
+        data = self.ok("PUT", "/api/manual/items", body={"code": "X-611", "name": "試作品改2", "original": {"code": ""}, **g})
         self.assertEqual([i["name"] for i in data["items"]], ["試作品改2"])
         data = self.ok("PUT", "/api/manual/volumes", body={"product": "V-111", "annual": "9000",
-                                                           "original": {"product": "V-110"}})
+                                                           "original": {"product": "V-110"}, **g})
         self.assertEqual(data["volumes"], [{"product": "V-111", "annual": "9000", "kind": "新製品の計画"}])
-        self.ok("PUT", "/api/molds", body={"part": "X-610", "amount": "3000000", "years": "3"})
+        self.ok("PUT", "/api/molds", body={"part": "X-610", "amount": "3000000", "years": "3", **g})
         data = self.ok("PUT", "/api/molds", body={"part": "X-611", "amount": "1000000", "years": "2",
-                                                  "original": {"part": "X-610"}})
+                                                  "original": {"part": "X-610"}, **g})
         self.assertEqual([m["part"] for m in data["molds"]], ["X-611"])
-        data = self.ok("PUT", "/api/molds", body={"part": "X-611", "amount": "2000000", "original": {"part": "X-611"}})
+        data = self.ok("PUT", "/api/molds", body={"part": "X-611", "amount": "2000000", "original": {"part": "X-611"}, **g})
         self.assertEqual([m["amount"] for m in data["molds"]], ["2000000"])
 
     def test_errors_in_japanese(self) -> None:
+        g = self.G
         bad = [
-            (("PUT", "/api/manual/items", "", {"code": "Y", "name": "y", "costs": {"MATERIAL": "abc"}}), "材料費を数として読めない"),
-            (("PUT", "/api/manual/items", "", {"code": "Y", "name": "y", "costs": {"XYZ": "1"}}), "費目が分からない"),
-            (("PUT", "/api/manual/items", "", {"code": "Y", "costs": {}}), "名称が空"),
-            (("PUT", "/api/manual/volumes", "", {"product": "V-110", "annual": "たくさん"}), "年間台数を数として読めない"),
-            (("PUT", "/api/molds", "", {"part": "X-610", "amount": [1]}), "型費を数として読めない"),
-            (("PUT", "/api/molds", "", {"part": "X-610", "amount": "1", "years": "0"}), "償却年数は正の数"),
-            (("PUT", "/api/reuse", "", {"part": "X-610", "product": "K-200", "quantity": "x"}), "使用数を数として読めない"),
-            (("DELETE", "/api/manual/items", "code=NOPE", None), "手入力の品目 NOPE は無い"),
-            (("DELETE", "/api/partmaps", "old_product=A&new_product=B&old_part=C&new_part=D", None), "対応表の行が無い"),
-            (("POST", "/api/partmaps", "", {"old_product": "A", "new_product": "B", "old_part": "C", "new_part": "C"}), "自動で対応"),
+            (("PUT", "/api/manual/items", "", {"code": "Y", "name": "y", "costs": {"MATERIAL": "abc"}, **g}), "材料費を数として読めない"),
+            (("PUT", "/api/manual/items", "", {"code": "Y", "name": "y", "costs": {"XYZ": "1"}, **g}), "費目が分からない"),
+            (("PUT", "/api/manual/items", "", {"code": "Y", "costs": {}, **g}), "名称が空"),
+            (("PUT", "/api/manual/volumes", "", {"product": "V-110", "annual": "たくさん", **g}), "年間台数を数として読めない"),
+            (("PUT", "/api/molds", "", {"part": "X-610", "amount": [1], **g}), "型費を数として読めない"),
+            (("PUT", "/api/molds", "", {"part": "X-610", "amount": "1", "years": "0", **g}), "償却年数は正の数"),
+            (("PUT", "/api/reuse", "", {"part": "X-610", "product": "K-200", "quantity": "x", **g}), "使用数を数として読めない"),
+            (("DELETE", "/api/manual/items", "code=NOPE&group=2026-10", None), "手入力の品目 NOPE は無い"),
+            (("DELETE", "/api/partmaps", "old_product=A&new_product=B&old_part=C&new_part=D&group=2026-10", None), "対応表の行が無い"),
+            (("POST", "/api/partmaps", "", {"old_product": "A", "new_product": "B", "old_part": "C", "new_part": "C", **g}),
+             "自動で対応"),
+            (("PUT", "/api/molds", "", {"part": "X-610", "amount": "1"}), "グループ"),
         ]
         for (method, path, query, body), words in bad:
             with self.subTest(words=words):
@@ -412,8 +348,8 @@ class Manual(DemoDbCase):
 
 
 class ModelChange(DemoDbCase):
-    def test_versions_and_scenario(self) -> None:
-        data = self.ok("GET", "/api/modelchange", "old=A-100&new=V-110&old_version=2026-10")
+    def test_groups_and_scenario(self) -> None:
+        data = self.ok("GET", "/api/modelchange", "old=A-100&new=V-110&old_group=2026-10")
         rows = {(r["kind"], r["old_part"], r["new_part"]): r for r in data["rows"]}
         c300 = rows[("SAME", "C-300", "C-300")]
         self.assertEqual((c300["kind_label"], c300["old_quantity"], c300["new_quantity"], c300["difference"]),
@@ -426,8 +362,7 @@ class ModelChange(DemoDbCase):
                          set(rows))
 
     def test_part_map_changes_result(self) -> None:
-        created = self.ok("POST", "/api/scenarios", body={"name": "Z 検討", "base": "A-100", "product_code": "Z-900",
-                                                          "version_id": "2026-10"})
+        created = self.ok("POST", "/api/scenarios", body={"base": "A-100", "product_code": "Z-900", "group_id": "2026-12"})
         sid = created["scenario"]["scenario_id"]
         self.ok("POST", f"/api/scenarios/{sid}/changes", body={"kind": "REMOVE", "part": "B-200", "quantity": "2"})
         self.ok("POST", f"/api/scenarios/{sid}/changes", body={"kind": "ADD", "part": "X-610", "quantity": "2"})
@@ -435,7 +370,7 @@ class ModelChange(DemoDbCase):
         self.assertEqual({(r["kind"], r["old_part"], r["new_part"]) for r in before["rows"]},
                          {("SAME", "C-300", "C-300"), ("REMOVED", "B-200", None), ("ADDED", None, "X-610")})
         self.ok("POST", "/api/partmaps", body={"old_product": "A-100", "new_product": "Z-900",
-                                               "old_part": "B-200", "new_part": "X-610"})
+                                               "old_part": "B-200", "new_part": "X-610", "group_id": "2026-12"})
         after = self.ok("GET", "/api/modelchange", f"scenario={sid}")
         mapped = [r for r in after["rows"] if r["kind"] == "MAPPED"]
         self.assertEqual([(r["old_part"], r["new_part"], r["difference"], r["kind_label"]) for r in mapped],
@@ -444,63 +379,34 @@ class ModelChange(DemoDbCase):
         self.assertEqual(len(after["part_maps"]), 1)
 
     def test_errors(self) -> None:
-        self.assertEqual(self.call("GET", "/api/modelchange", "old=A-100&new=A-100&old_version=2026-10").status, 400)
-        self.assertEqual(self.call("GET", "/api/modelchange", "old=A-100&new=NOPE&old_version=2026-10").status, 400)
-        self.assertEqual(self.call("GET", "/api/modelchange", "old=A-100&new=V-110&old_version=1999").status, 404)
+        self.assertEqual(self.call("GET", "/api/modelchange", "old=A-100&new=A-100&old_group=2026-10").status, 400)
+        self.assertEqual(self.call("GET", "/api/modelchange", "old=A-100&new=NOPE&old_group=2026-10").status, 400)
+        self.assertEqual(self.call("GET", "/api/modelchange", "old=A-100&new=V-110&old_group=1999").status, 404)
         self.assertEqual(self.call("GET", "/api/modelchange", "old=A-100&new=V-110").status, 400)
 
 
-class DeleteVersion(DemoDbCase):
-    def test_unused_version_deletes_and_used_one_does_not(self) -> None:
-        response = self.call("DELETE", "/api/versions", "version=2026-10")
-        self.assertEqual(response.status, 400)
-        self.assertIn("試算が使っているので消せない", response.json()["error"])
-        remaining = self.ok("DELETE", "/api/versions", "version=2026-12")
-        self.assertEqual([v["version_id"] for v in remaining], ["2026-10"])
-        self.assertEqual(self.call("DELETE", "/api/versions", "version=2026-12").status, 404)
-        self.assertIn("manual は消せない", self.call("DELETE", "/api/versions", "version=manual").json()["error"])
-
-    def test_cascade_deletes_locking_trials_with_the_version(self) -> None:
-        demo = self.store.load_scenario(self.scenario_id)
-        later = Scenario("後の検討", demo.base, demo.product_code, self.store.load_version("2026-12"), demo.head,
-                         self.store.load_scope_policy(),
-                         history=[replace(r, version_id="2026-10") for r in demo.history[:1]])
-        self.store.save_scenario(later)
-        info = self.ok("GET", "/api/versions/info", "version=2026-10")
-        self.assertEqual(info["locked_here"], [demo.name])
-        self.assertEqual([(t["name"], t["version_id"]) for t in info["locked_others"]], [("後の検討", "2026-12")])
-        self.assertIn("第2版", info["locked_others"][0]["version_label"])
-        self.assertEqual(self.call("DELETE", "/api/versions", "version=2026-10").status, 400)
-        self.assertEqual(len(self.store.list_scenarios()), 2)
-        remaining = self.ok("DELETE", "/api/versions", "version=2026-10&cascade=1")
-        self.assertEqual([v["version_id"] for v in remaining], ["2026-12"])
-        self.assertEqual(self.store.list_scenarios(), [])
-        self.assertEqual(self.call("DELETE", "/api/versions", "version=manual&cascade=1").status, 400)
-        self.assertEqual(self.call("DELETE", "/api/versions", "version=2026-10&cascade=1").status, 404)
-
-
-class VersionNote(EmptyDbCase):
+class GroupNote(EmptyDbCase):
     def test_note_changes_and_nothing_else(self) -> None:
-        body = {"version_id": "2026-11", "note": "前",
+        group = self.new_group(note="前")
+        body = {"group_id": group,
                 "files": [csv_file("構成.csv", BOM_CSV, table="bom_line",
                                    columns={"parent": "親品番", "child": "子品番", "quantity": "員数"})]}
         self.assertEqual(self.call("POST", "/api/import", body=body).status, 201)
-        before = self.ok("GET", "/api/versions/info", "version=2026-11")
-        items_before = self.store.load_version("2026-11", with_manual=False)
+        before = self.ok("GET", "/api/groups/info", f"group={group}")
+        items_before = self.store.load_group(group, with_manual=False)
 
-        listed = self.ok("PUT", "/api/versions/note", "version=2026-11", body={"note": "後"})
-        self.assertEqual([(v["version_id"], v["note"]) for v in listed], [("2026-11", "後")])
-        after = self.ok("GET", "/api/versions/info", "version=2026-11")
-        self.assertEqual(after, {**before, "note": "後"})
-        items_after = self.store.load_version("2026-11", with_manual=False)
+        listed = self.ok("PUT", "/api/groups/note", f"group={group}", body={"note": "後"})
+        self.assertEqual([(g["group_id"], g["note"], g["label"]) for g in listed], [(group, "後", "D-1（後）")])
+        after = self.ok("GET", "/api/groups/info", f"group={group}")
+        self.assertEqual(after, {**before, "note": "後", "label": "D-1（後）"})
+        items_after = self.store.load_group(group, with_manual=False)
         self.assertEqual(items_after.lines, items_before.lines)
         self.assertEqual(items_after.items, items_before.items)
-        self.assertEqual(self.ok("PUT", "/api/versions/note", "version=2026-11", body={})[0]["note"], "")
+        self.assertEqual(self.ok("PUT", "/api/groups/note", f"group={group}", body={})[0]["note"], "")
 
-    def test_missing_version_is_404(self) -> None:
-        self.assertEqual(self.call("PUT", "/api/versions/note", "version=nope", body={"note": "x"}).status, 404)
-        self.assertEqual(self.call("PUT", "/api/versions/note", "version=manual", body={"note": "x"}).status, 404)
-        self.assertEqual(self.call("PUT", "/api/versions/note", body={"note": "x"}).status, 400)
+    def test_missing_group_is_404(self) -> None:
+        self.assertEqual(self.call("PUT", "/api/groups/note", "group=nope", body={"note": "x"}).status, 404)
+        self.assertEqual(self.call("PUT", "/api/groups/note", body={"note": "x"}).status, 400)
 
 
 class ServerLimits(unittest.TestCase):
@@ -522,7 +428,7 @@ class ServerLimits(unittest.TestCase):
         try:
             port = server.server_address[1]
             conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-            conn.request("DELETE", "/api/versions?version=x")
+            conn.request("DELETE", "/api/groups?group=x")
             self.assertEqual(conn.getresponse().status, 200)
             conn.close()
             conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)

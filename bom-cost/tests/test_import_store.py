@@ -5,7 +5,6 @@ import io
 import sqlite3
 import tempfile
 import unittest
-from dataclasses import replace
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -33,8 +32,8 @@ from bomcost import (
     Source,
     Store,
     Version,
+    OldDatabaseError,
     VersionImport,
-    VersionInUseError,
     Volume,
     VolumeKind,
     allocate_mold_cost,
@@ -217,8 +216,8 @@ class ImportFiles(TempDir):
         self.assertEqual([(c.key, c.quantities) for c in imp.version.conflicts],
                          [(("U1", "1", "C1"), (d(2), d(3)))])
         with Store(":memory:") as store:
-            store.save_version(imp.version)
-            back = store.load_version("t")
+            store.save_group(imp.version)
+            back = store.load_group("t")
         self.assertEqual(back.conflicts, imp.version.conflicts)
 
     def test_bad_row_is_skipped_with_warning(self) -> None:
@@ -282,48 +281,45 @@ class ColumnMapping(TempDir):
 class ManualVersion(unittest.TestCase):
     def setUp(self) -> None:
         self.store = Store(":memory:")
-        self.store.save_version(ex.imported_2026_10())
-        self.store.save_version(ex.imported_2026_12())
-        self.store.save_manual(ex.manual())
+        for version in (ex.imported_2026_10(), ex.imported_2026_12()):
+            self.store.save_group(version)
+            self.store.save_manual(ex.manual(), version.version_id)
         self.store.save_scope_policy(ex.policy())
 
     def tearDown(self) -> None:
         self.store.close()
 
     def test_manual_overlays_any_version(self) -> None:
-        v10 = self.store.load_version("2026-10")
-        v12 = self.store.load_version("2026-12")
+        v10 = self.store.load_group("2026-10")
+        v12 = self.store.load_group("2026-12")
         for v in (v10, v12):
             self.assertIs(v.items["X-610"].source, Source.MANUAL)
             self.assertEqual(v.cost_value("X-610", M), d(200))
             self.assertIs(v.volume("V-110").kind, VolumeKind.PLAN)
         self.assertIs(v10.volume("K-200").kind, VolumeKind.ACTUAL)
-        self.assertNotIn("X-610", self.store.load_version("2026-10", with_manual=False).items)
+        self.assertNotIn("X-610", self.store.load_group("2026-10", with_manual=False).items)
 
-    def test_reimport_keeps_manual(self) -> None:
-        self.store.save_version(ex.imported_2026_10(), replace=True)
-        self.assertEqual(self.store.load_version("2026-10").cost_value("X-610", M), d(200))
-        with self.assertRaises(ValueError):
-            self.store.save_version(ex.imported_2026_10())
-
-    def test_bom_wins_and_overlap_reported(self) -> None:
-        manual = self.store.load_manual()
+    def test_master_wins_per_head_and_overlap_reported(self) -> None:
+        manual = self.store.load_manual("2026-10")
         manual.add_cost(CostRow("C-300", {M: 450}))
+        manual.add_cost(CostRow("B-200", {CostHead.DIRECT: 7}))
         manual.add_bom_lines([BomLine("A-100", "1", "B-200", 1)])
-        self.store.save_manual(manual)
-        v = self.store.load_version("2026-10")
-        self.assertEqual(v.cost_value("C-300", M), d(500))
-        self.assertIs(v.cost_row("C-300").source, Source.IMPORTED)
-        self.assertEqual([l.child for l in v.children("A-100")], ["B-200", "C-300"])
+        manual.add_item(Item("B-200", "部品B（登録）"))
+        manual.add_volume(Volume("K-200", 6000))
+        self.store.save_manual(manual, "2026-10")
+        v = self.store.load_group("2026-10")
+        # 値のある費目はマスタ登録、空の費目は BOM
+        self.assertEqual((v.cost_value("C-300", M), v.cost_value("B-200", M), v.cost_value("B-200", CostHead.DIRECT)),
+                         (d(450), d(1600), d(7)))
+        self.assertIs(v.cost_row("C-300").source, Source.MANUAL)
+        # 構成は親ごとにマスタ登録の行だけ
+        self.assertEqual([(l.child, l.quantity) for l in v.children("A-100")], [("B-200", d(1))])
+        self.assertEqual((v.items["B-200"].name, v.volume("K-200").annual), ("部品B（登録）", d(6000)))
         self.assertEqual(set(v.manual_overlaps),
-                         {ManualOverlap("cost", "C-300"), ManualOverlap("bom_line", "A-100")})
-
-    def test_manual_cannot_be_deleted_or_saved_as_import(self) -> None:
-        with self.assertRaises(ValueError):
-            self.store.delete_version(MANUAL_VERSION_ID)
-        with self.assertRaises(ValueError):
-            self.store.save_version(self.store.load_version("2026-12"), replace=True)
-        self.assertEqual([i.version_id for i in self.store.list_versions()], ["2026-12", "2026-10"])
+                         {ManualOverlap("cost", "C-300"), ManualOverlap("bom_line", "A-100"),
+                          ManualOverlap("item", "B-200"), ManualOverlap("volume", "K-200")})
+        # ほかのグループには重ならない
+        self.assertEqual(self.store.load_group("2026-12").cost_value("C-300", M), d(520))
 
 
 class SaveAndLoad(unittest.TestCase):
@@ -334,19 +330,20 @@ class SaveAndLoad(unittest.TestCase):
             imported = ex.imported_2026_10()
             imported.imported_at = datetime(2026, 10, 1, 9, 30)
             imported.source_name = "cost.csv"
-            store.save_version(imported)
-            store.save_version(ex.imported_2026_12())
-            store.save_manual(ex.manual())
+            store.save_group(imported)
+            store.save_group(ex.imported_2026_12())
+            store.save_manual(ex.manual(), "2026-10")
+            store.save_manual(ex.manual(), "2026-12")
             store.save_scope_policy(ex.policy())
-            store.save_mold_cost(ex.mold_x610())
-            store.add_reuse_target(ex.reuse_k200())
+            store.save_mold_cost(ex.mold_x610(), "2026-10")
+            store.add_reuse_target(ex.reuse_k200(), "2026-10")
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
     def test_example_values_after_reload(self) -> None:
         with Store(self.path) as store:
-            v10, v12 = store.load_version("2026-10"), store.load_version("2026-12")
+            v10, v12 = store.load_group("2026-10"), store.load_group("2026-12")
             policy = store.load_scope_policy()
             self.assertEqual(calculate_cost(v10, "A-100", M, policy).total, d(4900))
             self.assertEqual(calculate_cost(v10, "V-110", M, policy).total, d(4650))
@@ -355,12 +352,12 @@ class SaveAndLoad(unittest.TestCase):
             for change in (Change(ChangeKind.ADD, "F-600"), Change(ChangeKind.REMOVE, "C-300"),
                            Change(ChangeKind.REPLACE, "F-600", replacement="X-610")):
                 s.apply(change)
-            mold = store.mold_costs()["X-610"]
-            shares = allocate_mold_cost(v10, mold, Allocation.BY_USAGE, store.reuse_targets(), s.overrides())
+            mold = store.mold_costs("2026-10")["X-610"]
+            shares = allocate_mold_cost(v10, mold, Allocation.BY_USAGE, store.reuse_targets("2026-10"), s.overrides())
             self.assertEqual((shares.annual_count, shares.per_part), (d(20000), d(60)))
             self.assertEqual(s.calculate().total + shares.share_for("V-110").per_unit, d(4660))
-            info = next(i for i in store.list_versions() if i.version_id == "2026-10")
-            self.assertEqual((info.version_id, info.imported_at, info.source_name),
+            info = next(i for i in store.list_groups() if i.group_id == "2026-10")
+            self.assertEqual((info.group_id, info.imported_at, info.source_name),
                              ("2026-10", datetime(2026, 10, 1, 9, 30), "cost.csv"))
 
     def test_decimal_and_blank_round_trip(self) -> None:
@@ -369,8 +366,8 @@ class SaveAndLoad(unittest.TestCase):
         v.add_cost(CostRow("Q", {M: "1600.5", CostHead.DIRECT: "", CostHead.INDIRECT: 0}, mbom_code="Q0"))
         v.add_volume(Volume("P", "0.1"))
         with Store(self.path) as store:
-            store.save_version(v)
-            back = store.load_version("t", with_manual=False)
+            store.save_group(v)
+            back = store.load_group("t", with_manual=False)
         self.assertEqual([(l.key, l.quantity) for l in back.lines], [(l.key, l.quantity) for l in v.lines])
         self.assertEqual(str(back.lines[0].quantity), "0.1")
         self.assertEqual(back.lines[1].quantity, d(-2))
@@ -384,35 +381,37 @@ class SaveAndLoad(unittest.TestCase):
 
     def test_settings_round_trip(self) -> None:
         with Store(self.path) as store:
-            store.add_part_map("A-100", "V-110", "C-300", "X-610")
+            store.add_part_map("2026-10", "A-100", "V-110", "C-300", "X-610")
             store.set_label("kind", "P", "製品")
             policy = ScopePolicy({CostHead.DIRECT: Scope.OWN_ONLY})
             policy.set_item("A-100", M, Scope.OWN_ONLY)
             store.save_scope_policy(policy)
         with Store(self.path) as store:
-            self.assertEqual(store.part_map("A-100", "V-110"), {"C-300": "X-610"})
+            self.assertEqual(store.part_map("2026-10", "A-100", "V-110"), {"C-300": "X-610"})
+            self.assertEqual(store.part_map("2026-12", "A-100", "V-110"), {})
             self.assertEqual(store.labels("kind"), {"P": "製品"})
             loaded = store.load_scope_policy()
             self.assertIs(loaded.scope_for("A-100", M), Scope.OWN_ONLY)
             self.assertIs(loaded.scope_for("B-200", M), Scope.INCLUDES_CHILDREN)
             self.assertIs(loaded.scope_for("B-200", CostHead.DIRECT), Scope.OWN_ONLY)
-            self.assertEqual(store.reuse_targets("X-610"), [ex.reuse_k200()])
-            self.assertEqual(store.mold_costs(), {"X-610": ex.mold_x610()})
+            self.assertEqual(store.reuse_targets("2026-10", "X-610"), [ex.reuse_k200()])
+            self.assertEqual(store.mold_costs("2026-10"), {"X-610": ex.mold_x610()})
+            self.assertEqual((store.reuse_targets("2026-12"), store.mold_costs("2026-12")), ([], {}))
 
 
 class VersionsAndScenarios(unittest.TestCase):
     def setUp(self) -> None:
         self.store = Store(":memory:")
-        self.store.save_version(ex.imported_2026_10())
-        self.store.save_version(ex.imported_2026_12())
-        self.store.save_manual(ex.manual())
+        for version in (ex.imported_2026_10(), ex.imported_2026_12()):
+            self.store.save_group(version)
+            self.store.save_manual(ex.manual(), version.version_id)
         self.store.save_scope_policy(ex.policy())
 
     def tearDown(self) -> None:
         self.store.close()
 
     def scenario(self) -> Scenario:
-        s = Scenario("V-110 検討", "A-100", "V-110", self.store.load_version("2026-10"), M,
+        s = Scenario("V-110 検討", "A-100", "V-110", self.store.load_group("2026-10"), M,
                      self.store.load_scope_policy(), note="架空")
         times = [datetime(2026, 10, 29, 10, i) for i in range(3)]
         s.apply(Change(ChangeKind.ADD, "F-600"), times[0])
@@ -425,108 +424,45 @@ class VersionsAndScenarios(unittest.TestCase):
         scenario_id = self.store.save_scenario(s)
         back = self.store.load_scenario(scenario_id)
         self.assertEqual(back.history, s.history)
-        self.assertEqual((back.name, back.note, back.base, back.version.version_id),
-                         ("V-110 検討", "架空", "A-100", "2026-10"))
+        self.assertEqual((back.note, back.base, back.version.version_id), ("架空", "A-100", "2026-10"))
         self.assertEqual((back.product_code, back.head), (s.product_code, s.head))
         self.assertEqual(back.calculate().total, s.calculate().total)
         self.assertEqual(self.store.load_scenario(scenario_id).calculate().total, s.calculate().total)
-        self.assertEqual(back.compare_versions(self.store.load_version("2026-10"),
-                                               self.store.load_version("2026-12")).total_b,
-                         s.compare_versions(self.store.load_version("2026-10"),
-                                            self.store.load_version("2026-12")).total_b)
         # 取り消して保存し直すと履歴も縮む
         back.undo()
         self.store.save_scenario(back)
         self.assertEqual(len(self.store.load_scenario(scenario_id).history), 2)
 
-    def test_versions_are_not_deleted_while_used(self) -> None:
+    def test_one_scenario_per_group_and_product(self) -> None:
         self.store.save_scenario(self.scenario())
-        with self.assertRaises(VersionInUseError) as caught:
-            self.store.delete_version("2026-10")
-        self.assertIn("V-110 検討", str(caught.exception))
-        self.assertEqual(caught.exception.scenarios, ("V-110 検討",))
-        self.store.delete_version("2026-12")
-        self.assertEqual([i.version_id for i in self.store.list_versions()], ["2026-10"])
+        with self.assertRaises(ValueError) as caught:
+            self.store.save_scenario(self.scenario())
+        self.assertIn("A-100", str(caught.exception))
+        other = Scenario("", "A-100", "V-110", self.store.load_group("2026-12"), M, self.store.load_scope_policy())
+        self.store.save_scenario(other)  # 別のグループなら同じ製品も持てる
+        self.assertEqual([(s.base, s.group_id) for s in self.store.list_scenarios()],
+                         [("A-100", "2026-10"), ("A-100", "2026-12")])
+        self.assertEqual([s.group_id for s in self.store.list_scenarios("2026-12")], ["2026-12"])
+
+    def test_delete_group_removes_its_contents_only(self) -> None:
+        self.store.save_scenario(self.scenario())
+        self.store.save_mold_cost(ex.mold_x610(), "2026-10")
+        self.store.delete_group("2026-10")
+        self.assertEqual([g.group_id for g in self.store.list_groups()], ["2026-12"])
+        for table in ("item", "bom_line", "cost", "volume", "mold_cost", "scenario", "change"):
+            self.assertEqual(self.store._conn.execute(f"SELECT COUNT(*) FROM {table} WHERE "
+                                                      + ("scenario_id > 0" if table == "change" else
+                                                         "group_id = '2026-10'")).fetchone()[0], 0, table)
+        self.assertIn("X-610", self.store.load_group("2026-12").items)
         with self.assertRaises(KeyError):
-            self.store.load_version("2026-12")
-
-    def other_version_trial(self, name: str = "後の検討") -> int:
-        """版 2026-12 の上の試算で、変更の記録の1件が版 2026-10 を参照する物。"""
-        s = Scenario(name, "A-100", "V-110", self.store.load_version("2026-12"), M, self.store.load_scope_policy())
-        s.apply(Change(ChangeKind.ADD, "F-600"), datetime(2026, 11, 1, 9, 0))
-        moved = Scenario(name, "A-100", "V-110", s.version, M, self.store.load_scope_policy(),
-                         history=[replace(r, version_id="2026-10") for r in s.history])
-        return self.store.save_scenario(moved)
-
-    def test_version_locks_split_here_and_other_versions(self) -> None:
-        self.store.save_scenario(self.scenario())
-        self.store.save_scenario(self.scenario())  # 同じ名前の2本目は1件にまとめる
-        self.other_version_trial()
-        self.assertEqual(self.store.version_locks("2026-10"), (["V-110 検討"], [("後の検討", "2026-12")]))
-        self.assertEqual(self.store.version_locks("2026-12"), (["後の検討"], []))
-
-    def test_cascade_deletes_trials_on_and_referencing_the_version(self) -> None:
-        self.store.save_scenario(self.scenario())
-        self.other_version_trial()
-        untouched = Scenario("残る", "A-100", "V-110", self.store.load_version("2026-12"), M,
-                             self.store.load_scope_policy())
-        kept = self.store.save_scenario(untouched)
-        with self.assertRaises(VersionInUseError):
-            self.store.delete_version("2026-10")
-        self.store.delete_version("2026-10", cascade=True)
-        self.assertEqual([i.version_id for i in self.store.list_versions()], ["2026-12"])
-        self.assertEqual([s.scenario_id for s in self.store.list_scenarios()], [kept])
-        self.assertEqual(self.store._conn.execute("SELECT COUNT(*) FROM change").fetchone()[0], 0)
-        with self.assertRaises(ValueError):
-            self.store.delete_version("manual", cascade=True)
+            self.store.load_group("2026-10")
         with self.assertRaises(KeyError):
-            self.store.delete_version("1999", cascade=True)
-
-    def test_cascade_failure_midway_deletes_nothing(self) -> None:
-        self.store.save_scenario(self.scenario())
-        self.other_version_trial()
-        real = self.store._conn
-
-        class FailOnVersionDelete:
-            def __getattr__(self, name: str) -> object:
-                return getattr(real, name)
-
-            def __enter__(self) -> object:
-                return real.__enter__()
-
-            def __exit__(self, *exc: object) -> object:
-                return real.__exit__(*exc)
-
-            def execute(self, sql: str, *args: object) -> object:
-                if sql.startswith("DELETE FROM version"):
-                    raise sqlite3.OperationalError("止める")
-                return real.execute(sql, *args)
-
-        self.store._conn = FailOnVersionDelete()
-        try:
-            with self.assertRaises(sqlite3.OperationalError):
-                self.store.delete_version("2026-10", cascade=True)
-        finally:
-            self.store._conn = real
-        self.assertEqual(len(self.store.list_scenarios()), 2)
-        self.assertEqual(len(self.store.list_versions()), 2)
-        self.assertEqual(real.execute("SELECT COUNT(*) FROM change").fetchone()[0], 4)
-
-    def test_delete_trial_removes_every_product_of_the_name(self) -> None:
-        self.store.save_scenario(self.scenario())
-        other = Scenario("V-110 検討", "B-200", "V-111", self.store.load_version("2026-10"), M,
-                         self.store.load_scope_policy())
-        self.store.save_scenario(other)
-        kept = self.other_version_trial("V-110 検討")  # 同じ名前でも別の版の物は残す
-        self.assertEqual(self.store.delete_trial("2026-10", "V-110 検討"), 2)
-        self.assertEqual([s.scenario_id for s in self.store.list_scenarios()], [kept])
-        self.assertEqual(self.store._conn.execute("SELECT COUNT(*) FROM change").fetchone()[0], 1)
-        self.assertEqual(self.store.delete_trial("2026-10", "V-110 検討"), 0)
+            self.store.delete_group("2026-10")
 
     def test_versions_are_kept_without_limit(self) -> None:
         for n in range(15):
-            self.store.save_version(Version(f"v{n:02d}", datetime(2027, 1, 1 + n)))
-        self.assertEqual(len(self.store.list_versions()), 17)
+            self.store.save_group(Version(f"v{n:02d}", datetime(2027, 1, 1 + n)))
+        self.assertEqual(len(self.store.list_groups()), 17)
 
 
 class MissingColumns(unittest.TestCase):
@@ -548,11 +484,11 @@ class MissingColumns(unittest.TestCase):
                          [(None, None)] * 3 + [(Decimal(1200), Allocation.BY_USAGE)])
 
     def test_part_map_balloons(self) -> None:
-        self.store.add_part_map("A-100", "A-200", "C-300", "C-310", "12", "15")
-        self.store.add_part_map("A-100", "A-200", "D-400", "D-410")
-        self.assertEqual(self.store.part_map("A-100", "A-200"), {"C-300": "C-310", "D-400": "D-410"})
+        self.store.add_part_map("2026-10", "A-100", "A-200", "C-300", "C-310", "12", "15")
+        self.store.add_part_map("2026-10", "A-100", "A-200", "D-400", "D-410")
+        self.assertEqual(self.store.part_map("2026-10", "A-100", "A-200"), {"C-300": "C-310", "D-400": "D-410"})
         self.assertEqual(
-            self.store.part_map_rows("A-100", "A-200"),
+            self.store.part_map_rows("2026-10", "A-100", "A-200"),
             [PartMapRow("C-300", "C-310", "12", "15"), PartMapRow("D-400", "D-410", None, None)],
         )
 
@@ -560,48 +496,29 @@ class MissingColumns(unittest.TestCase):
         imp = VersionImport(Version("2027-01", datetime(2027, 1, 5)))
         imp.warnings.append(ImportWarning("bom.csv", 3, "数量が空"))
         imp.warnings.append(ImportWarning("cost.csv", None, "見出しが多い"))
-        self.store.save_version(imp.version, warnings=imp.warnings)
-        self.assertEqual(self.store.load_version("2027-01").warnings, tuple(imp.warnings))
-        counts = {i.version_id: i.warning_count for i in self.store.list_versions()}
+        self.store.save_group(imp.version, warnings=imp.warnings)
+        self.assertEqual(self.store.load_group("2027-01").warnings, tuple(imp.warnings))
+        counts = {i.group_id: i.warning_count for i in self.store.list_groups()}
         self.assertEqual((counts["2027-01"], counts["2026-10"]), (2, 0))
-        self.assertEqual(self.store.load_version("2026-10").warnings, ())
-        # 入れ替えると検証の結果も入れ替わる
-        self.store.save_version(Version("2027-01", datetime(2027, 1, 6)), replace=True)
-        self.assertEqual(self.store.load_version("2027-01").warnings, ())
+        self.assertEqual(self.store.load_group("2026-10").warnings, ())
 
 
-class DevNumberColumns(TempDir):
-    """版の表に後から足した開発番号・名称・版の番号。"""
-
-    def test_old_db_gets_columns(self) -> None:
+class OldDb(TempDir):
+    def test_old_shape_db_stops_with_a_message(self) -> None:
         path = self.dir / "old.sqlite"
         conn = sqlite3.connect(path)
-        conn.execute("CREATE TABLE version (version_id TEXT PRIMARY KEY, imported_at TEXT, "
-                     "source_name TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '', warnings TEXT)")
-        conn.execute("INSERT INTO version (version_id, imported_at, note) VALUES ('2025-04', '2025-04-01T00:00:00', 'm')")
+        conn.execute("CREATE TABLE version (version_id TEXT PRIMARY KEY)")
         conn.commit()
         conn.close()
-        with Store(path) as store:
-            [info] = store.list_versions()
-            self.assertEqual((info.version_id, info.dev_number, info.dev_name, info.revision, info.note),
-                             ("2025-04", "2025-04", "", 1, "m"))
-            v = store.load_version("2025-04")
-            self.assertEqual((v.dev_number, v.dev_name, v.revision), ("2025-04", "", 1))
-            self.assertEqual(store.latest_revision("2025-04").version_id, "2025-04")
-        with Store(path) as store:  # 2回目に開いても変わらない
-            self.assertEqual(store.list_versions()[0].dev_number, "2025-04")
-
-    def test_round_trip_and_new_id(self) -> None:
-        with Store(":memory:") as store:
-            store.save_version(Version("D-1-r1", datetime(2027, 1, 1), dev_number="D-1", dev_name="甲", revision=1))
-            store.save_version(Version("D-1-r2", datetime(2027, 1, 2), dev_number="D-1", dev_name="甲", revision=2))
-            store.save_version(Version("x", datetime(2027, 1, 3)))  # 開発番号を省くと版 ID
-            self.assertEqual(store.latest_revision("D-1").version_id, "D-1-r2")
-            self.assertIsNone(store.latest_revision("D-9"))
-            self.assertEqual(store.load_version("x").dev_number, "x")
-            self.assertEqual(store.load_version("D-1-r2").revision, 2)
-            self.assertEqual(store.new_version_id("D-1", 3), "D-1-r3")
-            self.assertEqual(store.new_version_id("D-1", 2), "D-1-r2-2")
+        with self.assertRaises(OldDatabaseError) as caught:
+            Store(path)
+        self.assertIn("作り直", str(caught.exception))
+        # 新しい DB は2回目に開いても同じ
+        fresh = self.dir / "new.sqlite"
+        with Store(fresh) as store:
+            store.save_group(Version("g", dev_number="D-1"))
+        with Store(fresh) as store:
+            self.assertEqual([g.dev_number for g in store.list_groups()], ["D-1"])
 
 
 if __name__ == "__main__":

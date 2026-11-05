@@ -45,11 +45,11 @@ class HeadsBook(EmptyDbCase):
         v = breakdown_version()
         v.add_costs([CostRow("P-1", {CostHead.AMORTIZATION: 20, CostHead.DIRECT: 15}),
                      CostRow("P-2", {CostHead.AMORTIZATION: 8})])
-        self.store.save_version(v)
+        self.store.save_group(v)
         self.folder = tempfile.TemporaryDirectory()
         self.api.master_dir = Path(self.folder.name)
         self.api.open_file = None
-        self.body = {"version_id": "2026-11", "name": NAME, "head": "MANUFACTURING"}
+        self.body = {"group_id": "2026-11", "head": "MANUFACTURING"}
         for product in ("P-1", "P-2"):
             self.ok("POST", "/api/group/heads/bulk", body={**self.body, "items": [
                 {"product": product, "values": {"PROCESSING": "1"}}]})
@@ -70,7 +70,7 @@ class HeadsBook(EmptyDbCase):
         wb.save(path)
 
     def records(self) -> list[dict]:
-        return self.ok("GET", "/api/group/changes", f"version=2026-11&name={quote(NAME)}")["rows"]
+        return self.ok("GET", "/api/group/changes", f"group=2026-11&name={quote(NAME)}")["rows"]
 
     def test_book_has_after_values_and_reimports_unchanged(self) -> None:
         path = self.write()
@@ -101,7 +101,7 @@ class HeadsBook(EmptyDbCase):
         # 変わった費目だけを製品ごとに1回の費目変更で（/api/group/heads/bulk と同じ記録）
         self.assertEqual([(r["product"], r["kind"], [(h["id"], h["value"]) for h in r["heads"]]) for r in added],
                          [("P-1", "SET_HEAD", [("DIRECT", "25")]), ("P-2", "SET_HEAD", [("DIRECT", "7")])])
-        after = self.ok("GET", "/api/group/heads/all", f"version=2026-11&name={quote(NAME)}")["rows"]
+        after = self.ok("GET", "/api/group/heads/all", f"group=2026-11&name={quote(NAME)}")["rows"]
         self.assertEqual([r["after"]["DIRECT"] for r in after], ["25", "7"])
         # 入れた後はブックと同じ
         self.assertEqual(self.ok("POST", "/api/group/heads/book/check", body=self.body)["changed"], 0)
@@ -118,7 +118,7 @@ class HeadsBook(EmptyDbCase):
         check = self.ok("POST", "/api/group/heads/book/check", body=self.body)
         self.assertEqual([(e["row"], e["message"]) for e in check["errors"]], [
             (2, "社内加工費を数として読めない: 'たくさん'"), (3, "社内加工費は 0 以上にする"),
-            (4, "製品 P-1 は 2 行目にもある"), (5, f"製品 N-6 は検討案 {NAME} の試算に無い")])
+            (4, "製品 P-1 は 2 行目にもある"), (5, "製品 N-6 は②の変更に無い")])
         before = len(self.records())
         r = self.call("POST", "/api/group/heads/book/apply", body=self.body)
         self.assertEqual(r.status, 400)
@@ -141,15 +141,17 @@ class HeadsBook(EmptyDbCase):
         upload = {**self.body, "filename": "打ち替え.xlsx", "content": content}
         check = self.ok("POST", "/api/group/heads/book/check", body=upload)
         self.assertEqual((check["source"], check["changed"]), ("打ち替え.xlsx", 1))
-        other = {**upload, "name": "別の検討"}
-        self.ok("POST", "/api/group/heads/bulk", body={**other, "items": [{"product": "P-1", "values": {"DIRECT": "1"}}]})
+        copy = self.ok("POST", "/api/groups", body={"from": "2026-11", "note": "写し",
+                                                     "copy": {"tables": ["item", "bom_line", "cost", "volume"],
+                                                              "master": True, "changes": True}})
+        other = {**upload, "group_id": copy["group_id"]}
         errors = self.ok("POST", "/api/group/heads/book/check", body=other)["errors"]
         self.assertEqual([(e["sheet"], e["row"]) for e in errors], [("前提", None)])
-        self.assertIn(f"検討案 {NAME} のブック", errors[0]["message"])
+        self.assertIn("グループ 2026-11 ", errors[0]["message"])
         self.assert_error(self.call("POST", "/api/group/heads/book/check", body={**upload, "content": "aGVsbG8="}), 400,
                           "Excel のブックとして読めない")
-        self.assert_error(self.call("POST", "/api/group/heads/book", body={**self.body, "name": "無い検討"}), 400,
-                          "試算のある製品が無い")
+        self.assert_error(self.call("POST", "/api/group/heads/book", body={**self.body, "group_id": self.new_group()}), 400,
+                          "②に入れた製品が無い")
 
     def test_trial_screen_wiring(self) -> None:
         trial = static_response("/trial.js").body.decode("utf-8")
@@ -172,9 +174,9 @@ class AnalysisBook(EmptyDbCase):
         v.add_bom_lines([BomLine("S-2", "1", "N-6", 2), BomLine("P-3", "1", "B-1", 1)])
         v.add_costs([CostRow("P-1", {a: 20, d: 15}), CostRow("P-2", {a: 8}), CostRow("S-2", {m: 50}),
                      CostRow("P-3", {a: 1})])
-        self.store.save_version(v)
-        self.ok("PUT", "/api/manual/volumes", body={"product": "P-1", "annual": "100"})
-        base = {"version_id": "2026-11", "name": NAME, "product": "P-1", "head": "MANUFACTURING"}
+        self.store.save_group(v)
+        self.ok("PUT", "/api/manual/volumes", body={"group_id": "2026-11", "product": "P-1", "annual": "100"})
+        base = {"group_id": "2026-11", "product": "P-1", "head": "MANUFACTURING"}
         self.ok("POST", "/api/group/changes", body={**base, "kind": "REPLACE", "part": "N-8", "parent": "P-1",
                                                     "balloon": "3", "replacement": "N-6B", "quantity": "2"})
         self.ok("POST", "/api/group/changes", body={**base, "kind": "REPLACE", "part": "N-6", "parent": "S-1",
@@ -185,7 +187,7 @@ class AnalysisBook(EmptyDbCase):
 
     def book(self, query: str = "") -> dict[str, list[dict]]:
         r = self.call("GET", "/api/group/compare/analysis/xlsx",
-                      f"version=2026-11&names={quote(json.dumps([NAME]))}" + query)
+                      f"group=2026-11&names={quote(json.dumps([NAME]))}" + query)
         self.assertEqual(r.status, 200, r.body[:300])
         self.disposition = r.headers["Content-Disposition"]
         wb = load_openpyxl().load_workbook(io.BytesIO(r.body))
@@ -197,7 +199,7 @@ class AnalysisBook(EmptyDbCase):
         return sheets
 
     def analysis(self, products: list[str], query: str = "") -> dict:
-        return self.ok("GET", "/api/group/compare/analysis", f"version=2026-11&cost=manufacturing"
+        return self.ok("GET", "/api/group/compare/analysis", f"group=2026-11&cost=manufacturing"
                        f"&names={quote(json.dumps([NAME]))}&products={quote(json.dumps(products))}" + query)
 
     @staticmethod
@@ -226,12 +228,12 @@ class AnalysisBook(EmptyDbCase):
         sheets = self.book()
         self.assertEqual(list(sheets), list(SHEETS))
         self.assertEqual(self.tables, {s: [t] for s, (t, _) in SHEETS.items()})
-        self.assertIn("filename*=UTF-8''" + quote(f"原価分析_2026-11第1版_{NAME}.xlsx"), self.disposition)
+        self.assertIn("filename*=UTF-8''" + quote(f"原価分析_2026-11_{NAME}.xlsx"), self.disposition)
         # 試算は P-1・P-2 だけ（P-3 は試算なしなので範囲の外）
         self.assertEqual([p["品番"] for p in sheets["製品"]], ["P-1", "P-2"])
         self.assertEqual(sheets["製品"][0], {"品番": "P-1", "名称": "製品1", "開発番号": "2026-11", "年間台数": 100})
         self.assertEqual(len(sheets["製品原価"]), 2 * 2 * 8)
-        self.assertEqual(sheets["検討案"], [{"案名": NAME, "版": "2026-11（第1版）", "変更の件数": 5}])
+        self.assertEqual(sheets["検討案"], [{"案名": NAME, "グループ": "2026-11", "変更の件数": 5}])
         self.assertEqual([(r["製品"], r["種類"], r["場所"], r["元"], r["先"], r["値"]) for r in sheets["変更"]], [
             ("P-1", "置換", "P-1 #3", "N-8", "N-6B", 2), ("P-1", "置換", "S-1 #1", "N-6", "N-8", 4),
             ("P-1", "追加", None, "S-2", None, 3), ("P-1", "費目変更", None, "社内加工費", None, 40),
@@ -261,9 +263,9 @@ class AnalysisBook(EmptyDbCase):
         self.assert_sums_match_analysis(self.book())
 
     def test_ignore_amortization_and_unregistered(self) -> None:
-        self.store.save_version(breakdown_version(), replace=True)  # 償却費・直接費とも未登録
+        self.swap_bom(breakdown_version())  # 償却費・直接費とも未登録
         self.assert_error(self.call("GET", "/api/group/compare/analysis/xlsx",
-                                    f"version=2026-11&names={quote(json.dumps([NAME]))}"), 400, "償却費")
+                                    f"group=2026-11&names={quote(json.dumps([NAME]))}"), 400, "償却費")
         sheets = self.book("&ignore_amortization=1")
         self.assertEqual({r["項目"]: r["値"] for r in sheets["前提"]}["償却費"], "無視した（0 として計算）")
         self.assertTrue(all(r["値"] is None for r in sheets["製品原価"] if r["費目"] == "償却費"))

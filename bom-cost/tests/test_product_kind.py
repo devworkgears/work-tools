@@ -46,9 +46,13 @@ class ProductKindOrder(unittest.TestCase):
         self.assertIsNone(self.kind(_version(Item("T1", "上"), Item("C1", "部品"))))
 
 
-class ManualKindWithoutVersions(EmptyDbCase):
+class ManualKindWithoutBom(EmptyDbCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.group = self.new_group()
+
     def put(self, code: str, **extra: str) -> dict:
-        return self.ok("PUT", "/api/manual/items", body={"code": code, "name": code, **extra})
+        return self.ok("PUT", "/api/manual/items", body={"code": code, "name": code, "group_id": self.group, **extra})
 
     def test_product_2_and_part_1(self) -> None:
         self.put("N-1", role="product")
@@ -61,12 +65,14 @@ class ManualKindWithoutVersions(EmptyDbCase):
         data = self.put("Q-2", role="part", kind="M")
         self.assertEqual(data["items"][0]["kind"], "M")
         self.assert_error(self.call("PUT", "/api/manual/items", body={"code": "Q-3", "name": "q", "role": "part",
-                                                                      "kind": "2"}), 400, "製品の記号")
+                                                                      "kind": "2", "group_id": self.group}),
+                          400, "製品の記号")
 
 
 class ManualKindOnOtherSymbols(SampleDbCase):
     def test_part_stays_empty_when_products_use_other_symbol(self) -> None:
-        data = self.ok("PUT", "/api/manual/items", body={"code": "Q-9", "name": "q", "role": "part"})
+        data = self.ok("PUT", "/api/manual/items", body={"code": "Q-9", "name": "q", "role": "part",
+                                                         "group_id": "2026-10"})
         self.assertEqual(data["product_kind"], "P")
         self.assertEqual({i["code"]: i["kind"] for i in data["items"]}["Q-9"], "")
 
@@ -86,12 +92,13 @@ class BookPartKind(unittest.TestCase):
 
     def test_empty_part_kind_becomes_1_and_2_is_refused(self) -> None:
         with Store(":memory:") as store:
-            plan = plan_book(store, "2", self.book(""))
+            store.create_group("D-1", group_id="g")
+            plan = plan_book(store, "2", self.book(""), "g")
             self.assertEqual(plan.errors, [])
             self.assertEqual({c: i.kind for c, i in plan.items.items()}, {"N-1": "2", "Q-1": "1"})
-            self.assertEqual({c: i.kind for c, i in plan_book(store, "P", self.book("")).items.items()},
+            self.assertEqual({c: i.kind for c, i in plan_book(store, "P", self.book(""), "g").items.items()},
                              {"N-1": "P", "Q-1": ""})
-            self.assertEqual([e.message for e in plan_book(store, "P", self.book("2")).errors],
+            self.assertEqual([e.message for e in plan_book(store, "P", self.book("2"), "g").errors],
                              ["部品の区分に製品の記号 2 は使えない"])
 
 
@@ -101,8 +108,8 @@ class DemoKinds(unittest.TestCase):
             path = Path(tmp) / "demo.sqlite"
             build_demo(path)
             with Store(path) as store:
-                v = store.load_version("2026-10")
-                products = Api(store).handle("GET", "/api/group/products", "version=2026-10", b"").json()
+                v = store.load_group("2026-10")
+                products = Api(store).handle("GET", "/api/group/products", "group=2026-10", b"").json()
         self.assertEqual({c: i.kind for c, i in v.items.items()},
                          {"A-100": "2", "V-110": "2", "K-200": "2", "B-200": "1", "C-300": "1", "F-600": "1", "X-610": "1"})
         self.assertEqual([p["code"] for p in products["products"]], ["A-100", "K-200", "V-110"])

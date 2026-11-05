@@ -1,7 +1,7 @@
 """②の費目（製品×社内加工費・償却費・直接費）を Excel のブックで書き出し、打ち替えたブックを取り込む。
 
 流れはマスタ登録のブックと同じ（書き出す → 打ち込む → 確認 → 決定）。確認（plan_heads）は何も保存せず、
-決定は変わった値だけを②の費目変更（/api/group/heads/bulk と同じ記録）で入れる。値は検討案の変更後の値。
+決定は変わった値だけを②の費目変更（/api/group/heads/bulk と同じ記録）で入れる。値はグループの変更後の値。
 """
 
 import io
@@ -21,7 +21,7 @@ PREMISES = "前提"
 CODE = "製品の品番"
 NAME = "名称"
 HEADERS: tuple[str, ...] = (CODE, NAME, *(h.value for h in EDITABLE_HEADS))
-TRIAL_KEY = "検討案"
+GROUP_KEY = "グループ"
 _UNSAFE = re.compile(r'[\\/:*?"<>|\s\x00-\x1f]')
 
 
@@ -59,12 +59,12 @@ class HeadPlan:
         return [{"product": p, "values": v} for p, v in by_product.items()]
 
 
-def book_name(stem: str, version_text: str, name: str) -> str:
-    """置き場のファイル名。版と検討案ごとに1つ（ファイル名に使えない文字は _ に）。"""
-    return _UNSAFE.sub("_", f"{stem}-heads-{version_text}-{name}") + ".xlsx"
+def book_name(stem: str, group: str) -> str:
+    """置き場のファイル名。グループごとに1つ（group はグループの ID と表示。ファイル名に使えない文字は _ に）。"""
+    return _UNSAFE.sub("_", f"{stem}-heads-{group}") + ".xlsx"
 
 
-def heads_book_bytes(rows: list[HeadValues], version_text: str, name: str, now: datetime) -> bytes:
+def heads_book_bytes(rows: list[HeadValues], group: str, now: datetime) -> bytes:
     """費目のシートと前提のシートのブック。未登録は空のセル。"""
     openpyxl = load_openpyxl()
     from openpyxl.styles import Font
@@ -81,7 +81,7 @@ def heads_book_bytes(rows: list[HeadValues], version_text: str, name: str, now: 
     for i, header in enumerate(HEADERS):
         ws.column_dimensions[ws.cell(1, i + 1).column_letter].width = max(12, len(header) * 2 + 2)
     premises = wb.create_sheet(PREMISES)
-    for key, value in (("版", version_text), (TRIAL_KEY, name), ("値", "変更後（空は未登録）"),
+    for key, value in ((GROUP_KEY, group), ("値", "変更後（空は未登録）"),
                        ("書き出した日時", now.strftime("%Y-%m-%d %H:%M"))):
         premises.append([key, value])
     out = io.BytesIO()
@@ -89,8 +89,8 @@ def heads_book_bytes(rows: list[HeadValues], version_text: str, name: str, now: 
     return out.getvalue()
 
 
-def plan_heads(data: bytes, name: str, current: dict[str, HeadValues]) -> HeadPlan:
-    """ブックを読み、current（検討案の試算がある製品 → 今の変更後の値）との差と行の誤りを返す。何も保存しない。
+def plan_heads(data: bytes, group: str, current: dict[str, HeadValues]) -> HeadPlan:
+    """ブックを読み、current（グループの試算がある製品 → 今の変更後の値）との差と行の誤りを返す。何も保存しない。
 
     空のセルは、今が未登録なら変えない。登録のある値を空にした行は誤り（費目変更で未登録には戻せない）。
     読めないブックは ValueError 以外の例外（zipfile など）も出るので、呼ぶ側でまとめて受ける。
@@ -98,8 +98,8 @@ def plan_heads(data: bytes, name: str, current: dict[str, HeadValues]) -> HeadPl
     sheets = _read_sheets(data)
     plan = HeadPlan()
     premises = {_text(r[0]): _text(r[1]) for r in sheets.get(PREMISES, []) if len(r) >= 2}
-    if premises.get(TRIAL_KEY, name) != name:
-        plan.errors.append(BookError(PREMISES, None, f"検討案 {premises[TRIAL_KEY]} のブック（開いているのは {name}）"))
+    if premises.get(GROUP_KEY, group) != group:
+        plan.errors.append(BookError(PREMISES, None, f"グループ {premises[GROUP_KEY]} のブック（開いているのは {group}）"))
         return plan
     if SHEET not in sheets:
         plan.errors.append(BookError(SHEET, None, "シートが無い"))
@@ -117,7 +117,7 @@ def plan_heads(data: bytes, name: str, current: dict[str, HeadValues]) -> HeadPl
         if all(_text(v) == "" for v in values.values()):
             continue
         try:
-            changes = _plan_row(values, name, current, seen, number)
+            changes = _plan_row(values, current, seen, number)
         except (ValueError, TypeError) as exc:
             plan.errors.append(BookError(SHEET, number, str(exc)))
             continue
@@ -128,7 +128,7 @@ def plan_heads(data: bytes, name: str, current: dict[str, HeadValues]) -> HeadPl
     return plan
 
 
-def _plan_row(values: dict[str, Any], name: str, current: dict[str, HeadValues], seen: dict[str, int],
+def _plan_row(values: dict[str, Any], current: dict[str, HeadValues], seen: dict[str, int],
               number: int) -> list[HeadChange]:
     if _text(values[CODE]) == "":
         raise ValueError(f"{CODE}が空")
@@ -138,7 +138,7 @@ def _plan_row(values: dict[str, Any], name: str, current: dict[str, HeadValues],
     seen[product] = number
     now = current.get(product)
     if now is None:
-        raise ValueError(f"製品 {product} は検討案 {name} の試算に無い")
+        raise ValueError(f"製品 {product} は②の変更に無い")
     changes = []
     for h in EDITABLE_HEADS:
         cell = values[h.value]

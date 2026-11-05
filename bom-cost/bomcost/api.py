@@ -79,11 +79,14 @@ def error_response(status: int, message: str) -> Response:
     return _json_response({"error": message}, status)
 
 
-def version_label(version: Version) -> str:
-    """画面と同じ「D-123 名称（第2版）」の形。名称が空なら「D-123（第1版）」。"""
-    number = version.dev_number or version.version_id
-    name = f" {version.dev_name}" if version.dev_name else ""
-    return f"{number}{name}（第{version.revision}版）"
+def group_label(version: Version) -> str:
+    """画面と同じ「D-123 名称（検討内容）」の形。名称・検討内容が空ならその分を省く。version はグループの版。"""
+    return group_text(version.dev_number or version.version_id, version.dev_name, version.note)
+
+
+def group_text(dev_number: str, dev_name: str, note: str) -> str:
+    name = f" {dev_name}" if dev_name else ""
+    return f"{dev_number}{name}" + (f"（{note}）" if note else "")
 
 
 def _s(value: Decimal | None) -> str | None:
@@ -143,7 +146,7 @@ def _known_codes(version: Version) -> set[str]:
 
 def _require_known(version: Version, code: str, name: str) -> None:
     if code not in _known_codes(version):
-        raise ApiError(400, f"{name} {code} は版 {version.version_id} に無い")
+        raise ApiError(400, f"{name} {code} はグループに無い")
 
 
 def _change_text(change: Change) -> str:
@@ -159,6 +162,49 @@ def _change_text(change: Change) -> str:
     if change.kind is ChangeKind.SET_HEAD and change.target_head is not None:
         return f"費目変更 {Head[change.target_head].value} → {qty}"
     return f"員数変更 {_place(change)} → {qty}"
+
+
+def change_problem(scenario: Scenario, changes: list[Change]) -> str | None:
+    """1回の操作の変更（changes）を試算の今の履歴に足せないなら、その理由の文。足せるなら None。
+
+    品番が版に無い・場所が版の構成に無い・同じ場所を2回変える・部品とその中の場所を両方変える（nesting_conflict）を見る。
+    画面からの変更と、流用・取り込みで写した変更の当て直しの両方に使う。
+    """
+    first = changes[0]
+    if first.kind is ChangeKind.SET_HEAD:
+        return None if first.part == scenario.base else f"費目変更の品番は製品 {scenario.base} にする: {first.part}"
+    known = _known_codes(scenario.version)
+    if first.part == scenario.product_code:
+        return "試算の製品そのものは追加・削除・置換の対象にできない"
+    if first.part not in known:
+        return f"品番 {first.part} はグループに無い"
+    for change in changes:
+        if change.replacement is not None and change.replacement not in known:
+            return f"代わりの品番 {change.replacement} はグループに無い"
+        if change.replacement == scenario.product_code:
+            return "試算の製品そのものを代わりの品番にはできない"
+    location = first.location
+    if location is not None:
+        parent, balloon, part = location
+        label = f"{parent} の {part}" if balloon is None else f"{parent} の #{balloon} {part}"
+        if parent != scenario.base and not usage_per_unit(scenario.version, scenario.base).get(parent):
+            return f"親 {parent} は土台 {scenario.base} の構成に無い"
+        if scenario.location_quantity(location) == 0:
+            return f"{label} はグループの構成に無い"
+        done = next((c for c in scenario.changes if c.location == location), None)
+        if done is not None:
+            return f"{label} はもう{done.kind.value}した（同じ場所は1回だけ変えられる）"
+    return scenario.nesting_conflict(first)
+
+
+def trial_code(version: Version, product: str) -> str:
+    """試算の製品（仮の品目）の品番。グループの品番とぶつからないものにする。"""
+    known = _known_codes(version)
+    code, n = f"{product}#", 2
+    while code in known:
+        code = f"{product}#{n}"
+        n += 1
+    return code
 
 
 def scenario_annual(scenario: Scenario) -> Decimal | None:
@@ -313,7 +359,10 @@ class _View:
         item = self.version.items.get(code)
         if item is not None:
             return item.name
-        return self.scenario.name if self.diff and code == self.root else ""
+        if self.diff and code == self.root:
+            base = self.version.items.get(self.scenario.base)
+            return self.scenario.name or ("" if base is None else base.name)
+        return ""
 
     def node(self, parent: str | None, line: BomLine | None, code: str | None = None) -> dict[str, Any]:
         """line が構成行なら子の行。line が None なら code の品目そのもの（省けば根、根の数量は 1）。"""
@@ -391,7 +440,7 @@ class Api:
         self.store = store
         self._routes: list[tuple[str, re.Pattern[str], Handler]] = [
             ("GET", re.compile(r"/api/meta"), self.meta),
-            ("GET", re.compile(r"/api/versions"), self.versions),
+            ("GET", re.compile(r"/api/groups"), self.groups),
             ("GET", re.compile(r"/api/items"), self.items),
             ("GET", re.compile(r"/api/scenarios"), self.scenarios),
             ("POST", re.compile(r"/api/scenarios"), self.create_scenario),
@@ -403,7 +452,6 @@ class Api:
             ("POST", re.compile(r"/api/scenarios/(\d+)/undo"), self.undo),
             ("GET", re.compile(r"/api/scenarios/(\d+)/table"), self.table),
             ("POST", re.compile(r"/api/scenarios/(\d+)/export"), self.export),
-            ("GET", re.compile(r"/api/scenarios/(\d+)/compare"), self.compare),
         ]
         # 2段目の画面（取り込み・手入力・部品から見る・モデルチェンジ）。screens が api を読むので、ここで読む
         from .group import group_routes
@@ -459,29 +507,35 @@ class Api:
             }
         )
 
-    def versions(self, params: dict[str, str]) -> Response:
-        return _json_response(
-            [
-                {
-                    "version_id": v.version_id,
-                    "dev_number": v.dev_number,
-                    "dev_name": v.dev_name,
-                    "revision": v.revision,
-                    "imported_at": None if v.imported_at is None else v.imported_at.isoformat(),
-                    "source_name": v.source_name,
-                    "note": v.note,
-                    "warning_count": v.warning_count,
-                }
-                for v in self.store.list_versions()
-            ]
-        )
+    def groups(self, params: dict[str, str]) -> Response:
+        """グループの一覧（作った新しい順）。label は画面の表示、bom_tables は BOM に入っている表。"""
+        infos = self.store.list_groups()
+        labels = {g.group_id: group_text(g.dev_number, g.dev_name, g.note) for g in infos}
+        counts: dict[str, int] = {}
+        for s in self.store.list_scenarios():
+            counts[s.group_id] = counts.get(s.group_id, 0) + 1
+        return _json_response([
+            {
+                "group_id": g.group_id,
+                "label": labels[g.group_id],
+                "dev_number": g.dev_number,
+                "dev_name": g.dev_name,
+                "note": g.note,
+                "created_at": None if g.created_at is None else g.created_at.isoformat(),
+                "copied_from": g.copied_from,
+                "copied_from_label": labels.get(g.copied_from or ""),
+                "imported_at": None if g.imported_at is None else g.imported_at.isoformat(),
+                "source_name": g.source_name,
+                "warning_count": g.warning_count,
+                "bom_tables": list(g.bom_tables),
+                "scenario_count": counts.get(g.group_id, 0),
+            }
+            for g in infos
+        ])
 
     def items(self, params: dict[str, str]) -> Response:
-        """版（manual を重ねる）にある品番と名称。足す・替える品番の入力の候補に使う。"""
-        version_id = params.get("version")
-        if not version_id:
-            raise ApiError(400, "版（version）が空")
-        version = self._load_version(version_id)
+        """グループ（マスタ登録を重ねる）にある品番と名称。足す・替える品番の入力の候補に使う。"""
+        version = self._load_group(params.get("group"))
         return _json_response(
             [
                 {"code": code, "name": version.items[code].name if code in version.items else ""}
@@ -490,26 +544,30 @@ class Api:
         )
 
     def scenarios(self, params: dict[str, str]) -> Response:
+        """試算（グループ × 製品の変更）の一覧。group を付けるとそのグループの分だけ。"""
+        group_id = (params.get("group") or "").strip() or None
         return _json_response(
             [
-                {"scenario_id": s.scenario_id, "name": s.name, "base": s.base, "version_id": s.version_id}
-                for s in self.store.list_scenarios()
+                {"scenario_id": s.scenario_id, "base": s.base, "product_code": s.product_code, "group_id": s.group_id}
+                for s in self.store.list_scenarios(group_id)
             ]
         )
 
     # 試算 ------------------------------------------------------------------
 
     def create_scenario(self, params: dict[str, str], body: dict[str, Any]) -> Response:
-        name = _text_field(body, "name", "試算の名前")
+        """グループの製品（base）の試算を作る。product_code（試算の製品の品番）を省けば重ならない品番を振る。"""
         base = to_code(_text_field(body, "base", "土台の製品の品番"))
-        product = to_code(_text_field(body, "product_code", "試算の製品の品番"))
-        version_id = _text_field(body, "version_id", "版")
+        version = self._load_group(body.get("group_id"))
         head = _head(body.get("head"), CostHead.MATERIAL)
+        product = (to_code(_text_field(body, "product_code", "試算の製品の品番"))
+                   if str(body.get("product_code") or "").strip() else trial_code(version, base))
         if base == product:
             raise ApiError(400, "試算の製品の品番は土台の製品と別の品番にする")
-        version = self._load_version(version_id)
         _require_known(version, base, "土台の製品")
-        scenario = Scenario(name, base, product, version, head, self.store.load_scope_policy())
+        if any(s.base == base for s in self.store.list_scenarios(version.version_id)):
+            raise ApiError(409, f"製品 {base} の試算はこのグループにもうある")
+        scenario = Scenario("", base, product, version, head, self.store.load_scope_policy())
         scenario.calculate()  # 構成の循環などをここで弾く
         self.store.save_scenario(scenario)
         return _json_response(self._summary(scenario), 201)
@@ -518,19 +576,10 @@ class Api:
         return _json_response(self._summary(self._load_scenario(scenario_id)))
 
     def update_scenario(self, scenario_id: int, params: dict[str, str], body: dict[str, Any]) -> Response:
-        """計算に使う版・費目・名前を変える。変更の履歴は残し、今の原価を計算し直す。"""
+        """計算に使う費目を変える。変更の履歴は残し、今の原価を計算し直す。"""
         scenario = self._load_scenario(scenario_id)
-        if body.get("version_id") not in (None, ""):
-            scenario.version = self._load_version(str(body["version_id"]))
         if body.get("head") not in (None, ""):
             scenario.head = _head(body["head"], scenario.head)
-        if body.get("name") not in (None, ""):
-            scenario.name = _text_field(body, "name", "試算の名前")
-        changes = scenario.changes
-        for i, change in enumerate(changes):
-            reason = scenario.nesting_conflict(change, changes[:i])
-            if reason is not None:
-                raise ApiError(400, f"版 {scenario.version.version_id} の構成では、{reason}")
         scenario.calculate()
         self.store.save_scenario(scenario)
         return _json_response(self._summary(scenario))
@@ -569,20 +618,10 @@ class Api:
             pairs = self._replacements(scenario, body)
         else:
             pairs = [(None, _number(body.get("quantity", "1"), "数量"))]
-        if parent is not None:
-            location = (parent, balloon, part)
-            label = f"{parent} の {part}" if balloon is None else f"{parent} の #{balloon} {part}"
-            if parent != scenario.base and not usage_per_unit(scenario.version, scenario.base).get(parent):
-                raise ApiError(400, f"親 {parent} は土台 {scenario.base} の構成に無い")
-            if scenario.location_quantity(location) == 0:
-                raise ApiError(400, f"{label} は版 {scenario.version.version_id} の構成に無い")
-            done = next((c for c in scenario.changes if c.location == location), None)
-            if done is not None:
-                raise ApiError(400, f"{label} はもう{done.kind.value}した（同じ場所は1回だけ変えられる）")
-        elif len(pairs) > 1:
+        if parent is None and len(pairs) > 1:
             raise ApiError(400, "代わりの部品を複数入れるには親品番（parent）が要る")
         changes = [Change(kind, part, qty, code, parent, balloon) for code, qty in pairs]
-        reason = scenario.nesting_conflict(changes[0])
+        reason = change_problem(scenario, changes)
         if reason is not None:
             raise ApiError(400, reason)
         scenario.apply_batch(changes, volume=annual)
@@ -635,7 +674,7 @@ class Api:
         """見方 view での code（省けば根）の行と、その直下の子の行。"""
         code = to_code(code or view.root)
         if code != view.root and code not in _known_codes(view.version):
-            raise ApiError(400, f"品番 {code} は版 {view.version.version_id} に無い")
+            raise ApiError(400, f"品番 {code} はグループに無い")
         node = view.node(None, None, code)
         children = [view.node(code, line) for line in view.lines(code)]
         return {"view": cls._view_info(view), "node": node, "children": children}
@@ -646,7 +685,7 @@ class Api:
         code = to_code(params.get("code") or view.root)
         version = view.version
         if code != view.root and code not in _known_codes(version):
-            raise ApiError(400, f"品番 {code} は版 {version.version_id} に無い")
+            raise ApiError(400, f"品番 {code} はグループに無い")
         item = version.items.get(code)
         row = version.cost_row(code)
         heads = []
@@ -715,44 +754,6 @@ class Api:
             {"Content-Disposition": f'attachment; filename="bom-cost-{scenario_id}.xlsx"'},
         )
 
-    def compare(self, scenario_id: int, params: dict[str, str]) -> Response:
-        """今の試算を別の版で計算し直し、直下の品目ごとの差を返す。"""
-        scenario = self._load_scenario(scenario_id)
-        other_id = params.get("version")
-        if not other_id:
-            raise ApiError(400, "比べる版（version）が空")
-        other = self._load_version(other_id)
-        head = _head(params.get("head"), scenario.head)
-        cmp = scenario.compare_versions(scenario.version, other, head)
-        view = _View(scenario, "diff", head, False)
-        lines = []
-        for row, line in zip(cmp.lines, scenario.root_lines()):
-            lines.append(
-                {
-                    "part": row.part,
-                    "name": view.name(row.part) or (other.items[row.part].name if row.part in other.items else ""),
-                    "role": view.role(view.root, line),
-                    "quantity": _s(row.quantity),
-                    "amount_a": _s(row.amount_a),
-                    "amount_b": _s(row.amount_b),
-                    "difference": _s(row.difference),
-                }
-            )
-        return _json_response(
-            {
-                "scenario_id": scenario_id,
-                "product_code": scenario.product_code,
-                "version_a": cmp.version_a,
-                "version_b": cmp.version_b,
-                "head": head.name,
-                "head_label": head.value,
-                "lines": lines,
-                "total_a": _s(cmp.total_a),
-                "total_b": _s(cmp.total_b),
-                "difference": _s(cmp.difference),
-            }
-        )
-
     # 中身 ------------------------------------------------------------------
 
     def _load_scenario(self, scenario_id: int) -> Scenario:
@@ -761,11 +762,15 @@ class Api:
         except KeyError:
             raise ApiError(404, f"試算 {scenario_id} は無い") from None
 
-    def _load_version(self, version_id: str) -> Version:
+    def _load_group(self, group_id: Any) -> Version:
+        """グループの版（マスタ登録を重ねる）。空なら 400、無ければ 404。"""
+        group_id = str(group_id or "").strip()
+        if not group_id:
+            raise ApiError(400, "グループ（group）が空")
         try:
-            return self.store.load_version(version_id)
+            return self.store.load_group(group_id)
         except KeyError:
-            raise ApiError(404, f"版 {version_id} は無い") from None
+            raise ApiError(404, f"グループ {group_id} は無い") from None
 
     def _view(self, scenario_id: int, params: dict[str, Any]) -> _View:
         scenario = self._load_scenario(scenario_id)
@@ -782,7 +787,8 @@ class Api:
             "mode": view.mode,
             "mode_label": MODES[view.mode],
             "root": view.root,
-            "version_id": view.version.version_id,
+            "group_id": view.version.version_id,
+            "group_label": group_label(view.version),
             "head": view.head.name,
             "head_label": view.head.value,
             "by_balloon": view.by_balloon,
@@ -801,10 +807,10 @@ class Api:
         return {
             "scenario": {
                 "scenario_id": scenario.scenario_id,
-                "name": scenario.name,
                 "base": scenario.base,
                 "product_code": scenario.product_code,
-                "version_id": scenario.version.version_id,
+                "group_id": scenario.version.version_id,
+                "group_label": group_label(scenario.version),
                 "head": scenario.head.name,
                 "head_label": scenario.head.value,
                 "note": scenario.note,
@@ -820,15 +826,15 @@ class Api:
             "history": history,
             "last": None
             if last is None
-            else {k: last[k] for k in ("cost_before", "cost_after", "difference", "text", "version_id", "head_label")},
+            else {k: last[k] for k in ("cost_before", "cost_after", "difference", "text", "group_id", "head_label")},
             "premises": _premises(scenario.version.version_id, scenario.head, bool(view.missing)),
         }
 
 
-def _premises(version_id: str, head: CostHead, missing: bool) -> dict[str, Any]:
+def _premises(group_id: str, head: CostHead, missing: bool) -> dict[str, Any]:
     """結果と履歴に必ず添える前提。"""
     return {
-        "version_id": version_id,
+        "group_id": group_id,
         "head": head.name,
         "head_label": head.value,
         "reference": "参考値",
@@ -849,7 +855,7 @@ def _record_json(record: ChangeRecord) -> dict[str, Any]:
         "cost_before": _s(record.cost_before),
         "cost_after": _s(record.cost_after),
         "difference": _s(record.difference),
-        "version_id": record.version_id,
+        "group_id": record.version_id,
         "head": record.head.name,
         "head_label": record.head.value,
         "volume": _s(record.volume),
@@ -903,10 +909,10 @@ def _workbook(
     premises = wb.create_sheet("前提")
     scenario = view.scenario
     for label, value in (
-        ("試算", scenario.name),
+        ("製品", scenario.base),
         ("モード", MODES[view.mode]),
         ("根の品番", view.root),
-        ("計算に使った版", version_label(view.version)),
+        ("グループ", group_label(view.version)),
         ("費目（ツリー・合計）", view.head.value),
         ("値の扱い", "参考値"),
         ("調整費・間接費・製造原価", "式で計算（取り込んだ値は使わない）"),

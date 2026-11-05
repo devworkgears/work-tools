@@ -60,21 +60,6 @@ class ScenarioExamples(unittest.TestCase):
         self.assertEqual(record.difference, d("-50"))
 
 
-class VersionComparisonExamples(unittest.TestCase):
-    def test_recalculate_with_newer_version(self) -> None:
-        s = v110_scenario()
-        cmp = s.compare_versions(ex.version_2026_10(), ex.version_2026_12())
-        self.assertEqual(cmp.total_a, d("4650"))
-        self.assertEqual(cmp.total_b, d("4690"))
-        self.assertEqual(cmp.difference, d("40"))
-        by_part = {row.part: row for row in cmp.lines}
-        self.assertEqual(by_part["A-100"].difference, d("60"))
-        self.assertEqual(by_part["F-600"].difference, d("0"))
-        self.assertEqual(by_part["C-300"].amount_a, d("-500"))
-        self.assertEqual(by_part["C-300"].amount_b, d("-520"))
-        self.assertEqual(by_part["C-300"].difference, d("-20"))
-
-
 class MoldExamples(unittest.TestCase):
     def setUp(self) -> None:
         self.version = ex.version_2026_10()

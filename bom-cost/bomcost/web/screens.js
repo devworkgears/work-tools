@@ -1,4 +1,4 @@
-// 画面の2段目: 型費配賦・積上げ見積・マスタ登録・データ取込・版管理。app.js の el・fmt・money・api・guarded を使う。
+// 画面の2段目: 型費配賦・積上げ見積・マスタ登録・データ取込・グループ。app.js の el・fmt・money・api・guarded を使う。
 // 原価は API が出した Decimal の文字列をそのまま出し、ここでは計算しない。
 "use strict";
 
@@ -11,15 +11,17 @@ const screenState = {
   manual: null,
   editing: {}, // マスタ登録の表ごとに「直す元」の行
   manualTab: "product", // マスタ登録で選んでいるタブ
-  manualDev: "", // マスタ登録で選んでいる開発番号（空は共通）
+  manualGroup: "", // マスタ登録で選んでいるグループ
   masterFile: null, // マスタのブックを選ぶ欄（描き直しても選んだファイルを残すため1つを使い回す）
   masterFileShown: false, // 別のファイルの欄を出しているか
   masterCheck: null, // { body, result }: 取り込みの確認
   preview: null, // { file, content, data }
   pending: [], // 取り込む一覧
-  noteEditing: null, // メモを直している版の ID
-  warningOpen: null, // { version_id, info }: 開いている版の警告
-  importedVersion: null, // この画面を開いてから直近に取り込んだ版
+  importCheck: null, // { body, result }: 取り込みの確認
+  noteEditing: null, // 検討内容を直しているグループの ID
+  warningOpen: null, // { group_id, info }: 開いているグループの警告
+  copyFrom: "", // ［新しく作る］の流用元（空は流用しない）
+  importedGroup: null, // この画面を開いてから直近に作った・取り込んだグループ
 };
 
 // 共通 -------------------------------------------------------------------
@@ -33,48 +35,49 @@ function options(select, list, { value, blank } = {}) {
   if (keep && [...select.options].some((o) => o.value === String(keep))) select.value = String(keep);
 }
 
-function versionOptions(select, opts = {}) {
-  options(select, state.versions.map((v) => [v.version_id, versionLabel(v)]), opts);
+function groupOptions(select, opts = {}) {
+  options(select, state.groups.map((g) => [g.group_id, g.label]), opts);
 }
 
 function scenarioOptions(select, opts = {}) {
-  options(select, state.scenarios.map((s) => [s.scenario_id, `${s.name}（製品 ${s.base}・${versionLabel(s.version_id)}）`]), opts);
+  options(select, state.scenarios.map((s) => [s.scenario_id, `${scenarioText(s)}（${groupLabel(s.group_id)}）`]), opts);
 }
 
-async function loadCodes(versionId) {
-  if (!versionId) return;
-  const items = await loadCodeNames(versionId);
+async function loadCodes(groupId) {
+  if (!groupId) return;
+  const items = await loadCodeNames(groupId);
   document.getElementById("code-list-2").replaceChildren(...items.map((i) => el("option", { value: i.code }, i.name)));
 }
 
-// 品番のホバーに出す名称（版 → 品番 → 名称）。読むたびにその版の分を入れ替える
+// 品番のホバーに出す名称（グループ → 品番 → 名称）。読むたびにそのグループの分を入れ替える
 const codeNames = new Map();
 
-async function loadCodeNames(versionId) {
-  const items = await api("GET", `/api/items?version=${encodeURIComponent(versionId)}`);
-  codeNames.set(versionId, new Map(items.filter((i) => i.name).map((i) => [i.code, i.name])));
+async function loadCodeNames(groupId) {
+  const items = await api("GET", `/api/items?group=${encodeURIComponent(groupId)}`);
+  codeNames.set(groupId, new Map(items.filter((i) => i.name).map((i) => [i.code, i.name])));
   return items;
 }
 
-function codeTitle(versionId, code) {
-  return codeNames.get(versionId)?.get(code) ?? null;
+function codeTitle(groupId, code) {
+  return codeNames.get(groupId)?.get(code) ?? null;
 }
 
 // 品番の文字。名称が分かればホバーで出す
-function codeSpan(versionId, code) {
-  return el("span", { title: codeTitle(versionId, code) }, code);
+function codeSpan(groupId, code) {
+  return el("span", { title: codeTitle(groupId, code) }, code);
 }
 
 async function refreshLists() {
   await loadLists();
-  // 開いていた試算が消えたら（検討案・版を消した時）、開いていない状態に戻す
+  // 開いていた試算が消えたら（グループを消した時）、開いていない状態に戻す
   if (state.summary && !state.scenarios.some((s) => s.scenario_id === state.summary.scenario.scenario_id)) {
     state.summary = null;
     state.scenarioId = null;
   }
   if (state.summary) {
+    document.getElementById("product-group").value = state.summary.scenario.group_id;
+    drawScenarioSelect();
     document.getElementById("scenario-select").value = String(state.summary.scenario.scenario_id);
-    document.getElementById("version-select").value = state.summary.scenario.version_id;
   }
 }
 
@@ -103,13 +106,13 @@ function numTd(text, opts) {
 
 // 画面の切り替え -----------------------------------------------------------
 
-const SCREENS = { product: "main-layout", group: "screen-group", trial: "screen-trial", compare: "screen-compare", part: "screen-part", change: "screen-change", final: "screen-final", manual: "screen-manual", lookup: "screen-lookup", import: "screen-import", versions: "screen-versions" };
+const SCREENS = { product: "main-layout", group: "screen-group", trial: "screen-trial", compare: "screen-compare", part: "screen-part", change: "screen-change", manual: "screen-manual", lookup: "screen-lookup", import: "screen-import", groups: "screen-groups" };
 
-// モード（差し替え・積み上げ・確定）ごとの画面。共通の画面（取込・マスタ・照会）はどのモードでも開け、モードを変えない。
+// モード（差し替え・積み上げ）ごとの画面。共通の画面（取込・マスタ・照会）はどのモードでも開け、モードを変えない。
 // 選んだモードはこのブラウザに覚える（読めない時は差し替え）
-const FLOW_SCREENS = { swap: ["group", "trial", "compare", "product", "part"], stack: ["change"], final: ["final"] };
+const FLOW_SCREENS = { swap: ["group", "trial", "compare", "product", "part"], stack: ["change"] };
 const FLOW_KEY = "bomcost.flow";
-const flowScreen = { swap: "group", stack: "change", final: "final" }; // モードを選んだ時に開く画面（差し替えは最後に見た手順）
+const flowScreen = { swap: "group", stack: "change" }; // モードを選んだ時に開く画面（差し替えは最後に見た手順）
 
 function savedFlow() {
   try {
@@ -135,18 +138,17 @@ function setFlow(flow) {
   }
 }
 
-function manualDefaultDev() {
-  const ids = { group: "group-version", trial: "trial-version", compare: "cmp-version", lookup: "look-version",
-    part: "part-version", change: "change-new-version", product: "version-select" };
-  // 版の欄の無い画面（取込・版管理など）からは、直近に取り込んだ版
-  const version = document.getElementById(ids[screenState.screen])?.value || screenState.importedVersion
-    || state.summary?.scenario.version_id;
-  return state.versions.find((v) => v.version_id === version)?.dev_number || "";
+function manualDefaultGroup() {
+  const ids = { group: "group-pick", trial: "trial-group", compare: "cmp-group", lookup: "look-group",
+    part: "part-group", change: "change-new-group", product: "product-group", import: "import-group" };
+  // グループの欄の無い画面（グループの一覧など）からは、直近に作った・取り込んだグループ
+  return document.getElementById(ids[screenState.screen])?.value || screenState.importedGroup
+    || state.summary?.scenario.group_id || state.groups[0]?.group_id || "";
 }
 
 async function showScreen(name) {
   if (name === "manual" && screenState.screen !== "manual") {
-    screenState.manualDev = manualDefaultDev();
+    screenState.manualGroup = manualDefaultGroup();
     screenState.editing = {};
     screenState.masterCheck = null;
   }
@@ -171,24 +173,24 @@ async function showScreen(name) {
   else if (name === "manual") await renderManual();
   else if (name === "lookup") await enterLookup();
   else if (name === "import") await enterImport();
-  else if (name === "versions") await drawVersions();
+  else if (name === "groups") await drawGroups();
 }
 
 // 型費配賦 --------------------------------------------------------------
 
 let partReturn = null; // 型費配賦を開いた元の画面（trial・compare）。帯から開いた時は null
 
-// ②③から、部品・版・試算を選んだ状態で型費配賦を開く（part が空なら品番の欄は前のまま）
-async function openPart({ part, version, scenarioId, from }) {
+// ②③から、部品・グループ・試算を選んだ状態で型費配賦を開く（part が空なら品番の欄は前のまま）
+async function openPart({ part, group, scenarioId, from }) {
   await refreshLists();
   await showScreen("part");
   partReturn = from;
   drawPartBack();
-  document.getElementById("part-version").value = version;
+  document.getElementById("part-group").value = group;
   document.getElementById("part-scenario").value = String(scenarioId ?? "");
   const head = document.getElementById("part-head");
   if ([...head.options].some((o) => o.value === TRIAL_HEAD)) head.value = TRIAL_HEAD;
-  await loadCodes(version);
+  await loadCodes(group);
   const code = document.getElementById("part-code");
   if (part) code.value = part;
   document.getElementById("part-body").replaceChildren();
@@ -205,13 +207,13 @@ function drawPartBack() {
 async function enterPart() {
   partReturn = null;
   drawPartBack();
-  const version = document.getElementById("part-version");
+  const group = document.getElementById("part-group");
   const scenario = document.getElementById("part-scenario");
-  versionOptions(version, { value: version.value || state.summary?.scenario.version_id });
-  scenarioOptions(scenario, { blank: "使わない（版の構成だけ）", value: scenario.value || state.scenarioId || "" });
+  groupOptions(group, { value: group.value || state.summary?.scenario.group_id });
+  scenarioOptions(scenario, { blank: "使わない（グループの構成だけ）", value: scenario.value || state.scenarioId || "" });
   options(document.getElementById("part-head"), state.meta.heads.map((h) => [h.id, h.label]));
-  if (!screenState.allocations.length) {
-    const manual = await api("GET", "/api/manual");
+  if (!screenState.allocations.length && group.value) {
+    const manual = await api("GET", `/api/manual?${qs({ group: group.value })}`);
     screenState.allocations = manual.allocations;
   }
   const seg = document.getElementById("part-allocation");
@@ -227,14 +229,14 @@ async function enterPart() {
       }, a.label),
     ),
   );
-  await loadCodes(version.value);
+  await loadCodes(group.value);
 }
 
 async function drawPart() {
   const scenarioId = document.getElementById("part-scenario").value;
   const v = await api("GET", `/api/parts/view?${qs({
     part: document.getElementById("part-code").value.trim(),
-    version: document.getElementById("part-version").value,
+    group: scenarioId ? "" : document.getElementById("part-group").value,
     scenario: scenarioId,
     head: document.getElementById("part-head").value,
     allocation: screenState.allocation,
@@ -277,8 +279,8 @@ async function drawPart() {
   const premise = el(
     "p",
     { class: "premise-line" },
-    `前提: ${versionLabel(p.version_id)}・費目 ${p.head_label}・台数 ${p.volumes.map((x) => `${x.product} ${x.kind}`).join(" / ") || "—"}・載せ方 ${p.allocation_label}`
-      + `・構成 ${p.scenario_name ? `試算「${p.scenario_name}」` : "版"}・${p.reference}・償却費は登録値（型費は含めない）`,
+    `前提: ${p.group_label}・費目 ${p.head_label}・台数 ${p.volumes.map((x) => `${x.product} ${x.kind}`).join(" / ") || "—"}・載せ方 ${p.allocation_label}`
+      + `・構成 ${p.scenario_id ? `②の ${p.scenario_base}` : "グループ"}・${p.reference}・償却費は登録値（型費は含めない）`,
   );
   const unknown = v.unknown_volume.length
     ? el("p", { class: "missing" }, `年間台数なし: ${v.unknown_volume.join("・")}`)
@@ -305,11 +307,11 @@ async function drawPart() {
 // 積上げ見積 ------------------------------------------------------------
 
 async function enterChange() {
-  const oldV = document.getElementById("change-old-version");
-  const newV = document.getElementById("change-new-version");
-  const current = state.summary?.scenario.version_id;
-  versionOptions(oldV, { value: oldV.value || current });
-  versionOptions(newV, { value: newV.value || current });
+  const oldV = document.getElementById("change-old-group");
+  const newV = document.getElementById("change-new-group");
+  const current = state.summary?.scenario.group_id;
+  groupOptions(oldV, { value: oldV.value || current });
+  groupOptions(newV, { value: newV.value || current });
   scenarioOptions(document.getElementById("change-scenario"), { value: document.getElementById("change-scenario").value || state.scenarioId });
   await loadCodes(oldV.value);
 }
@@ -324,11 +326,11 @@ async function drawChange() {
   const byScenario = document.getElementById("change-new-kind").value === "scenario";
   const params = {
     old: document.getElementById("change-old").value.trim(),
-    old_version: document.getElementById("change-old-version").value,
+    old_group: document.getElementById("change-old-group").value,
     direct_only: document.getElementById("change-direct").checked ? "1" : "",
   };
   if (byScenario) params.scenario = document.getElementById("change-scenario").value;
-  else Object.assign(params, { new: document.getElementById("change-new").value.trim(), new_version: document.getElementById("change-new-version").value });
+  else Object.assign(params, { new: document.getElementById("change-new").value.trim(), new_group: document.getElementById("change-new-group").value });
   const c = await api("GET", `/api/modelchange?${qs(params)}`);
   if (!params.old) document.getElementById("change-old").value = c.old_product;
   const section = (title, kinds) => {
@@ -351,7 +353,7 @@ async function drawChange() {
       ),
     ];
   };
-  const newLabel = c.scenario_name ? `試算「${c.scenario_name}」の ${c.new_product}（${versionLabel(c.new_version)}・土台＋変更）` : `${c.new_product}（${versionLabel(c.new_version)}）`;
+  const newLabel = c.scenario_id ? `②の ${c.new_product}（${c.new_group_label}・土台＋変更）` : `${c.new_product}（${c.new_group_label}）`;
   const oldPart = el("input", { list: "code-list-2", placeholder: "元の部品" });
   const newPart = el("input", { list: "code-list-2", placeholder: "新しい部品" });
   const oldBalloon = el("input", { placeholder: "元の風船番号（任意）", size: 10 });
@@ -360,7 +362,7 @@ async function drawChange() {
     type: "button",
     onclick: () => guarded(async () => {
       await api("POST", "/api/partmaps", {
-        dev_number: c.new_dev_number, old_product: c.old_product, new_product: c.new_product, old_part: oldPart.value, new_part: newPart.value,
+        group_id: c.new_group, old_product: c.old_product, new_product: c.new_product, old_part: oldPart.value, new_part: newPart.value,
         old_balloon: oldBalloon.value, new_balloon: newBalloon.value,
       });
       await drawChange();
@@ -374,13 +376,13 @@ async function drawChange() {
       el("td", {}, `${m.old_part}${m.old_balloon ? `（${m.old_balloon}）` : ""}`),
       el("td", {}, `${m.new_part}${m.new_balloon ? `（${m.new_balloon}）` : ""}`),
       el("td", {}, el("button", { type: "button", onclick: () => guarded(async () => {
-        await api("DELETE", `/api/partmaps?${qs(m)}`);
+        await api("DELETE", `/api/partmaps?${qs({ ...m, group: c.new_group })}`);
         await drawChange();
       }) }, "消す")),
     )))
     : el("p", { class: "muted" }, "なし");
   document.getElementById("change-body").replaceChildren(
-    el("div", { class: "detail-title" }, `${c.old_product}（${versionLabel(c.old_version)}）→ ${newLabel}`),
+    el("div", { class: "detail-title" }, `${c.old_product}（${c.old_group_label}）→ ${newLabel}`),
     el("p", { class: "muted" }, c.direct_only ? "比べ方: 直下の子" : "比べ方: 末端の部品・1台あたりの使用数"),
     ...section("1. 同じ品番", ["SAME"]),
     ...section("2. 対応表で対応", ["MAPPED"]),
@@ -391,7 +393,7 @@ async function drawChange() {
   );
 }
 
-// マスタ登録（手入力の版） -----------------------------------------------------
+// マスタ登録（グループごと） -----------------------------------------------------
 
 function field(label, input) {
   return el("label", {}, label, input);
@@ -402,36 +404,35 @@ function card(title, body) {
 }
 
 async function renderManual(data) {
-  const m = data || (await api("GET", `/api/manual?${qs({ dev_number: screenState.manualDev })}`));
+  if (!screenState.manualGroup) {
+    document.getElementById("manual-body").replaceChildren(el("p", { class: "muted" }, "グループなし"));
+    return;
+  }
+  const m = data || (await api("GET", `/api/manual?${qs({ group: screenState.manualGroup })}`));
   screenState.manual = m;
   screenState.allocations = m.allocations;
-  const dev = m.dev_number;
-  const saveLabel = `${dev || "共通"}に保存`;
+  const group = m.group_id;
+  const saveLabel = "保存";
   const send = (method, path, body) => guarded(async () => {
-    const result = await api(method, path, body && { ...body, dev_number: dev });
+    const result = await api(method, path, body && { ...body, group_id: group });
     screenState.editing = {};
     await renderManual(Array.isArray(result) ? null : result);
     showMessage("保存しました。", "info");
   });
   // what は消す物（確認の文に出す）
   const del = (path, what) => () => {
-    if (confirm(`${what} を${dev || "共通"}から消しますか？`)) send("DELETE", dev ? `${path}&${qs({ dev_number: dev })}` : path);
+    if (confirm(`${what} を消しますか？`)) send("DELETE", `${path}&${qs({ group })}`);
   };
-  // BOM に入った登録の印（計算は BOM の値を使う）
-  const inBom = (code) => {
-    const entries = m.in_bom[code];
-    if (!entries) return null;
-    const text = entries.map((e) => `${dev ? "" : `${e.dev_number} `}第${e.revision}版から BOM`).join("・");
-    return el("span", { class: "mreg-inbom" }, text);
-  };
-  const devSelect = el("select", { onchange: (e) => {
-    screenState.manualDev = e.target.value;
+  // BOM にもある品番の印（計算は登録の値を使い、空の費目だけ BOM の値）
+  const inBom = (code) => (m.in_bom.includes(code) ? el("span", { class: "mreg-inbom" }, "BOM を上書き") : null);
+  const groupSelect = el("select", { onchange: (e) => {
+    screenState.manualGroup = e.target.value;
     screenState.editing = {};
     screenState.masterCheck = null;
     showMessage("");
     guarded(() => renderManual());
   } });
-  options(devSelect, [["", "共通"], ...m.dev_numbers.map((d) => [d, d])], { value: dev });
+  groupOptions(groupSelect, { value: group });
   const edit = (key, values) => () => {
     screenState.editing[key] = values;
     renderManual(screenState.manual);
@@ -565,8 +566,8 @@ async function renderManual(data) {
     renderManual(screenState.manual);
   };
   document.getElementById("manual-body").replaceChildren(
-    el("div", { class: "form-row mreg-dev" }, field("開発番号 ", devSelect)),
-    masterBookBar(dev),
+    el("div", { class: "form-row mreg-dev" }, field("グループ ", groupSelect)),
+    masterBookBar(group),
     masterCheckPanel(),
     el("div", { class: "seg manual-tabs", role: "tablist" }, tabs.map(([key, label]) =>
       el("button", { type: "button", role: "tab", class: key === current[0] ? "on" : null, "aria-selected": String(key === current[0]), onclick: pick(key) }, label))),
@@ -582,18 +583,18 @@ async function masterBookBody() {
   return { filename: file.name, content: await readAsBase64(file) };
 }
 
-function masterBookBar(dev) {
+function masterBookBar(group) {
   if (!screenState.masterFile) screenState.masterFile = el("input", { type: "file", accept: ".xlsx,.xlsm" });
   const open = () => guarded(async () => {
     // 置き場のブックに取り込んでいない差があるなら、作り直して消す前に確かめる（ブックが無い・読めない時は作り直す）
-    const diff = await api("POST", "/api/master/check", { dev_number: dev }).catch(() => null);
+    const diff = await api("POST", "/api/master/check", { group_id: group }).catch(() => null);
     const keep = diff && diff.added + diff.changed + diff.removed > 0
       && !confirm(`取り込んでいない差があります（${masterDiffText(diff)}）。ブックを作り直しますか？`);
-    const r = await api("POST", keep ? "/api/master/open" : "/api/master/book", { dev_number: dev });
+    const r = await api("POST", keep ? "/api/master/open" : "/api/master/book", { group_id: group });
     showMessage(`${r.opened ? "開きました" : "書き出しました"}: ${r.path}`, "info");
   });
   const check = () => guarded(async () => {
-    const body = { ...(await masterBookBody()), dev_number: dev };
+    const body = { ...(await masterBookBody()), group_id: group };
     screenState.masterCheck = { body, result: await api("POST", "/api/master/check", body) };
     await renderManual(screenState.manual);
   });
@@ -606,7 +607,7 @@ function masterBookBar(dev) {
   return el("div", { class: "form-row mreg-book" },
     el("button", { type: "button", class: "primary", onclick: open }, "① Excel で開く"),
     el("span", { class: "muted", "aria-hidden": "true" }, "→"),
-    el("button", { type: "button", onclick: check }, `② ${dev || "共通"}に取り込む`),
+    el("button", { type: "button", onclick: check }, "② 取り込む"),
     el("button", { type: "button", "aria-pressed": String(!!screenState.masterFileShown), onclick: toggleFile }, "別のファイル"),
     screenState.masterFileShown ? field("ファイル", screenState.masterFile) : null);
 }
@@ -638,12 +639,12 @@ function masterCheckPanel() {
         el("td", {}, e.sheet), el("td", { class: "num" }, e.row ?? ""), el("td", {}, e.message)))),
     ] : null,
     el("div", { class: "form-row" },
-      el("button", { type: "button", class: "primary", disabled: r.errors.length > 0 || r.added + r.changed + r.removed === 0, onclick: apply }, `${c.body.dev_number || "共通"}に保存`),
+      el("button", { type: "button", class: "primary", disabled: r.errors.length > 0 || r.added + r.changed + r.removed === 0, onclick: apply }, "保存"),
       el("button", { type: "button", onclick: close }, "やめる")),
   ]);
 }
 
-// データ取込・版管理 ------------------------------------------------------------
+// データ取込・グループ ------------------------------------------------------------
 
 function readAsBase64(file) {
   return new Promise((resolve, reject) => {
@@ -663,6 +664,8 @@ let importTables = null;
 
 async function enterImport() {
   importTables ??= await api("GET", "/api/import/tables");
+  const group = document.getElementById("import-group");
+  groupOptions(group, { value: group.value || screenState.importedGroup || state.summary?.scenario.group_id });
   if (!screenState.preview) options(document.getElementById("import-table"), importTables.map((t) => [t.id, t.label]));
   drawImportFields();
 }
@@ -735,6 +738,8 @@ function drawMapping() {
 }
 
 function drawPending() {
+  screenState.importCheck = null;  // 一覧が変われば確認はやり直す
+  drawImportCheck();
   const box = document.getElementById("import-pending");
   if (!screenState.pending.length) { box.replaceChildren(el("p", { class: "muted" }, "なし")); return; }
   box.replaceChildren(table(["ファイル", "表", "対応づけ", ""], screenState.pending.map((f, i) => el("tr", {},
@@ -745,64 +750,79 @@ function drawPending() {
   ))));
 }
 
-// 開発番号の一番新しい版（無ければ undefined）
-function latestOfDevNumber(devNumber) {
-  return state.versions.filter((v) => v.dev_number === devNumber).sort((a, b) => b.revision - a.revision)[0];
+function tableLabel(id) {
+  return importTables?.find((t) => t.id === id)?.label ?? id;
 }
 
-// 既にある開発番号なら名称の欄に前の名称を入れる
-function fillDevName() {
-  const latest = latestOfDevNumber(document.getElementById("import-dev-number").value.trim());
-  const name = document.getElementById("import-dev-name");
-  if (latest) name.value = latest.dev_name || "";
-  syncCostOnly();
-}
-
-// 原価だけの更新は既にある開発番号のときだけ選べる
-function syncCostOnly() {
-  const box = document.getElementById("import-cost-only");
-  box.disabled = !latestOfDevNumber(document.getElementById("import-dev-number").value.trim());
-  if (box.disabled) box.checked = false;
-}
-
-async function runImport() {
+// 取り込む前の確認: 流用元との差・写した変更のうち新しい構成で効かない物・使われないマスタ登録。［決定］で入れる
+async function checkImport() {
   if (!screenState.pending.length) throw new Error("取り込む一覧が空");
-  const devNumber = document.getElementById("import-dev-number").value.trim();
-  if (!devNumber) throw new Error("開発番号が空");
-  const latest = latestOfDevNumber(devNumber);
-  const costOnly = Boolean(latest) && document.getElementById("import-cost-only").checked;
-  if (latest && !confirm(`更新しますか？（第${latest.revision + 1}版になります）`)) return;
-  const result = await api("POST", "/api/import", {
-    dev_number: devNumber,
-    dev_name: document.getElementById("import-dev-name").value,
-    note: document.getElementById("import-note").value,
-    cost_only: costOnly,
+  const group = document.getElementById("import-group").value;
+  if (!group) throw new Error("グループが空");
+  const body = {
+    group_id: group,
     files: screenState.pending.map((f) => ({ filename: f.filename, content: f.content, sheet: f.sheet, table: f.table, columns: f.columns })),
-  });
+  };
+  screenState.importCheck = { body, result: await api("POST", "/api/import/check", body) };
+  drawImportCheck();
+}
+
+function droppedTable(dropped) {
+  return table(["製品", "名称", "変更", "理由"], dropped.map((d) => el("tr", {},
+    el("td", {}, d.product), el("td", {}, d.product_name), el("td", {}, d.text), el("td", {}, d.reason))));
+}
+
+function drawImportCheck() {
+  const box = document.getElementById("import-check");
+  const c = screenState.importCheck;
+  document.getElementById("import-run").classList.toggle("primary", !c);  // 確認を出している間は［決定］が主ボタン
+  if (!c) { box.replaceChildren(); return; }
+  const r = c.result;
+  const n = r.counts;
+  const close = () => { screenState.importCheck = null; drawImportCheck(); };
+  const unused = r.unused_master;
+  box.replaceChildren(
+    el("div", { class: "detail-title" }, `取り込みの確認: ${r.label}`),
+    el("p", {}, `品目 ${n.items}・構成行 ${n.lines}・原価 ${n.costs}・年間台数 ${n.volumes}`),
+    el("h3", {}, r.copied_from ? `流用元 ${groupLabel(r.copied_from)} との差` : "流用元との差（流用元なし）"),
+    table(["表", numTh("追加"), numTh("変更"), numTh("削除")], r.diff.map((d) => el("tr", {},
+      el("td", {}, d.label), numTd(String(d.added)), numTd(String(d.changed)), numTd(String(d.removed))))),
+    el("h3", {}, `②の変更: 効く ${r.kept_changes} 件・写さない ${r.dropped.length} 件`),
+    r.dropped.length ? droppedTable(r.dropped) : null,
+    el("p", { class: unused.count ? "missing" : "" }, `使われないマスタ登録 ${unused.count} 件${unused.count ? `（${unused.codes.join("・")}）` : ""}`),
+    warningList(r.warnings),
+    el("div", { class: "form-row" },
+      el("button", { type: "button", class: "primary", onclick: () => guarded(decideImport) }, "決定"),
+      el("button", { type: "button", onclick: close }, "やめる")),
+  );
+}
+
+async function decideImport() {
+  const result = await api("POST", "/api/import", screenState.importCheck.body);
   screenState.pending = [];
+  screenState.importCheck = null;
   drawPending();
   const c = result.counts;
   const box = document.getElementById("import-result");
   box.replaceChildren(
-    closableTitle(`${versionLabel(result)} を取り込みました: 品目 ${c.items}・構成行 ${c.lines}・原価 ${c.costs}・年間台数 ${c.volumes}`, () => box.replaceChildren()),
-    result.cost_only ? el("p", {}, `写した検討案 ${result.copied_scenarios} 件`) : null,
+    closableTitle(`${result.label} に取り込みました: 品目 ${c.items}・構成行 ${c.lines}・原価 ${c.costs}・年間台数 ${c.volumes}`, () => box.replaceChildren()),
+    result.dropped.length ? [el("p", { class: "missing" }, `写さなかった②の変更 ${result.dropped.length} 件`), droppedTable(result.dropped)] : null,
     warningList(result.warnings),
   );
   await refreshLists();
-  followImported(result.version_id);
-  syncCostOnly();
-  await showScreen("versions");  // 取り込んだ結果は版管理の画面の上に出す
+  followGroup(result.group_id);
+  await showScreen("groups");  // 取り込んだ結果はグループの画面の上に出す
 }
 
-// 各画面の版の欄の既定を、いま取り込んだ版にする（利用者が選び直した欄は除く）。マスタ登録の開発番号も manualDefaultDev が追う
-const FOLLOW_VERSION_SELECTS = ["group-version", "trial-version", "cmp-version", "part-version", "change-old-version",
-  "change-new-version", "look-version"];
+// 各画面のグループの欄の既定を、いま作った・取り込んだグループにする（利用者が選び直した欄は除く）。マスタ登録も manualDefaultGroup が追う
+const FOLLOW_GROUP_SELECTS = ["group-pick", "trial-group", "cmp-group", "part-group", "change-old-group",
+  "change-new-group", "look-group", "import-group"];
 
-function followImported(versionId) {
-  screenState.importedVersion = versionId;
-  for (const id of FOLLOW_VERSION_SELECTS) {
+function followGroup(groupId) {
+  screenState.importedGroup = groupId;
+  for (const id of FOLLOW_GROUP_SELECTS) {
     const select = document.getElementById(id);
-    if (!select.dataset.picked) versionOptions(select, { value: versionId });
+    if (!select.dataset.picked) groupOptions(select, { value: groupId });
   }
 }
 
@@ -812,107 +832,119 @@ function warningList(warnings) {
     el("td", {}, w.file || "—"), numTd(w.row, { missing: "—" }), el("td", {}, w.message)))));
 }
 
-function noteCell(v) {
-  const edit = (id) => () => { screenState.noteEditing = id; drawVersions(); };
-  if (screenState.noteEditing !== v.version_id) {
-    return el("td", {}, v.note || "", " ", el("button", { type: "button", onclick: edit(v.version_id) }, "直す"));
+function noteCell(g) {
+  const edit = (id) => () => { screenState.noteEditing = id; drawGroups(); };
+  if (screenState.noteEditing !== g.group_id) {
+    return el("td", {}, g.note || "", " ", el("button", { type: "button", onclick: edit(g.group_id) }, "直す"));
   }
-  const input = el("input", { value: v.note || "" });
+  const input = el("input", { value: g.note || "" });
   const save = () => guarded(async () => {
-    await api("PUT", `/api/versions/note?${qs({ version: v.version_id })}`, { note: input.value });
+    await api("PUT", `/api/groups/note?${qs({ group: g.group_id })}`, { note: input.value });
     screenState.noteEditing = null;
     await refreshLists();
-    await drawVersions();
+    await drawGroups();
     showMessage("保存しました。", "info");
   });
   input.addEventListener("keydown", (e) => e.key === "Enter" && save());
   setTimeout(() => input.focus());
   return el("td", {}, input,
-    el("button", { type: "button", class: "primary", onclick: save }, "保存"),
+    el("button", { type: "button", onclick: save }, "保存"),
     el("button", { type: "button", onclick: edit(null) }, "やめる"));
 }
 
 function warningDetail() {
   const w = screenState.warningOpen;
-  if (!w || !state.versions.some((v) => v.version_id === w.version_id)) return null;
+  if (!w || !state.groups.some((g) => g.group_id === w.group_id)) return null;
   const info = w.info;
   return el("div", {},
-    closableTitle(`${versionLabel(info)} の検証の結果`, () => { screenState.warningOpen = null; drawVersions(); }),
-    info.used_by.length ? el("p", { class: "muted" }, `使っている試算: ${info.used_by.join("・")}`) : null,
+    closableTitle(`${info.label} の検証の結果`, () => { screenState.warningOpen = null; drawGroups(); }),
+    info.products.length ? el("p", { class: "muted" }, `②の製品: ${info.products.join("・")}`) : null,
     warningList(info.warnings));
 }
 
-async function drawVersions() {
-  const box = document.getElementById("version-list");
-  if (!state.versions.length) { box.replaceChildren(el("p", { class: "muted" }, "なし")); return; }
+async function drawGroups() {
+  importTables ??= await api("GET", "/api/import/tables");
+  const box = document.getElementById("group-list");
   const toggleWarnings = (id) => () => guarded(async () => {
-    screenState.warningOpen = screenState.warningOpen?.version_id === id
+    screenState.warningOpen = screenState.warningOpen?.group_id === id
       ? null
-      : { version_id: id, info: await api("GET", `/api/versions/info?${qs({ version: id })}`) };
-    await drawVersions();
+      : { group_id: id, info: await api("GET", `/api/groups/info?${qs({ group: id })}`) };
+    await drawGroups();
   });
+  const copy = (id) => () => { screenState.copyFrom = id; drawGroups(); };
   box.replaceChildren(
-    table(["開発番号", "名称", "版", "取り込んだ日時", "元のファイル", "メモ", numTh("警告"), ""], state.versions.map((v) => el("tr", {},
-      el("td", {}, v.dev_number || v.version_id),
-      el("td", {}, v.dev_name || ""),
-      el("td", {}, `第${v.revision || 1}版`),
-      el("td", {}, v.imported_at ? v.imported_at.replace("T", " ") : "—"),
-      el("td", {}, v.source_name || "—"),
-      noteCell(v),
-      el("td", { class: `num ${v.warning_count ? "missing" : ""}` }, String(v.warning_count)),
+    state.groups.length ? table(["開発番号", "名称", "検討内容", "流用元", "入っている表", numTh("②の製品"), "取り込んだ日時", "元のファイル",
+      numTh("警告"), ""], state.groups.map((g) => el("tr", {},
+      el("td", {}, g.dev_number),
+      el("td", {}, g.dev_name || ""),
+      noteCell(g),
+      el("td", {}, g.copied_from ? g.copied_from_label ?? "（消えた）" : "—"),
+      el("td", {}, g.bom_tables.map(tableLabel).join("・") || "—"),
+      el("td", { class: "num" }, String(g.scenario_count)),
+      el("td", {}, g.imported_at ? g.imported_at.replace("T", " ") : "—"),
+      el("td", {}, g.source_name || "—"),
+      el("td", { class: `num ${g.warning_count ? "missing" : ""}` }, String(g.warning_count)),
       el("td", {},
         el("button", {
-          type: "button", class: screenState.warningOpen?.version_id === v.version_id ? "on" : null,
-          onclick: toggleWarnings(v.version_id),
+          type: "button", class: screenState.warningOpen?.group_id === g.group_id ? "on" : null,
+          onclick: toggleWarnings(g.group_id),
         }, "警告を見る"),
-        el("button", { type: "button", onclick: () => guarded(() => askDeleteVersion(v)) }, "消す")),
-    ))),
-    versionDeleteBox() ?? "",
+        el("button", { type: "button", class: screenState.copyFrom === g.group_id ? "on" : null, onclick: copy(g.group_id) }, "流用"),
+        el("button", { type: "button", onclick: () => guarded(() => deleteGroup(g)) }, "消す")),
+    ))) : el("p", { class: "muted" }, "なし"),
     warningDetail() ?? "",
   );
+  drawGroupForm();
 }
 
-// ロックしている検討案があれば画面の中の枠で並べて確かめ、無ければ今までどおり confirm で消す
-async function askDeleteVersion(v) {
-  const info = await api("GET", `/api/versions/info?${qs({ version: v.version_id })}`);
-  if (info.locked_here.length || info.locked_others.length) {
-    screenState.versionDelete = { version: v, info };
-    await drawVersions();
-    return;
-  }
-  if (!confirm(`${versionLabel(v)} を消しますか？（元に戻せません）`)) return;
-  await deleteVersion(v, false);
-}
-
-async function deleteVersion(v, cascade) {
-  await api("DELETE", `/api/versions?${qs({ version: v.version_id, cascade: cascade ? "1" : "" })}`);
-  const gone = screenState.versionDelete?.info.locked_others.map((t) => t.version_id) ?? [];
-  if (typeof trialOpened !== "undefined" && trialOpened
-      && (trialOpened.version === v.version_id || gone.includes(trialOpened.version))) trialOpened = null;
-  screenState.versionDelete = null;
-  await refreshLists();
-  await drawVersions();
-  showMessage(`${versionLabel(v)} を消しました。`, "info");
-}
-
-function versionDeleteBox() {
-  const d = screenState.versionDelete;
-  if (!d || !state.versions.some((v) => v.version_id === d.version.version_id)) return null;
-  const close = () => { screenState.versionDelete = null; drawVersions(); };
-  const here = d.info.locked_here;
-  const others = d.info.locked_others;
-  return el("div", { class: "verdel" },
-    el("div", { class: "detail-title" }, `${versionLabel(d.version)} を検討案ごと消しますか？（元に戻せません）`),
-    here.length ? el("div", {},
-      el("div", { class: "verdel-head" }, `この版の上の検討案（${here.length} 件）`),
-      el("ul", {}, here.map((n) => el("li", {}, n)))) : null,
-    others.length ? el("div", { class: "verdel-others" },
-      el("div", { class: "verdel-head" }, `他の版の検討案も消えます（${others.length} 件）`),
-      el("ul", {}, others.map((t) => el("li", {}, `${t.name}（${t.version_label}）`)))) : null,
-    el("div", { class: "verdel-buttons" },
-      el("button", { type: "button", class: "verdel-go", onclick: () => guarded(() => deleteVersion(d.version, true)) }, "全部消す"),
-      el("button", { type: "button", onclick: close }, "やめる")),
+// ［新しく作る］: 流用元を選ぶと、写すもの（BOM の表・マスタ登録・②の変更）を選べる
+function drawGroupForm() {
+  const source = state.groups.find((g) => g.group_id === screenState.copyFrom) ?? null;
+  const from = el("select", { onchange: (e) => { screenState.copyFrom = e.target.value; drawGroups(); } });
+  options(from, state.groups.map((g) => [g.group_id, g.label]), { blank: "なし", value: source?.group_id ?? "" });
+  if (!source) from.value = "";
+  const devNumber = el("input", { placeholder: source?.dev_number || "例 D-123" });
+  const devName = el("input", { placeholder: source?.dev_name || "" });
+  const note = el("input", {});
+  const check = (value, label, enabled = true) => {
+    const input = el("input", { type: "checkbox", value, checked: enabled, disabled: !enabled });
+    return { input, label: el("label", {}, input, ` ${label}`) };
+  };
+  const tables = source ? (importTables ?? []).map((t) => check(t.id, t.label, source.bom_tables.includes(t.id))) : [];
+  const master = check("master", "マスタ登録");
+  const changes = check("changes", "②の変更", source?.scenario_count > 0);
+  const create = () => guarded(async () => {
+    const r = await api("POST", "/api/groups", {
+      from: source?.group_id ?? "", dev_number: devNumber.value, dev_name: devName.value, note: note.value,
+      copy: source ? { tables: tables.filter((t) => t.input.checked).map((t) => t.input.value),
+        master: master.input.checked, changes: changes.input.checked } : {},
+    });
+    screenState.copyFrom = "";
+    const box = document.getElementById("import-result");
+    box.replaceChildren(
+      closableTitle(`${r.label} を作りました`, () => box.replaceChildren()),
+      r.dropped.length ? [el("p", { class: "missing" }, `写さなかった②の変更 ${r.dropped.length} 件`), droppedTable(r.dropped)] : null,
+    );
+    await refreshLists();
+    followGroup(r.group_id);
+    await drawGroups();
+  });
+  document.getElementById("group-new").replaceChildren(
+    el("div", { class: "form-row" }, field("流用元 ", from), field("開発番号 ", devNumber), field("名称 ", devName),
+      field("検討内容 ", note)),
+    source ? el("div", { class: "form-row" }, tables.map((t) => t.label), master.label, changes.label) : null,
+    el("div", { class: "form-row" }, el("button", { type: "button", class: "primary", onclick: create }, "新しく作る")),
   );
+}
+
+async function deleteGroup(g) {
+  if (!confirm(`${g.label} を消しますか？（元に戻せません）`)) return;
+  await api("DELETE", `/api/groups?${qs({ group: g.group_id })}`);
+  if (typeof trialOpened !== "undefined" && trialOpened?.group === g.group_id) trialOpened = null;
+  if (screenState.copyFrom === g.group_id) screenState.copyFrom = "";
+  await refreshLists();
+  await drawGroups();
+  showMessage(`${g.label} を消しました。`, "info");
 }
 
 // 配線 ----------------------------------------------------------------------
@@ -933,22 +965,21 @@ function wireScreens() {
   });
   document.getElementById("part-show").addEventListener("click", () => guarded(drawPart));
   document.getElementById("part-code").addEventListener("keydown", (e) => e.key === "Enter" && guarded(drawPart));
-  document.getElementById("part-version").addEventListener("change", (e) => guarded(() => loadCodes(e.target.value)));
+  document.getElementById("part-group").addEventListener("change", (e) => guarded(() => loadCodes(e.target.value)));
   document.getElementById("part-scenario").addEventListener("change", (e) => {
     const s = state.scenarios.find((x) => String(x.scenario_id) === e.target.value);
-    if (s) document.getElementById("part-version").value = s.version_id;
+    if (s) document.getElementById("part-group").value = s.group_id;
   });
   document.getElementById("change-new-kind").addEventListener("change", changeKindToggle);
   document.getElementById("change-show").addEventListener("click", () => guarded(drawChange));
-  document.getElementById("change-old-version").addEventListener("change", (e) => guarded(() => loadCodes(e.target.value)));
+  document.getElementById("change-old-group").addEventListener("change", (e) => guarded(() => loadCodes(e.target.value)));
   document.getElementById("import-file").addEventListener("change", () => guarded(() => previewFile()));
   document.getElementById("import-sheet").addEventListener("change", (e) => guarded(() => previewFile(e.target.value)));
   document.getElementById("import-table").addEventListener("change", drawMapping);
-  document.getElementById("import-run").addEventListener("click", () => guarded(runImport));
-  document.getElementById("import-dev-number").addEventListener("change", fillDevName);
-  document.getElementById("import-dev-number").addEventListener("input", syncCostOnly);
-  // 利用者が選び直した版の欄は、取り込んだ後も変えない
-  for (const id of FOLLOW_VERSION_SELECTS) {
+  document.getElementById("import-run").addEventListener("click", () => guarded(checkImport));
+  document.getElementById("import-group").addEventListener("change", () => { screenState.importCheck = null; drawImportCheck(); });
+  // 利用者が選び直したグループの欄は、作った・取り込んだ後も変えない
+  for (const id of FOLLOW_GROUP_SELECTS) {
     const select = document.getElementById(id);
     select.addEventListener("change", () => { select.dataset.picked = "1"; });
   }

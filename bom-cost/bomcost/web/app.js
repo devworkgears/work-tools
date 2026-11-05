@@ -4,7 +4,7 @@
 
 const state = {
   meta: null,
-  versions: [],
+  groups: [],
   scenarios: [],
   scenarioId: null,
   summary: null,
@@ -180,30 +180,39 @@ async function init() {
   headSelect.replaceChildren(...state.meta.heads.map((h) => el("option", { value: h.id }, h.label)));
   state.tableColumns = state.meta.table_columns.map((c) => c.key);
   await loadLists();
-  if (!state.versions.length) {
-    await showScreen("import");  // 版が無ければデータ取込から
-    showMessage("版なし", "info");
+  if (!state.groups.length) {
+    await showScreen("groups");  // グループが無ければグループの一覧から（新しく作る）
+    showMessage("グループなし", "info");
     return;
   }
   if (state.scenarios.length) await selectScenario(state.scenarios[0].scenario_id);
-  await showScreen(flowScreen[screenState.flow]);  // 版があれば覚えたモードの画面（差し替えなら①製品を選ぶ）
+  await showScreen(flowScreen[screenState.flow]);  // グループがあれば覚えたモードの画面（差し替えなら①グループを選ぶ）
 }
 
-// 版の表示「D-123 新型ユニット（第2版）」。v は版 ID か版の行（開発番号・名称・版の番号を持つもの）
-function versionLabel(v) {
-  const row = v && typeof v === "object" ? v : state.versions.find((x) => x.version_id === v);
-  if (!row) return v ?? "";
-  const dev = row.dev_number || row.version_id;
-  return `${dev}${row.dev_name ? ` ${row.dev_name}` : ""}（第${row.revision || 1}版）`;
+// グループの表示「D-123 新型ユニット（検討内容）」。g はグループ ID かグループの行（label を持つもの）
+function groupLabel(g) {
+  const row = g && typeof g === "object" ? g : state.groups.find((x) => x.group_id === g);
+  return row ? row.label : g ?? "";
+}
+
+function scenarioText(s) {
+  return s.product_code === `${s.base}#` ? s.base : `${s.base} → ${s.product_code}`;
 }
 
 async function loadLists() {
-  [state.versions, state.scenarios] = await Promise.all([api("GET", "/api/versions"), api("GET", "/api/scenarios")]);
-  document.getElementById("version-select").replaceChildren(
-    ...state.versions.map((v) => el("option", { value: v.version_id }, versionLabel(v))),
-  );
+  [state.groups, state.scenarios] = await Promise.all([api("GET", "/api/groups"), api("GET", "/api/scenarios")]);
+  const select = document.getElementById("product-group");
+  const keep = select.value;
+  select.replaceChildren(...state.groups.map((g) => el("option", { value: g.group_id }, g.label)));
+  if (state.groups.some((g) => g.group_id === keep)) select.value = keep;
+  drawScenarioSelect();
+}
+
+// ［製品から］の試算の選択肢は、選んでいるグループの②の製品
+function drawScenarioSelect() {
+  const group = document.getElementById("product-group").value;
   document.getElementById("scenario-select").replaceChildren(
-    ...state.scenarios.map((s) => el("option", { value: s.scenario_id }, s.name)),
+    ...state.scenarios.filter((s) => s.group_id === group).map((s) => el("option", { value: s.scenario_id }, scenarioText(s))),
   );
 }
 
@@ -214,23 +223,32 @@ async function selectScenario(id) {
   await reloadAll();
 }
 
+function clearScenario() {
+  state.scenarioId = null;
+  state.summary = null;
+  state.selected = null;
+  for (const id of ["tree", "detail", "history", "result"]) document.getElementById(id).replaceChildren();
+  document.getElementById("left-note").textContent = "";
+}
+
 async function reloadAll() {
   state.childCache.clear();
   state.table = null;
   state.summary = await api("GET", `/api/scenarios/${state.scenarioId}`);
   const sc = state.summary.scenario;
+  document.getElementById("product-group").value = sc.group_id;
+  drawScenarioSelect();
   document.getElementById("scenario-select").value = String(sc.scenario_id);
-  document.getElementById("version-select").value = sc.version_id;
   document.getElementById("head-select").value = sc.head;
-  loadCodeList(sc.version_id);
+  loadCodeList(sc.group_id);
   renderHistory();
   renderResult();
   await renderLeft();
   await renderDetail();
 }
 
-async function loadCodeList(versionId) {
-  const items = await api("GET", `/api/items?version=${encodeURIComponent(versionId)}`);
+async function loadCodeList(groupId) {
+  const items = await api("GET", `/api/items?group=${encodeURIComponent(groupId)}`);
   document.getElementById("code-list").replaceChildren(
     ...items.map((i) => el("option", { value: i.code }, i.name)),
   );
@@ -263,7 +281,7 @@ async function renderTree() {
   const root = rootData.node;
   const rootPath = root.code;
   document.getElementById("left-note").textContent =
-    `${rootData.view.mode_label}・${versionLabel(rootData.view.version_id)}・${rootData.view.head_label}・参考値`;
+    `${rootData.view.mode_label}・${rootData.view.group_label}・${rootData.view.head_label}・参考値`;
   if (!state.expanded.size) state.expanded.add(rootPath);
   const rows = [];
   rows.push(nodeRow(root, rootPath, 0));
@@ -449,7 +467,7 @@ async function afterChange() {
 // 履歴と結果 -------------------------------------------------------------
 
 function premiseText(r) {
-  const parts = [versionLabel(r.version_id), r.head_label];
+  const parts = [groupLabel(r.group_id), r.head_label];
   if (r.volume !== null) parts.push(`台数 ${fmt(r.volume)}`);
   if (r.allocation) parts.push(`型費 ${r.allocation}`);
   return parts.join("・");
@@ -463,7 +481,7 @@ function renderHistory() {
       "li",
       { value: 0 },
       el("div", { class: "row" }, el("span", { class: "text" }, `土台 ${s.start.base}`), money(s.start.cost)),
-      el("div", { class: "premise" }, `前提: ${versionLabel(s.scenario.version_id)}・${s.scenario.head_label}`),
+      el("div", { class: "premise" }, `前提: ${s.scenario.group_label}・${s.scenario.head_label}`),
     ),
     ...s.history.map((r) =>
       el(
@@ -499,18 +517,18 @@ function renderResult() {
       el("span", {}, el("span", { class: "label" }, "変更前"), el("span", { class: "big num" }, fmt(last.cost_before, { yen: true }))),
       el("span", {}, el("span", { class: "label" }, "変更後"), el("span", { class: "big num" }, fmt(last.cost_after, { yen: true }))),
       el("span", {}, el("span", { class: "label" }, "差額"), el("span", { class: `big num ${signClass(last.difference)}` }, fmt(last.difference, { sign: true, yen: true }))),
-      el("span", { class: "muted" }, `前提: ${versionLabel(last.version_id)}・${last.head_label}`),
+      el("span", { class: "muted" }, `前提: ${groupLabel(last.group_id)}・${last.head_label}`),
     )
     : el("div", { class: "result-line muted" }, "変更なし");
   const now = el(
     "div",
     { class: "result-line" },
-    el("span", {}, el("span", { class: "label" }, `今の ${s.scenario.product_code}（${versionLabel(p.version_id)}）`), el("span", { class: "big num" }, fmt(s.total, { yen: true }))),
+    el("span", {}, el("span", { class: "label" }, `今の ${s.scenario.product_code}（${s.scenario.group_label}）`), el("span", { class: "big num" }, fmt(s.total, { yen: true }))),
     s.volume ? el("span", { class: "muted" }, `年間台数 ${fmt(s.volume.annual)}（${s.volume.kind}）`) : null,
     s.missing.length ? el("span", { class: "missing" }, `未登録: ${s.missing.join("・")}`) : null,
     s.conflicts.length ? el("span", { class: "missing" }, `数量の食い違い ${s.conflicts.length} 件`) : null,
   );
-  box.replaceChildren(el("div", { class: "result-head" }, `変更の結果（${premise}・${versionLabel(p.version_id)}）`), line, now);
+  box.replaceChildren(el("div", { class: "result-head" }, `変更の結果（${premise}・${s.scenario.group_label}）`), line, now);
 }
 
 // テーブル ---------------------------------------------------------------
@@ -521,7 +539,7 @@ async function renderTable() {
   }
   const t = state.table;
   document.getElementById("left-note").textContent =
-    `${t.view.mode_label}・${versionLabel(t.view.version_id)}・参考値・償却費除外`;
+    `${t.view.mode_label}・${t.view.group_label}・参考値・償却費除外`;
   renderColumnChecks();
   drawGrid();
 }
@@ -644,62 +662,11 @@ async function exportXlsx() {
     row_ids: rows.map((r) => r.id),
   });
   const url = URL.createObjectURL(blob);
-  const a = el("a", { href: url, download: `bom-cost-${state.summary.scenario.name}.xlsx` });
+  const a = el("a", { href: url, download: `bom-cost-${state.summary.scenario.product_code}.xlsx` });
   document.body.append(a);
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
-// 版の比較 ---------------------------------------------------------------
-
-async function openCompare() {
-  const dialog = document.getElementById("compare-dialog");
-  const select = document.getElementById("compare-version");
-  const current = state.summary.scenario.version_id;
-  const others = state.versions.filter((v) => v.version_id !== current);
-  select.replaceChildren(...state.versions.map((v) => el("option", { value: v.version_id }, versionLabel(v))));
-  select.value = (others[0] || state.versions[0]).version_id;
-  dialog.showModal();
-  await drawCompare();
-}
-
-async function drawCompare() {
-  const other = document.getElementById("compare-version").value;
-  const c = await api("GET", `/api/scenarios/${state.scenarioId}/compare?version=${encodeURIComponent(other)}`);
-  const table = el(
-    "table",
-    { class: "small" },
-    el("thead", {}, el("tr", {}, el("th", {}, "品目"), el("th", { class: "num" }, "数量"), el("th", { class: "num" }, versionLabel(c.version_a)), el("th", { class: "num" }, versionLabel(c.version_b)), el("th", { class: "num" }, "差"))),
-    el(
-      "tbody",
-      {},
-      c.lines.map((l) =>
-        el(
-          "tr",
-          {},
-          el("td", {}, `${l.part} ${l.name} `, roleTag(l.role)),
-          el("td", { class: "num" }, fmt(l.quantity)),
-          el("td", {}, money(l.amount_a)),
-          el("td", {}, money(l.amount_b)),
-          el("td", { class: `num ${signClass(l.difference)}` }, fmt(l.difference, { sign: true, missing: "—", yen: true })),
-        ),
-      ),
-      el(
-        "tr",
-        {},
-        el("th", {}, c.product_code),
-        el("td", {}),
-        el("th", {}, money(c.total_a)),
-        el("th", {}, money(c.total_b)),
-        el("th", { class: `num ${signClass(c.difference)}` }, fmt(c.difference, { sign: true, missing: "—", yen: true })),
-      ),
-    ),
-  );
-  document.getElementById("compare-body").replaceChildren(
-    table,
-    el("p", { class: "muted" }, `前提: ${c.head_label}・参考値・償却費除外`),
-  );
 }
 
 // 操作の配線 -------------------------------------------------------------
@@ -736,10 +703,11 @@ function wire() {
       await renderLeft();
     })),
   );
-  document.getElementById("version-select").addEventListener("change", (e) => guarded(async () => {
-    state.summary = await api("PUT", `/api/scenarios/${state.scenarioId}`, { version_id: e.target.value });
-    await reloadAll();
-    showMessage(`${versionLabel(e.target.value)} で再計算`, "info");
+  document.getElementById("product-group").addEventListener("change", () => guarded(async () => {
+    drawScenarioSelect();
+    const first = document.getElementById("scenario-select").value;
+    if (first) await selectScenario(first);
+    else clearScenario();
   }));
   document.getElementById("head-select").addEventListener("change", (e) => guarded(async () => {
     state.summary = await api("PUT", `/api/scenarios/${state.scenarioId}`, { head: e.target.value });
@@ -751,17 +719,14 @@ function wire() {
     await afterChange();
   }));
   document.getElementById("export-xlsx").addEventListener("click", () => guarded(exportXlsx));
-  document.getElementById("open-compare").addEventListener("click", () => guarded(openCompare));
-  document.getElementById("compare-version").addEventListener("change", () => guarded(drawCompare));
-  document.getElementById("compare-close").addEventListener("click", () => document.getElementById("compare-dialog").close());
 
   const dialog = document.getElementById("new-dialog");
   document.getElementById("new-scenario").addEventListener("click", () => {
-    const version = document.getElementById("version-select").value;
+    const group = document.getElementById("product-group").value;
     const head = document.getElementById("head-select");
     document.getElementById("new-premise").textContent =
-      `${version ? versionLabel(version) : "版 —"}・${head.options[head.selectedIndex]?.text || "材料費"}`;
-    if (version) loadCodeList(version);
+      `${group ? groupLabel(group) : "グループ —"}・${head.options[head.selectedIndex]?.text || "材料費"}`;
+    if (group) loadCodeList(group);
     dialog.showModal();
   });
   document.getElementById("new-cancel").addEventListener("click", () => dialog.close());
@@ -770,10 +735,9 @@ function wire() {
     const form = new FormData(e.target);
     guarded(async () => {
       const created = await api("POST", "/api/scenarios", {
-        name: form.get("name"),
         base: form.get("base"),
         product_code: form.get("product_code"),
-        version_id: document.getElementById("version-select").value,
+        group_id: document.getElementById("product-group").value,
         head: document.getElementById("head-select").value,
       });
       dialog.close();

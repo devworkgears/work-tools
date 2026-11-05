@@ -12,18 +12,17 @@
   <div class="seg" id="flow-seg" role="group" aria-label="モード">
     <button type="button" data-flow="swap" class="on">差し替え</button>
     <button type="button" data-flow="stack">積み上げ</button>
-    <button type="button" data-flow="final">確定</button>
   </div>
   <nav class="screen-nav" id="screen-seg" aria-label="画面">
     <div class="seg">
       <button type="button" data-screen="import">データ取込</button>
-      <button type="button" data-screen="versions">版管理</button>
+      <button type="button" data-screen="groups">グループ</button>
       <button type="button" data-screen="manual">マスタ登録</button>
       <button type="button" data-screen="lookup">品目照会</button>
     </div>
     <span class="nav-flow-steps" data-flow-of="swap">
       <span class="nav-sep" aria-hidden="true"></span>
-      <button type="button" class="step on" data-screen="group">①製品を選ぶ</button>
+      <button type="button" class="step on" data-screen="group">①グループを選ぶ</button>
       <span class="muted" aria-hidden="true">→</span>
       <button type="button" class="step" data-screen="trial">②部品・費目を変える</button>
       <span class="muted" aria-hidden="true">→</span>
@@ -46,7 +45,7 @@
     <button type="button" data-balloon="0" class="on">品番でまとめる</button>
     <button type="button" data-balloon="1">風船番号で分ける</button>
   </div>
-  <label>版 <select id="version-select"></select></label>
+  <label>グループ <select id="product-group"></select></label>
   <label>費目 <select id="head-select"></select></label>
   <label>試算 <select id="scenario-select"></select></label>
   <button type="button" id="new-scenario">新しい試算</button>
@@ -55,7 +54,6 @@
     <button type="button" data-view="tree" class="on">ツリー</button>
     <button type="button" data-view="table">テーブル</button>
   </div>
-  <button type="button" id="open-compare">版の比較</button>
   </div>
 </header>
 
@@ -109,22 +107,20 @@
 <main class="screen" id="screen-group">
   <section class="panel">
     <div class="panel-head">
-      <h2>①製品を選ぶ</h2>
+      <h2>①グループを選ぶ</h2>
     </div>
     <div class="form-row">
-      <label>版 <select id="group-version"></select></label>
+      <label>グループ <select id="group-pick"></select></label>
       <label>製品（品番・名称の一部） <input id="group-q"></label>
       <button type="button" class="primary" id="group-show">絞り込む</button>
     </div>
     <div id="group-body" class="screen-body"></div>
     <div class="form-row">
-      <label>検討案 <input id="group-name" list="group-names" placeholder="例 部品の共通化"></label>
-      <button type="button" id="group-create">検討案を作る</button>
+      <button type="button" id="group-create">②に入れる</button>
     </div>
-    <div id="group-trials" class="screen-body"></div>
+    <div id="group-trials" class="form-row"></div>
   </section>
 </main>
-<datalist id="group-names"></datalist>
 
 <main class="screen" id="screen-trial" hidden>
   <section class="panel">
@@ -132,9 +128,7 @@
       <h2>②部品・費目を変える</h2>
     </div>
     <div class="form-row">
-      <label>版 <select id="trial-version"></select></label>
-      <label>検討案 <select id="trial-name"></select></label>
-      <button type="button" id="trial-open">開く</button>
+      <label>グループ <select id="trial-group"></select></label>
     </div>
     <div id="trial-body" class="screen-body"></div>
   </section>
@@ -146,8 +140,7 @@
       <h2>③原価を見る</h2>
     </div>
     <div class="form-row">
-      <label>版 <select id="cmp-version"></select></label>
-      <div class="field">検討案 <div class="check-list" id="cmp-names"></div></div>
+      <label>グループ <select id="cmp-group"></select></label>
       <label>製品（品番・名称の一部） <input id="cmp-q"></label>
       <label>償却費を無視 <input type="checkbox" id="cmp-ignore"></label>
       <button type="button" class="primary" id="cmp-show">見る</button>
@@ -164,7 +157,7 @@
     </div>
     <div class="form-row">
       <label>部品の品番 <input id="part-code" list="code-list-2" placeholder="例 X-610"></label>
-      <label>版 <select id="part-version"></select></label>
+      <label>グループ <select id="part-group"></select></label>
       <label>試算の構成を使う <select id="part-scenario"></select></label>
       <label>主に見る費目 <select id="part-head"></select></label>
       <div class="seg" id="part-allocation" role="group" aria-label="載せ方"></div>
@@ -182,25 +175,16 @@
     </div>
     <div class="form-row">
       <label>元の製品 <input id="change-old" list="code-list-2" placeholder="例 A-100"></label>
-      <label>元の版 <select id="change-old-version"></select></label>
+      <label>元のグループ <select id="change-old-group"></select></label>
       <span class="muted">→</span>
       <label>新しい側 <select id="change-new-kind"><option value="product">製品</option><option value="scenario">試算</option></select></label>
       <label class="change-new-product">新製品 <input id="change-new" list="code-list-2" placeholder="例 V-110"></label>
-      <label class="change-new-product">新しい版 <select id="change-new-version"></select></label>
+      <label class="change-new-product">新しいグループ <select id="change-new-group"></select></label>
       <label class="change-new-scenario" hidden>試算 <select id="change-scenario"></select></label>
       <label><input type="checkbox" id="change-direct"> 直下の子だけ比べる</label>
       <button type="button" class="primary" id="change-show">比べる</button>
     </div>
     <div id="change-body" class="screen-body"></div>
-  </section>
-</main>
-
-<main class="screen" id="screen-final" hidden>
-  <section class="panel">
-    <div class="panel-head">
-      <h2>確定</h2>
-      <span class="tag warn">作成中</span>
-    </div>
   </section>
 </main>
 
@@ -214,7 +198,7 @@
       <h2>品目照会</h2>
     </div>
     <div class="form-row">
-      <label>版 <select id="look-version"></select></label>
+      <label>グループ <select id="look-group"></select></label>
       <label>品番・名称 <input id="look-q" list="code-list-2" placeholder="例 B-200"></label>
       <button type="button" class="primary" id="look-show">見る</button>
     </div>
@@ -236,21 +220,23 @@
       <h3>取り込む一覧</h3>
       <div id="import-pending"><p class="muted">なし</p></div>
       <div class="form-row">
-        <label>開発番号 <input id="import-dev-number" placeholder="例 D-123"></label>
-        <label>名称 <input id="import-dev-name"></label>
-        <label><input type="checkbox" id="import-cost-only" disabled> 原価だけ更新</label>
-        <label>メモ <input id="import-note"></label>
-        <button type="button" class="primary" id="import-run">取り込む</button>
+        <label>グループ <select id="import-group"></select></label>
+        <button type="button" class="primary" id="import-run">確かめる</button>
       </div>
     </div>
+    <div id="import-check" class="screen-body"></div>
   </section>
 </main>
 
-<main class="screen" id="screen-versions" hidden>
+<main class="screen" id="screen-groups" hidden>
   <section class="panel">
-    <div class="panel-head"><h2>版の一覧</h2></div>
+    <div class="panel-head"><h2>グループ</h2></div>
     <div id="import-result" class="screen-body"></div>
-    <div id="version-list" class="screen-body"></div>
+    <div id="group-list" class="screen-body"></div>
+    <div class="screen-body">
+      <h3>新しく作る</h3>
+      <div id="group-new"></div>
+    </div>
   </section>
 </main>
 
@@ -259,24 +245,14 @@
 <dialog id="new-dialog">
   <form method="dialog" id="new-form">
     <h2>新しい試算</h2>
-    <label>名前 <input name="name" required></label>
     <label>土台の製品の品番 <input name="base" list="code-list" required></label>
-    <label>試算の製品の品番 <input name="product_code" required></label>
+    <label>試算の製品の品番 <input name="product_code"></label>
     <p class="muted">前提: <span id="new-premise"></span></p>
     <div class="dialog-buttons">
       <button type="button" id="new-cancel">やめる</button>
       <button type="submit" class="primary">作る</button>
     </div>
   </form>
-</dialog>
-
-<dialog id="compare-dialog">
-  <div class="dialog-body">
-    <h2>版の比較</h2>
-    <label>比べる版 <select id="compare-version"></select></label>
-    <div id="compare-body"></div>
-    <div class="dialog-buttons"><button type="button" id="compare-close">閉じる</button></div>
-  </div>
 </dialog>
 
 <datalist id="code-list"></datalist>
