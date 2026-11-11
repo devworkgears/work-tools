@@ -63,10 +63,11 @@ class CostResult:
     item_costs: Mapping[str, Decimal | None]
     missing: tuple[str, ...]  # 原価が未登録の品目（0 円扱いせず足し上げから外した）
     conflicts: tuple[BomConflict, ...]
+    incomplete: bool = False  # 式の費目で、未登録の償却費・直接費を 0 として通した
 
     @property
     def complete(self) -> bool:
-        return not self.missing and not self.conflicts
+        return not self.missing and not self.conflicts and not self.incomplete
 
 
 class CostCalculator:
@@ -89,8 +90,9 @@ class CostCalculator:
         self.policy = policy or ScopePolicy()
         self._overrides = {to_code(k): tuple(v) for k, v in (overrides or {}).items()}
         self._memo: dict[str, Decimal | None] = {}
-        self._missing: dict[str, None] = {}
-        self._visited_parents: dict[str, None] = {}
+        # メモは製品をまたいで使い回すので、未登録と子をたどった親は品番ごとに持ち、calculate で root の下だけ集める
+        self._missing: set[str] = set()
+        self._expanded: dict[str, tuple[str, ...]] = {}  # 子を足した親 → 足した子の品番
         self._in_progress: set[str] = set()
 
     def children(self, code: str) -> tuple[BomLine, ...]:
@@ -118,13 +120,13 @@ class CostCalculator:
         lines = self.children(code)
         if not lines:
             if own is None:
-                self._missing[code] = None
+                self._missing.add(code)
             return own
         if own is not None and self.policy.scope_for(code, self.head) is Scope.INCLUDES_CHILDREN:
             return own
         if own is None:
-            self._missing[code] = None
-        self._visited_parents[code] = None
+            self._missing.add(code)
+        self._expanded[code] = tuple(line.child for line in lines)
         total = own if own is not None else Decimal(0)
         for line in lines:
             child_cost = self.item_cost(line.child)
@@ -135,14 +137,26 @@ class CostCalculator:
     def calculate(self, root: Code) -> CostResult:
         root = to_code(root)
         total = self.item_cost(root)
+        # 計算と同じ順（行きがけ）でたどり、未登録の並びを1つの製品だけ計算したときと揃える
+        reached: dict[str, None] = {}
+        missing: list[str] = []
+        stack = [root]
+        while stack:
+            code = stack.pop()
+            if code in reached:
+                continue
+            reached[code] = None
+            if code in self._missing:
+                missing.append(code)
+            stack.extend(reversed(self._expanded.get(code, ())))
         return CostResult(
             root=root,
             head=self.head,
             version_id=self.version.version_id,
             total=total,
-            item_costs=dict(self._memo),
-            missing=tuple(self._missing),
-            conflicts=self.version.conflicts_under(self._visited_parents),
+            item_costs={code: value for code, value in self._memo.items() if code in reached},
+            missing=tuple(missing),
+            conflicts=self.version.conflicts_under(c for c in reached if c in self._expanded),
         )
 
 
@@ -163,9 +177,10 @@ def calculate_cost(
         return CostCalculator(version, head, policy, overrides).calculate(root)
     material = CostCalculator(version, CostHead.MATERIAL, policy, overrides).calculate(root)
     own = {to_code(k): v for k, v in (own_values or {}).items()}
-    costs = {
-        code: breakdown(value, own.get(code) or registered_own(version, code)).value(head)
+    breakdowns = {
+        code: breakdown(value, own.get(code) or registered_own(version, code))
         for code, value in material.item_costs.items()
     }
+    costs = {code: b.value(head) for code, b in breakdowns.items()}
     return CostResult(material.root, head, material.version_id, costs[material.root], costs,
-                      material.missing, material.conflicts)
+                      material.missing, material.conflicts, breakdowns[material.root].is_incomplete(head))

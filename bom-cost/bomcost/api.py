@@ -167,7 +167,8 @@ def _change_text(change: Change) -> str:
 def change_problem(scenario: Scenario, changes: list[Change]) -> str | None:
     """1回の操作の変更（changes）を試算の今の履歴に足せないなら、その理由の文。足せるなら None。
 
-    品番が版に無い・場所が版の構成に無い・同じ場所を2回変える・部品とその中の場所を両方変える（nesting_conflict）を見る。
+    品番が版に無い・場所が版の構成に無い・同じ場所を2回変える・部品とその中の場所を両方変える（nesting_conflict）・
+    部品の数が負になる（negative_usage）を見る。
     画面からの変更と、流用・取り込みで写した変更の当て直しの両方に使う。
     """
     first = changes[0]
@@ -194,7 +195,7 @@ def change_problem(scenario: Scenario, changes: list[Change]) -> str | None:
         done = next((c for c in scenario.changes if c.location == location), None)
         if done is not None:
             return f"{label} はもう{done.kind.value}した（同じ場所は1回だけ変えられる）"
-    return scenario.nesting_conflict(first)
+    return scenario.nesting_conflict(first) or scenario.negative_usage(first)
 
 
 def trial_code(version: Version, product: str) -> str:

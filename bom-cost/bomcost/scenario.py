@@ -316,23 +316,31 @@ class Scenario:
         inside: dict[str, str] = {}
         outer: dict[str, str] = {}
         below: dict[str, set[str]] = {}
+        product_codes: tuple[str, ...] | None = None
 
         def under(code: str) -> set[str]:
             if code not in below:
                 below[code] = {code, *usage_per_unit(self.version, code)}
             return below[code]
 
+        def in_product() -> tuple[str, ...]:
+            # 履歴の件数ぶん構成をたどり直すと、再生（1件ごとに locks を呼ぶ）が件数の2乗で重くなる
+            nonlocal product_codes
+            if product_codes is None:
+                product_codes = (self.base, *usage_per_unit(self.version, self.base))
+            return product_codes
+
         for change in self.changes if changes is None else changes:
             if change.kind in _PART_CHANGES:
                 for code in under(change.part):
                     inside.setdefault(code, change.part)
             if change.location is not None:
-                for code in (self.base, *usage_per_unit(self.version, self.base)):
+                for code in in_product():
                     if change.parent in under(code):
                         outer.setdefault(code, _label(change))
             elif change.kind in _PART_CHANGES:
                 # 場所なしの変更は製品の中のどこにあっても効くので、その部品の上の組立品も変えられない
-                for code in (self.base, *usage_per_unit(self.version, self.base)):
+                for code in in_product():
                     if code != change.part and change.part in under(code):
                         outer.setdefault(code, _label(change))
         return inside, outer
@@ -349,6 +357,24 @@ class Scenario:
             done = outer[change.part]
             return f"{done} を変えたので、{_label(change)} は変えられない（親子に重なる・先に {done} の変更を外す）"
         return None
+
+    def negative_usage(self, change: Change, changes: tuple[Change, ...] | None = None) -> str | None:
+        """change を changes（省けば履歴の全部）に足すと、製品1台あたりのその部品の数が負になるなら断る理由の文。
+
+        場所なしの削除・置換は製品の直下で引くだけなので、構成にある数より多く引けてしまう。
+        版の構成ですでに負の部品は、さらに減らす変更だけを断る。
+        """
+        if change.kind not in _PART_CHANGES:
+            return None
+        changes = self.changes if changes is None else changes
+        after = usage_per_unit(self.version, self.product_code, self.overrides(changes + (change,))).get(
+            change.part, Decimal(0))
+        if after >= 0:
+            return None
+        before = usage_per_unit(self.version, self.product_code, self.overrides(changes)).get(change.part, Decimal(0))
+        if after >= before:
+            return None
+        return f"{_label(change)} を変えると製品1台あたりの {change.part} の数が負になる（構成にある数より多くは抜けない）"
 
     def undo(self) -> ChangeRecord | None:
         """最後の操作を取り消す（まとまりなら丸ごと）。取り消した行の最後の1行を返す。"""
