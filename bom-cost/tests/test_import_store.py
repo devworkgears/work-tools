@@ -466,7 +466,7 @@ class VersionsAndScenarios(unittest.TestCase):
 
 
 class MissingColumns(unittest.TestCase):
-    """設計書の ER 図にあって落ちていた欄（台数・載せ方・風船番号・検証の結果）。"""
+    """取り込みで保存する欄（台数・載せ方・風船番号・検証の結果）。"""
 
     setUp = VersionsAndScenarios.setUp
     tearDown = VersionsAndScenarios.tearDown

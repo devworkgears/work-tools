@@ -22,8 +22,8 @@ const state = {
 
 // 表示 ------------------------------------------------------------------
 
-// replaceChildren・append に配列や null を渡すと "[object HTMLDivElement]" や "null" の文字になる崩れが
-// 3回出たので、el() と同じく深さ無制限で平らにし、null・undefined・false を飛ばす
+// replaceChildren・append に配列や null を渡すと "[object HTMLDivElement]" や "null" の文字になるので、
+// el() と同じく深さ無制限で平らにし、null・undefined・false を飛ばす
 for (const method of ["replaceChildren", "append"]) {
   const original = Element.prototype[method];
   Element.prototype[method] = function (...children) {
