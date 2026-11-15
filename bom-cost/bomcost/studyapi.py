@@ -1,6 +1,7 @@
 """設計検討（/v2/）の API。検討は検討番号（number）と版（version: 空なら仮）で指す。"""
 
 import io
+import json
 import unicodedata
 from datetime import datetime
 from decimal import Decimal
@@ -50,6 +51,7 @@ if TYPE_CHECKING:
 # 設計検討の見本（製品をまたぐ差し替えを試せる大きさ）。パッケージの外に置き、配る zip には入れない
 SAMPLES_DIR = Path(__file__).resolve().parent.parent / "samples_v2"
 XLSX_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+LABELS_NAME = "labels.json"
 
 
 def _s(value: Decimal | None) -> str | None:
@@ -124,11 +126,31 @@ def _fold(text: str) -> str:
     return "".join(unicodedata.normalize("NFKC", text).casefold().split())
 
 
-def item_attributes(table: Table, column_map: ColumnMap) -> Attributes:
-    """部品マスタの任意の列（代表・規格・組立図）を品番ごとに。無い列は空文字。"""
+def load_labels(db_path: Path | None) -> dict[str, str]:
+    """語の読み替え（画面と取り込みの見出しの語 → 使う語）。DB と同じフォルダの labels.json に書く。無ければ空。"""
+    path = None if db_path is None else db_path.parent / LABELS_NAME
+    if path is None or not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError) as e:
+        raise ValueError(f"{LABELS_NAME} を読めません（{e}）") from None
+    if not isinstance(data, dict) or not all(isinstance(v, str) for v in data.values()):
+        raise ValueError(f"{LABELS_NAME} の形が違います（語 → 使う語 の対応を書く）")
+    return data
+
+
+def item_attributes(table: Table, column_map: ColumnMap, labels: dict[str, str] | None = None) -> Attributes:
+    """部品マスタの任意の列（代表・規格・組立図）を品番ごとに。無い列は空文字。
+
+    labels に読み替えがある見出しは、読み替えた語の列を先に探し、無ければ元の語の列を使う。
+    """
     headers = [_fold(h) for h in table.headers]
     code_at = table.headers.index(column_map.columns["code"])
-    at = {name: headers.index(_fold(label)) if _fold(label) in headers else None for name, label in ATTRIBUTES}
+    at: dict[str, int | None] = {}
+    for name, label in ATTRIBUTES:
+        wanted = [_fold(x) for x in ((labels or {}).get(label), label) if x]
+        at[name] = next((headers.index(w) for w in wanted if w in headers), None)
     result: Attributes = {}
     for row in table.rows:
         cell = row[code_at] if code_at < len(row) else None
@@ -143,7 +165,8 @@ def item_attributes(table: Table, column_map: ColumnMap) -> Attributes:
     return result
 
 
-def import_tables(tables: list[Table]) -> tuple[Version, list[str], list[str], Attributes]:
+def import_tables(tables: list[Table],
+                  labels: dict[str, str] | None = None) -> tuple[Version, list[str], list[str], Attributes]:
     """表を取り込んだ版・入った表の種類・警告の文・品目の属性。"""
     work = VersionImport(Version("v2", datetime.now().replace(microsecond=0)))
     kinds: list[str] = []
@@ -153,7 +176,7 @@ def import_tables(tables: list[Table]) -> tuple[Version, list[str], list[str], A
         work.add_table(table, column_map)
         kinds.append(column_map.table)
         if column_map.table == "item":
-            attributes.update(item_attributes(table, column_map))
+            attributes.update(item_attributes(table, column_map, labels))
     warnings = [f"{w.file}{'' if w.row is None else f' {w.row}行'}: {w.message}" for w in work.warnings]
     return work.version, kinds, warnings, attributes
 
@@ -172,6 +195,7 @@ class StudyApi:
 
     def routes(self) -> list[tuple[str, str, Callable[..., "Response"]]]:
         return [
+            ("GET", r"/api/v2/labels", self.labels),
             ("GET", r"/api/v2/bom", self.bom_status),
             ("POST", r"/api/v2/bom/import", self.bom_import),
             ("POST", r"/api/v2/lookup", self.lookup),
@@ -214,6 +238,9 @@ class StudyApi:
 
     # 部品表 -----------------------------------------------------------------
 
+    def labels(self, params: dict[str, str]) -> "Response":
+        return self._json({"labels": load_labels(self.api.store.path)})
+
     def bom_status(self, params: dict[str, str]) -> "Response":
         return self._json({"counts": self.store.bom_counts(), "samples": SAMPLES_DIR.is_dir()})
 
@@ -233,7 +260,7 @@ class StudyApi:
             for f in files:
                 name, data = Screens._upload_bytes(f)
                 tables.append(read_table_bytes(name, data))
-        version, kinds, warnings, attributes = import_tables(tables)
+        version, kinds, warnings, attributes = import_tables(tables, load_labels(self.api.store.path))
         self.store.replace_bom(version, kinds, attributes)
         return self._json({"tables": kinds, "warnings": warnings, "counts": self.store.bom_counts()})
 

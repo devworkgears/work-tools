@@ -4,6 +4,12 @@
 // grow()（空の行を1行足す。足せなければ false）。
 "use strict";
 
+// 語の読み替え（画面の語 → 使う語）。起動の時にサーバーから受け取る。語がまるごと一致した時だけ替える
+const LABELS = {};
+function label(text) {
+  return Object.hasOwn(LABELS, text) ? LABELS[text] : text;
+}
+
 // 打った・貼った値の全角の英数字・記号を半角にそろえる（マイナス記号の − も - に）
 function clean(text) {
   return text.normalize("NFKC").replace(/\u2212/g, "-").trim();
@@ -61,7 +67,7 @@ class Grid {
       const tr = document.createElement("tr");
       for (const h of this.model.head()) {
         const th = document.createElement("th");
-        th.textContent = h.text ?? h;
+        th.textContent = label(h.text ?? h);
         if (h.cls) th.className = h.cls;
         tr.append(th);
       }

@@ -29,7 +29,7 @@ function el(tag, attrs = {}, ...children) {
   }
   for (const child of children.flat(Infinity)) {
     if (child === null || child === undefined || child === false) continue;
-    node.append(child instanceof Node ? child : document.createTextNode(String(child)));
+    node.append(child instanceof Node ? child : document.createTextNode(label(String(child))));
   }
   return node;
 }
@@ -1068,4 +1068,7 @@ const SCREENS = {
   8: rewriteScreen,
 };
 
-openScreen(2);
+// 語の読み替えを受け取ってから最初の画面を描く（受け取れなくても元の語で開く）
+api("GET", "/api/v2/labels")
+  .then((d) => Object.assign(LABELS, d.labels), fail)
+  .finally(() => openScreen(2));
