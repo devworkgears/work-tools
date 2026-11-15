@@ -16,24 +16,13 @@ from urllib.parse import parse_qs
 from .doublecount import Judgement, judge_double_counting
 from .formula import EDITABLE_HEADS, Breakdown, Head, OwnValues, breakdown, registered_own
 from .importer import load_openpyxl
-from .model import BomLine, CostHead, Version
+from .model import HEADS, MASTER_HEADS, BomLine, CostHead, Version
 from .mold import usage_per_unit
 from .normalize import to_code, to_decimal, to_optional_code
 from .rollup import CostCalculator, Scope
 from .scenario import Change, ChangeKind, ChangeRecord, Scenario
 from .store import Store
 
-# 「製品から」の画面に並べる5費目（材料費のほかは式の値。償却費は式に入れ、詳細に登録値を出す）
-HEADS: tuple[CostHead, ...] = (
-    CostHead.MATERIAL,
-    CostHead.DIRECT,
-    CostHead.INDIRECT,
-    CostHead.ADJUSTMENT,
-    CostHead.MANUFACTURING,
-)
-# マスタ登録で入れる費目（式の入力のうち登録値を使うもの）。調整費・間接費・製造原価は式で出すので入れない
-MASTER_HEADS: tuple[CostHead, ...] = (CostHead.MATERIAL, CostHead.AMORTIZATION, CostHead.DIRECT,
-                                      CostHead.PROCESSING)
 MODES = {"diff": "差分", "bulk": "一括"}
 JSON_TYPE = "application/json; charset=utf-8"
 XLSX_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -87,6 +76,12 @@ def group_label(version: Version) -> str:
 def group_text(dev_number: str, dev_name: str, note: str) -> str:
     name = f" {dev_name}" if dev_name else ""
     return f"{dev_number}{name}" + (f"（{note}）" if note else "")
+
+
+def _specification(version: Version, code: str) -> str:
+    """品目の記号・寸法。品目が無ければ空。"""
+    item = version.items.get(code)
+    return item.specification if item is not None else ""
 
 
 def _s(value: Decimal | None) -> str | None:
@@ -381,7 +376,7 @@ class _View:
         return {
             "code": code,
             "name": self.name(code),
-            "specification": self.version.items[code].specification if code in self.version.items else "",
+            "specification": _specification(self.version, code),
             "kind": "" if item is None else item.kind,
             "parent": parent,
             "balloon": None if line is None else line.balloon,
@@ -411,7 +406,7 @@ class _View:
                 "balloon": "" if line is None or line.balloon is None else line.balloon,
                 "code": code,
                 "name": self.name(code),
-                "specification": self.version.items[code].specification if code in self.version.items else "",
+                "specification": _specification(self.version, code),
                 "quantity": _s(Decimal(1) if line is None else line.quantity),
                 "usage": _s(usage),
                 "role": self.role(parent, line),
@@ -462,12 +457,14 @@ class Api:
         from .lookup import lookup_routes
         from .masterbook import default_opener
         from .screens import screen_routes
+        from .studyapi import study_routes
 
         # マスタのブックの置き場（None なら DB と同じフォルダ）と、書いたブックを開く関数（None なら開かない）
         self.master_dir: Path | None = None
         self.open_file: Callable[[Path], None] | None = default_opener()
         self._routes += [(m, re.compile(p), h)
-                         for m, p, h in screen_routes(self) + group_routes(self) + lookup_routes(self)]
+                         for m, p, h in screen_routes(self) + group_routes(self) + lookup_routes(self)
+                         + study_routes(self)]
 
     # 入口 ------------------------------------------------------------------
 

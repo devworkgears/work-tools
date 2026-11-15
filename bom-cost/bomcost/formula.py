@@ -34,6 +34,8 @@ class Head(Enum):
 
 # 検討案の費目変更で製品ごとに書き換えられる費目
 EDITABLE_HEADS: tuple[Head, ...] = (Head.PROCESSING, Head.AMORTIZATION, Head.DIRECT)
+# ③で並べる8費目（式の並び）。材料費小計のほかは製品を一番上にして式で出す
+COMPARE_HEADS: tuple[Head, ...] = tuple(Head)
 _BELOW_MATERIAL = frozenset({Head.ADJUSTMENT, Head.MATERIAL_TOTAL, Head.INDIRECT, Head.MANUFACTURING})
 
 

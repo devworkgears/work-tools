@@ -38,6 +38,11 @@ BASIC_HEADS: tuple[CostHead, ...] = (
     CostHead.INDIRECT,
     CostHead.ADJUSTMENT,
 )
+# 「製品から」の画面に並べる5費目（材料費のほかは式の値。償却費は式に入れ、詳細に登録値を出す）
+HEADS: tuple[CostHead, ...] = (*BASIC_HEADS, CostHead.MANUFACTURING)
+# マスタ登録で入れる費目（式の入力のうち登録値を使うもの）。調整費・間接費・製造原価は式で出すので入れない
+MASTER_HEADS: tuple[CostHead, ...] = (CostHead.MATERIAL, CostHead.AMORTIZATION, CostHead.DIRECT,
+                                      CostHead.PROCESSING)
 
 
 class Source(Enum):

@@ -14,9 +14,9 @@ from typing import TYPE_CHECKING, Any, Callable
 from urllib.parse import quote
 
 from .api import (XLSX_TYPE, ApiError, Response, _flag, _head, _json_response, _place, _require_known,
-                  _record_json, _s, _text_field, _View, group_label, scenario_annual, trial_code)
+                  _record_json, _s, _specification, _text_field, _View, group_label, scenario_annual, trial_code)
 from .comparebook import compare_file_name, compare_workbook
-from .formula import ADJUSTMENT_RATE, EDITABLE_HEADS, INDIRECT_RATE, Breakdown, Head
+from .formula import ADJUSTMENT_RATE, COMPARE_HEADS, EDITABLE_HEADS, INDIRECT_RATE, Breakdown, Head
 from .model import BomLine, CostHead, Version
 from .normalize import to_code
 from .scenario import ChangeKind, ChangeRecord, Scenario
@@ -42,8 +42,6 @@ def is_product_kind(product_kind: str, kind: str) -> bool:
     return bool(kind) and kind in (product_kind, PRODUCT_KIND_CODE)
 
 
-# ③で並べる8費目（式の並び）。材料費小計のほかは製品を一番上にして式で出す
-COMPARE_HEADS: tuple[Head, ...] = tuple(Head)
 # ③の変更後の列の名前（グループの変更は1つなので、今と並べる列は1つ）
 AFTER = "変更後"
 
@@ -420,7 +418,7 @@ class Group:
                 # 償却費の未登録を咎めるのは試算がある製品だけ（ほかは 0 として通して一部未登録に）
                 chosen = any(code in scenario_ids[n] for n in names)
                 base = self._compare_row(bulk, code, code, product_name, None, None, ignore, failed if chosen else [])
-                base["specification"] = version.items[code].specification if code in version.items else ""
+                base["specification"] = _specification(version, code)
                 rows.append(base)
                 for n in names:
                     sid = scenario_ids[n].get(code)
@@ -483,10 +481,10 @@ class Group:
                 row = _batch_json(records)
                 row["sequence"], row["batch"] = recorded[0].sequence, recorded[0].batch
                 row["part_name"] = self._name(version, row["part"])
-                row["part_specification"] = version.items[row["part"]].specification if row["part"] in version.items else ""
+                row["part_specification"] = _specification(version, row["part"])
                 row["part_kind"] = self._kind(version, row["part"])
                 row["replacement_specifications"] = {
-                    r["code"]: version.items[r["code"]].specification if r["code"] in version.items else ""
+                    r["code"]: _specification(version, r["code"])
                     for r in row["replacements"]
                 }
                 for r in row["replacements"]:
@@ -586,7 +584,7 @@ class Group:
         head = _head(params.get("head"), CostHead.MATERIAL)
         rows = [
             {"code": c, "name": self._name(version, c),
-             "specification": version.items[c].specification if c in version.items else "", "has_structure": c in structure.children}
+             "specification": _specification(version, c), "has_structure": c in structure.children}
             for c in shown
         ]
         totals: dict[str, Any] = {}
@@ -885,7 +883,7 @@ class Group:
                         "product_name": self._name(version, product),
                         "part": part,
                         "part_name": self._name(version, part),
-                        "part_specification": version.items[part].specification if part in version.items else "",
+                        "part_specification": _specification(version, part),
                         "usage": _s(usage),
                         "replaced_by": changed.get(part, []),
                         "place_changes": [{"kind": k, "label": v} for k, v in placed.get(part, {}).items()],
@@ -918,7 +916,7 @@ class Group:
                     continue
                 row = grouped.setdefault(part, {
                     "part": part, "part_name": self._name(version, part),
-                    "part_specification": version.items[part].specification if part in version.items else "",
+                    "part_specification": _specification(version, part),
                     "product_count": 0, "place_count": 0, "replaced_by": [],
                 })
                 row["product_count"] += 1

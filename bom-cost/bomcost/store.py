@@ -281,6 +281,11 @@ class Store:
         self._conn.executescript(SCHEMA)
         self._conn.commit()
 
+    @property
+    def connection(self) -> sqlite3.Connection:
+        """同じ DB の別の表（設計検討）を持つ層が使う接続。"""
+        return self._conn
+
     def close(self) -> None:
         self._conn.close()
 
