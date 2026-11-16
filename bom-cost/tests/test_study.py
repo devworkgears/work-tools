@@ -443,6 +443,28 @@ class StudyApiFlow(unittest.TestCase):
         self.assertEqual((looked["name"], looked["model"], looked["product_spec"], looked["drawing"]),
                          ("製品A", "", "", ""))
 
+    def test_import_with_chosen_columns_reads_unknown_headers_and_keeps_the_map(self) -> None:
+        csv = "コードX,なまえY\nA-100,製品A\n".encode("utf-8")
+        f = {"filename": "品目.csv", "content": base64.b64encode(csv).decode(),
+             "table": "item", "columns": {"code": "コードX", "name": "なまえY"}}
+        checked = self.ok("POST", "/api/v2/bom/import", body={"files": [f], "check": True})
+        self.assertEqual(checked["counts"], {"item": 1})
+        self.assertEqual(self.ok("GET", "/api/v2/bom")["counts"]["item"], 0)  # 確認では何も入らない
+        done = self.ok("POST", "/api/v2/bom/import", body={"files": [f]})
+        self.assertEqual(done["counts"]["item"], 1)
+        looked = self.ok("POST", "/api/v2/lookup", body={"codes": ["A-100"]})["items"]["A-100"]
+        self.assertEqual(looked["name"], "製品A")
+        preview = self.ok("POST", "/api/import/preview", body={"filename": f["filename"], "content": f["content"]})
+        self.assertEqual(preview["suggested"], "item")  # 決定で列の対応を保存し、次の同じ見出しで出る
+
+    def test_import_with_chosen_columns_refuses_a_missing_required_column(self) -> None:
+        csv = "コードX,なまえY\nA-100,製品A\n".encode("utf-8")
+        f = {"filename": "品目.csv", "content": base64.b64encode(csv).decode(),
+             "table": "item", "columns": {"name": "なまえY"}}
+        response = self.api.handle("POST", "/api/v2/bom/import", "",
+                                   json.dumps({"files": [f]}, ensure_ascii=False).encode("utf-8"))
+        self.assertEqual(response.status, 400)
+
     def test_attributes_are_frozen_with_the_version(self) -> None:
         self.ok("POST", "/api/v2/bom/import", body={"sample": True})
         number = self.ok("POST", "/api/v2/studies", body={})["header"]["number"]

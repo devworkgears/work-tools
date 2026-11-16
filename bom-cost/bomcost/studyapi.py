@@ -19,7 +19,6 @@ from .importer import (
     guess_columns,
     load_openpyxl,
     read_csv,
-    read_table_bytes,
 )
 from .model import CostHead, Version
 from .normalize import to_code
@@ -165,14 +164,17 @@ def item_attributes(table: Table, column_map: ColumnMap, labels: dict[str, str] 
     return result
 
 
-def import_tables(tables: list[Table],
-                  labels: dict[str, str] | None = None) -> tuple[Version, list[str], list[str], Attributes]:
-    """表を取り込んだ版・入った表の種類・警告の文・品目の属性。"""
+def import_tables(tables: list[Table], labels: dict[str, str] | None = None,
+                  maps: list[ColumnMap | None] | None = None) -> tuple[Version, list[str], list[str], Attributes]:
+    """表を取り込んだ版・入った表の種類・警告の文・品目の属性。
+
+    maps は表ごとの列の対応（tables と同じ並び）。無い表は見出しから表の種類を当てる。
+    """
     work = VersionImport(Version("v2", datetime.now().replace(microsecond=0)))
     kinds: list[str] = []
     attributes: Attributes = {}
-    for table in tables:
-        column_map = table_kind(table)
+    for i, table in enumerate(tables):
+        column_map = (maps[i] if maps else None) or table_kind(table)
         work.add_table(table, column_map)
         kinds.append(column_map.table)
         if column_map.table == "item":
@@ -245,10 +247,15 @@ class StudyApi:
         return self._json({"counts": self.store.bom_counts(), "samples": SAMPLES_DIR.is_dir()})
 
     def bom_import(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
-        """files（filename・content の base64）か、sample: true で見本の CSV を取り込む。入った表だけ入れ替える。"""
+        """files（filename・content の base64）か、sample: true で見本の CSV を取り込む。入った表だけ入れ替える。
+
+        files の1件に table と columns（項目 → 見出し）があればその対応で読み、決定の時に対応を保存する。無ければ見出しから
+        表の種類を当てる。sheet は Excel のシート名。check: true は読んだ件数と警告を返すだけで、何も保存しない。
+        """
         from .screens import Screens
 
         tables: list[Table] = []
+        maps: list[ColumnMap | None] = []
         if body.get("sample"):
             if not SAMPLES_DIR.is_dir():
                 raise ValueError("見本のデータがありません")
@@ -257,11 +264,20 @@ class StudyApi:
             files = body.get("files")
             if not isinstance(files, list) or not files:
                 raise ValueError("取り込むファイルを選んでください")
+            screens = Screens(self.api)
             for f in files:
-                name, data = Screens._upload_bytes(f)
-                tables.append(read_table_bytes(name, data))
-        version, kinds, warnings, attributes = import_tables(tables, load_labels(self.api.store.path))
+                table, _, _ = screens._read_upload(f)
+                tables.append(table)
+                maps.append(screens._column_map(f, table) if f.get("columns") is not None else None)
+        version, kinds, warnings, attributes = import_tables(tables, load_labels(self.api.store.path), maps)
+        if body.get("check"):
+            read = {"item": len(version.items), "bom_line": len(version.lines), "cost": len(version.cost_rows),
+                    "volume": len(version.volumes)}
+            return self._json({"tables": kinds, "warnings": warnings, "counts": {k: read[k] for k in dict.fromkeys(kinds)}})
         self.store.replace_bom(version, kinds, attributes)
+        for column_map in maps:
+            if column_map is not None:
+                self.api.store.save_column_map(column_map)
         return self._json({"tables": kinds, "warnings": warnings, "counts": self.store.bom_counts()})
 
     def lookup(self, params: dict[str, str], body: dict[str, Any]) -> "Response":

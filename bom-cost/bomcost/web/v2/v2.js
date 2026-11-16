@@ -515,47 +515,171 @@ function toBase64(buffer) {
   return btoa(binary);
 }
 
+const MAX_FILE_BYTES = 16 * 1024 * 1024;
+const TABLE_LABELS = { item: "品目", bom_line: "構成", cost: "原価", volume: "年間台数" };
+
+// ファイルから読んだ文字（見出し・値）はそのまま出す。el の文字は語の読み替えを通るため
+function raw(text) {
+  return document.createTextNode(text ?? "");
+}
+
+function setOptions(select, pairs, value) {
+  fill(select, pairs.map(([v, t]) => el("option", { value: v }, raw(t))));
+  select.value = value ?? "";
+}
+
+function countsTable(counts) {
+  const keys = Object.keys(TABLE_LABELS).filter((k) => k in counts);
+  return el("table", { class: "list", style: "margin:4px 0 8px" },
+    el("tr", {}, keys.map((k) => el("th", {}, TABLE_LABELS[k]))),
+    el("tr", {}, keys.map((k) => el("td", { class: "r" }, counts[k]))));
+}
+
+// ファイルを選ぶ → シートと表を選ぶ → 列の対応を確かめる → 一覧に加える → 確認 → 決定
 async function importDialog(after) {
-  const files = el("input", { type: "file", multiple: true, accept: ".csv,.xlsx,.xlsm" });
-  const out = el("div");
-  const show = (d) => {
-    const labels = { item: "品目", bom_line: "構成", cost: "原価", volume: "年間台数" };
-    fill(out,
-      el("table", { class: "list", style: "margin-top:8px" },
-        el("tr", {}, Object.values(labels).map((t) => el("th", {}, t))),
-        el("tr", {}, Object.keys(labels).map((k) => el("td", { class: "r" }, d.counts[k])))),
-      d.warnings && d.warnings.length ? el("div", { class: "msg" }, d.warnings.join("\n")) : null);
+  const file = el("input", { type: "file", accept: ".csv,.xlsx,.xlsm" });
+  const sheet = el("select", { class: "in" });
+  const sheetLabel = el("label", { class: "mini", hidden: true }, "シート ", sheet);
+  const kind = el("select", { class: "in" });
+  const now = el("div");
+  const mapping = el("div");
+  const list = el("div");
+  const check = el("div");
+  const pending = [];
+  let preview = null; // { file, content, data }
+  let checked = null; // 確認した時に送った中身。決定で同じ物を送る
+  const checkButton = el("button", { class: "btn pri", onclick: () => runCheck() }, "確認");
+  // 確認を出している間は［決定］が主ボタン
+  const clearCheck = () => { checked = null; fill(check); checkButton.classList.add("pri"); };
+
+  const warningBox = (warnings) => (warnings && warnings.length ? el("div", { class: "msg" }, raw(warnings.join("\n"))) : null);
+
+  const drawMapping = () => {
+    if (!preview) { fill(mapping); return; }
+    const d = preview.data;
+    const def = d.tables.find((t) => t.id === kind.value) || d.tables[0];
+    const selects = {};
+    const rows = def.fields.map((f) => {
+      const select = el("select", { class: "in" });
+      setOptions(select, [["", "（使わない）"], ...d.headers.filter(Boolean).map((h) => [h, h])], (def.saved ?? def.guess)[f.name] || "");
+      selects[f.name] = select;
+      return el("tr", {}, el("td", {}, f.label, f.required ? el("span", { class: "pill warn", style: "margin-left:6px" }, "必須") : null), el("td", {}, select));
+    });
+    const add = () => {
+      const missing = def.fields.filter((f) => f.required && !selects[f.name].value).map((f) => f.label);
+      if (missing.length) { fail(new Error(`必須の列が対応づいていません: ${missing.join("・")}`)); return; }
+      pending.push({
+        filename: d.filename, content: preview.content, sheet: d.sheet || undefined, table: def.id,
+        columns: Object.fromEntries(Object.entries(selects).filter(([, s]) => s.value).map(([k, s]) => [k, s.value])),
+        fieldLabels: Object.fromEntries(def.fields.map((f) => [f.name, f.label])),
+      });
+      preview = null;
+      file.value = "";
+      sheetLabel.hidden = true;
+      drawMapping();
+      drawPending();
+    };
+    fill(mapping,
+      el("div", { class: "mini" }, raw(`${d.filename}${d.sheet ? `（シート ${d.sheet}）` : ""}・${d.row_count} 行・列 ${d.headers.length}`)),
+      el("table", { class: "list", style: "margin:4px 0 8px" }, el("tr", {}, el("th", {}, "モックの項目"), el("th", {}, "元の列")), rows),
+      el("div", { class: "mini" }, `先頭 ${d.sample.length} 行`),
+      el("div", { style: "overflow:auto" }, el("table", { class: "list" },
+        el("tr", {}, d.headers.map((h) => el("th", {}, raw(h || "（空）")))),
+        d.sample.map((r) => el("tr", {}, r.map((c) => el("td", {}, raw(c))))))),
+      el("div", { class: "row", style: "margin:8px 0" }, el("button", { class: "btn", onclick: add }, "この内容で一覧に加える")));
   };
-  const send = async (body) => {
+
+  const drawPending = () => {
+    clearCheck(); // 一覧が変われば確認はやり直す
+    fill(list,
+      el("div", { class: "mini", style: "margin-top:8px" }, "取り込む一覧"),
+      pending.length
+        ? el("table", { class: "list", style: "margin:4px 0 8px" },
+          el("tr", {}, ["ファイル", "表", "対応づけ", ""].map((t) => el("th", {}, t))),
+          pending.map((f, i) => el("tr", {},
+            el("td", {}, raw(`${f.filename}${f.sheet ? `（${f.sheet}）` : ""}`)),
+            el("td", {}, TABLE_LABELS[f.table] ?? f.table),
+            el("td", {}, raw(Object.entries(f.columns).map(([k, v]) => `${f.fieldLabels[k] ?? k}←${v}`).join("・"))),
+            el("td", {}, el("button", { class: "btn quiet", onclick: () => { pending.splice(i, 1); drawPending(); } }, "外す")))))
+        : el("div", { class: "mini" }, "なし"));
+  };
+
+  const load = async (sheetName) => {
+    const f = file.files[0];
+    if (!f) return;
+    if (f.size > MAX_FILE_BYTES) throw new Error(`${f.name} が大きすぎます（上限 16 MB）`);
+    const content = preview?.file === f ? preview.content : toBase64(await f.arrayBuffer());
+    const data = await api("POST", "/api/import/preview", {}, { filename: f.name, content, sheet: sheetName });
+    preview = { file: f, content, data };
+    sheetLabel.hidden = !data.sheets.length;
+    setOptions(sheet, data.sheets.map((s) => [s, s]), data.sheet);
+    // 保存した対応づけが無い時は、見出しの当たりがいちばん強い表を仮に選ぶ
+    setOptions(kind, data.tables.map((t) => [t.id, `${t.label}${t.saved ? "（保存した対応づけあり）" : ""}`]),
+      data.suggested || data.guessed || data.tables[0].id);
+    drawMapping();
+  };
+
+  const showNow = (counts, warnings) => fill(now, el("div", { class: "mini" }, "いま入っている件数"), countsTable(counts), warningBox(warnings));
+
+  const runCheck = async () => {
+    if (!pending.length) { fail(new Error("取り込む一覧が空です")); return; }
+    const body = { files: pending.map((f) => ({ filename: f.filename, content: f.content, sheet: f.sheet, table: f.table, columns: f.columns })) };
     try {
-      const d = await api("POST", "/api/v2/bom/import", {}, body);
-      show(d);
-      done("取込しました");
-      after();
+      const r = await api("POST", "/api/v2/bom/import", {}, { ...body, check: true });
+      checked = body;
+      checkButton.classList.remove("pri");
+      fill(check,
+        el("div", { class: "mini" }, "取り込みの確認（読んだ件数。この表の中身を入れ替えます）"),
+        countsTable(r.counts),
+        warningBox(r.warnings),
+        el("div", { class: "row" },
+          el("button", { class: "btn pri", onclick: decide }, "決定"),
+          el("button", { class: "btn", onclick: clearCheck }, "やめる")));
     } catch (e) {
       fail(e);
     }
   };
+
+  const finish = (r) => {
+    showNow(r.counts, r.warnings);
+    done("取込しました");
+    after();
+  };
+
+  const decide = async () => {
+    try {
+      const r = await api("POST", "/api/v2/bom/import", {}, checked);
+      pending.length = 0;
+      drawPending();
+      finish(r);
+    } catch (e) {
+      fail(e);
+    }
+  };
+
+  file.addEventListener("change", () => load().catch(fail));
+  sheet.addEventListener("change", () => load(sheet.value).catch(fail));
+  kind.addEventListener("change", drawMapping);
+
   let status = { samples: false, counts: null };
   try {
     status = await api("GET", "/api/v2/bom");
   } catch (e) {
     fail(e);
   }
-  const d = dialog("部品表データ取込（モック）", [files, out], [
-    status.samples ? el("button", { class: "btn", onclick: () => send({ sample: true }) }, "見本") : null,
+  const d = dialog("部品表データ取込（モック）", [
+    now,
+    el("div", { class: "row" }, file, sheetLabel, el("label", { class: "mini" }, "表 ", kind)),
+    mapping, list, check,
+  ], [
+    status.samples ? el("button", { class: "btn", onclick: () => api("POST", "/api/v2/bom/import", {}, { sample: true }).then(finish, fail) }, "見本") : null,
     el("span", { class: "sp" }),
-    el("button", {
-      class: "btn pri", onclick: async () => {
-        if (!files.files.length) return;
-        const list = [];
-        for (const f of files.files) list.push({ filename: f.name, content: toBase64(await f.arrayBuffer()) });
-        send({ files: list });
-      },
-    }, "取込"),
+    checkButton,
     el("button", { class: "btn", onclick: () => d.close() }, "閉じる"),
   ]);
-  if (status.counts) show({ counts: status.counts });
+  setOptions(kind, Object.entries(TABLE_LABELS), "item");
+  drawPending();
+  if (status.counts) showNow(status.counts);
 }
 
 // ④ 置換 -----------------------------------------------------------------
