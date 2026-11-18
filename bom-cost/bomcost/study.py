@@ -364,7 +364,10 @@ def problem_count(ws: Workspace) -> int:
 
 
 def calculate(ws: Workspace, head: CostHead = CostHead.MANUFACTURING) -> dict[str, Any]:
-    """対象品番ごとの今と案ごとの原価・年間の影響。DB は読むだけ（呼び手が渡した Workspace だけを見る）。"""
+    """対象品番ごとの今と案ごとの原価・年間の影響・台数の加重平均。DB は読むだけ（呼び手が渡した Workspace だけを見る）。
+
+    台数の加重平均＝年間の影響 ÷ 年間の影響に入れた製品の年間台数の合計（1台あたりの増減）。台数の合計が 0 なら None。
+    """
     bom = ws.bom
     calc = CostCalculator(bom, CostHead.MATERIAL)
     all_checked = check_changes(ws)
@@ -375,6 +378,7 @@ def calculate(ws: Workspace, head: CostHead = CostHead.MANUFACTURING) -> dict[st
     rows = []
     impact: dict[str, Decimal] = {p: Decimal(0) for p in plans}
     impact_incomplete: dict[str, bool] = {p: False for p in plans}
+    counted: dict[str, Decimal] = {p: Decimal(0) for p in plans}
     for product in ws.targets:
         own = registered_own(bom, product)
         try:
@@ -425,9 +429,12 @@ def calculate(ws: Workspace, head: CostHead = CostHead.MANUFACTURING) -> dict[st
                 impact_incomplete[plan] = True
             else:
                 impact[plan] += (after - now) * annual
+                counted[plan] += annual
                 impact_incomplete[plan] |= row["incomplete"][plan]
         rows.append(row)
-    return {"head": head, "plans": plans, "rows": rows, "impact": impact, "impact_incomplete": impact_incomplete}
+    weighted = {p: impact[p] / counted[p] if counted[p] else None for p in plans}
+    return {"head": head, "plans": plans, "rows": rows, "impact": impact, "impact_incomplete": impact_incomplete,
+            "weighted": weighted}
 
 
 # 保存 -----------------------------------------------------------------------

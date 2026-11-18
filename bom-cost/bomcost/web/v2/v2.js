@@ -1162,6 +1162,16 @@ async function resultScreen(main) {
             class: "r" + (n < 0 ? " minus" : n > 0 ? " plus" : "") + (data.impact_incomplete[p] ? " inc" : ""),
             title: data.impact_incomplete[p] ? "不完全" : null,
           }, man(v));
+        })),
+      // 年間の影響 ÷ 年間台数の合計（1台あたりの増減）
+      el("tr", {}, el("th", {}, "台数の加重平均"), el("th", {}), el("th", { class: "mini" }, "1台あたり"),
+        plans.map((p) => {
+          const v = data.weighted[p];
+          const n = Number(v);
+          return el("th", {
+            class: "r" + (v === null ? "" : n < 0 ? " minus" : n > 0 ? " plus" : "") + (data.impact_incomplete[p] ? " inc" : ""),
+            title: data.impact_incomplete[p] ? "不完全" : null,
+          }, v === null ? "—" : (n < 0 ? "−" : n > 0 ? "+" : "") + fmt(String(Math.abs(n))));
         }))));
   };
   const compute = async () => {

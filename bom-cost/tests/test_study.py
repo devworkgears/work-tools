@@ -235,6 +235,14 @@ class Calculation(StudyCase):
         self.assertEqual(rows["P2"]["plans"], {"A": Decimal(320), "B": Decimal(250)})
         self.assertEqual(result["impact"]["A"], Decimal(40) * 1000 + Decimal(40) * 500)
         self.assertTrue(result["impact_incomplete"]["A"])  # P3 は年間台数が無い
+        # 台数の加重平均は、年間の影響に入れた P1・P2 の台数（1000＋500）で割る。台数の無い P3 は分母に入れない
+        self.assertEqual(result["weighted"]["A"], Decimal(40))
+        self.assertEqual(result["weighted"]["B"], Decimal(-30) * 500 / 1500)  # P2 は 280 → 250、P1 は差 0 でも分母に入る
+
+    def test_weighted_is_none_without_any_annual(self) -> None:
+        self.store.save_targets(self.number, ["P3"])
+        result = calculate(self.store.workspace(self.number), CostHead.MATERIAL)
+        self.assertEqual(result["weighted"], {p: None for p in result["plans"]})
 
     def test_annual_from_conditions_overrides_the_bom(self) -> None:
         self.store.save_targets(self.number, ["P1"])

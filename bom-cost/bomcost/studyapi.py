@@ -568,6 +568,7 @@ class StudyApi:
                       "plans": {k: _s(v) for k, v in r["plans"].items()}} for r in result["rows"]],
             "impact": {k: _s(v) for k, v in result["impact"].items()},
             "impact_incomplete": result["impact_incomplete"],
+            "weighted": {k: _s(v) for k, v in result["weighted"].items()},
         }
 
     def calc(self, params: dict[str, str]) -> "Response":
@@ -620,6 +621,7 @@ class StudyApi:
         plans = data["plans"]
         rows = [[r["product"], r["annual"], r["now"], *(r["plans"][p] for p in plans)] for r in data["rows"]]
         rows.append(["年間の影響", None, None, *(data["impact"][p] for p in plans)])
+        rows.append(["台数の加重平均（1台あたり）", None, None, *(data["weighted"][p] for p in plans)])
         return self._xlsx("結果", ["対象品番", "年間台数", "今", *(f"案{p}" for p in plans)], rows,
                           set(range(1, 3 + len(plans))))
 
