@@ -208,7 +208,7 @@ class ApiShapes(unittest.TestCase):
             with self.subTest(path=path, body=body):
                 self.assertEqual(self.status(method, path, body)[0], 400)
         self.assertEqual(self.api.handle("GET", "/api/v2/changes", self.q).json()["rows"], [])
-        self.assertEqual(self.api.handle("GET", "/api/v2/export/changes", self.q).status, 200)
+        self.assertEqual(self.api.handle("GET", "/api/v2/export/study", self.q).status, 200)
 
     def test_f_duplicate_rows_are_named_by_screen_row(self) -> None:
         status, error = self.status("PUT", "/api/v2/replace", {"rows": [
@@ -223,7 +223,7 @@ class ApiShapes(unittest.TestCase):
         rows = {r["part"]: r for r in self.api.handle("GET", "/api/v2/changes", self.q).json()["rows"]}
         self.assertEqual((rows["OLD"]["before"], rows["OLD"]["delta"]), (None, "-2"))
         self.assertEqual(rows["NEW"]["before"], "0")  # 置換の相手が外れただけの行は、箇所が無いのとは別
-        self.assertEqual(self.api.handle("GET", "/api/v2/export/changes", self.q).status, 200)
+        self.assertEqual(self.api.handle("GET", "/api/v2/export/study", self.q).status, 200)
 
     def test_messages_are_polite(self) -> None:
         cases = (

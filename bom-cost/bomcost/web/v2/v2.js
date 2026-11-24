@@ -1370,35 +1370,57 @@ async function rewriteScreen(main, cur) {
 
 // ⑥ 変更一覧 -------------------------------------------------------------
 
+// 構成の変更を、した事（置き換え・数量・追加・削除）ごとに1行で出す。製品の数を押すと製品ごとの箇所。
+// 金額の変更（⑩ 製品の費目の書き換え）は下に分けて出す
 async function changesScreen(main) {
   const plan = PLAN;
   let product = "";
   let rows = [];
+  let owns = [];
+  const ownBox = el("div");
   const load = async () => {
-    rows = (await api("GET", "/api/v2/changes", q({ plan, product }))).rows;
+    const d = await api("GET", "/api/v2/changes", q({ plan, product }));
+    rows = d.summary;
+    owns = d.rows.filter((r) => r.source === "own");
+    await lookup([...rows.flatMap((r) => r.products), ...owns.map((r) => r.product)]);
+    fill(ownBox, owns.length ? [el("h3", {}, "製品の費目の書き換え"), el("table", { class: "list" },
+      el("tr", {}, ["製品", "名称", "費目", "台帳の値", "書き換えた値"].map((t) => el("th", {}, t))),
+      owns.map((r) => el("tr", {}, el("td", {}, r.product), el("td", {}, nameCell(r.product).text), el("td", {}, r.part),
+        el("td", { class: "r" }, r.before === null ? "—" : fmt(r.before)), el("td", { class: "r" }, fmt(r.after)))))] : []);
   };
   await load();
+  const detailDialog = (row) => {
+    const box = dialog(`${row.kind} ${[row.old, row.new].filter(Boolean).join(" → ")}`,
+      el("table", { class: "list" }, el("tr", {}, ["製品", "名称", "親", "風船", row.new && row.old ? `元 ${row.old}` : "変更前", row.new && row.old ? `新 ${row.new}` : "変更後"].map((t) => el("th", {}, t))),
+        row.details.map((d) => el("tr", {}, el("td", {}, d.product), el("td", {}, nameCell(d.product).text), el("td", {}, d.parent),
+          el("td", {}, d.balloon ?? "—"), el("td", { class: "r" }, d.before === null ? "—" : fmt(d.before)), el("td", { class: "r" }, fmt(d.after))))),
+      [el("span", { class: "sp" }), el("button", { class: "btn", onclick: () => box.close() }, "閉じる")]);
+  };
+  const named = (code, name) => (code === null ? { text: "" } : name === null ? { text: "未登録", cls: "bad" } : { text: name });
   const body = el("div");
   const model = {
-    head: () => ["", "製品", "親", { text: "風船", cls: "c" }, "品番", "名称", { text: "変更前", cls: "r" }, { text: "変更後", cls: "r" }, { text: "差", cls: "r" }, "要確認"],
+    head: () => ["", "変更", "元品番", "名称", "新品番", "名称", { text: "数量", cls: "r" }, { text: "製品", cls: "r" }, "要確認"],
     nRows: () => rows.length,
-    nCols: () => 10,
+    nCols: () => 9,
     cell(r, c) {
       const row = rows[r];
       switch (c) {
         case 0: return { text: String(r + 1), cls: "n" };
-        case 1: return { text: row.product };
-        case 2: return { text: row.parent };
-        case 3: return { text: row.balloon ?? "—", cls: "c" };
-        case 4: return { text: row.part, cls: row.added ? "own" : "" };
-        case 5: return row.name === null ? { text: "未登録", cls: "bad" } : { text: row.name };
-        case 6: return { text: row.before === null ? "—" : fmt(row.before), cls: row.before === null ? "c" : "r" };
-        case 7: return { text: fmt(row.after), cls: "r" + (Number(row.after) < 0 ? " bad" : "") };
-        case 8: return { text: fmt(row.delta), cls: "r" + (Number(row.delta) < 0 ? " bad" : "") };
+        case 1: return { text: row.kind };
+        case 2: return { text: row.old ?? "" };
+        case 3: return named(row.old, row.old_name);
+        case 4: return { text: row.new ?? "" };
+        case 5: return named(row.new, row.new_name);
+        case 6: return { text: row.quantity, cls: "r" };
+        case 7: return { text: String(row.products.length), cls: "r link", title: "押すと製品ごとの箇所" };
         default: return { text: row.problems.join("・"), cls: row.problems.length ? "bad" : "" };
       }
     },
     set() {},
+    action(r, c) {
+      if (c === 7 && rows[r]) detailDialog(rows[r]);
+      return false;
+    },
   };
   const grid = new Grid(body, model);
   const productSelect = el("select", { class: "in", style: "min-width:90px" },
@@ -1409,9 +1431,14 @@ async function changesScreen(main) {
     grid.render();
   });
   main.append(card("変更一覧", [productSelect,
-    el("button", { class: "btn", onclick: () => download("/api/v2/export/changes", q({ plan, product }), `変更一覧_${S.number}.xlsx`).catch(fail) }, "Excel"),
-  ], body));
+    el("button", { class: "btn", onclick: () => exportStudy().catch(fail) }, "Excel"),
+  ], [body, ownBox]));
   grid.focus();
+}
+
+// 検討1つを1つの Excel に出す（⑥ と ⑦ で同じファイル）
+function exportStudy() {
+  return download("/api/v2/export/study", q({ plan: PLAN }), `検討_${S.number}.xlsx`);
 }
 
 // ⑦ 結果 -----------------------------------------------------------------
@@ -1497,7 +1524,7 @@ async function resultScreen(main) {
   drawChips();
   main.append(card(["結果", stamp], [
     el("button", { class: "btn", onclick: conditionsDialog }, "計算条件"),
-    el("button", { class: "btn", onclick: () => download("/api/v2/export/result", q({ head }), `結果_${S.number}.xlsx`).catch(fail) }, "Excel"),
+    el("button", { class: "btn", onclick: () => exportStudy().catch(fail) }, "Excel"),
     el("button", { class: "btn pri", onclick: compute }, "実行"),
   ], [el("div", { class: "row" }, el("span", { class: "mini" }, "費目"), chips), table]));
 }

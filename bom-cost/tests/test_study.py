@@ -32,6 +32,7 @@ from bomcost.study import (
     replace_overridden,
     where_used,
 )
+from bomcost.studyapi import summarize_changes
 
 ALL = ("item", "bom_line", "cost", "volume")
 # 設計検討の見本（samples_v2）の品番
@@ -274,6 +275,32 @@ class ApplyReplace(StudyCase):
             self.store.revert_replace(self.number, "A", "S50")
 
 
+class Summary(unittest.TestCase):
+    @staticmethod
+    def row(product: str, part: str, before: str | None, after: str, delta: str, balloon: str | None = "1", **more) -> dict:
+        return {"product": product, "parent": "U", "balloon": balloon, "part": part, "name": part, "before": before,
+                "after": after, "delta": delta, "added": before == "0", "problems": [], "source": GRID, **more}
+
+    def test_same_replacement_in_many_products_is_one_row(self) -> None:
+        rows = [r for p, n in (("P1", "2"), ("P2", "2"), ("P3", "4")) for r in (
+            self.row(p, "OLD", n, "0", f"-{n}"), self.row(p, "NEW", "0", n, n))]
+        rows += [self.row("P1", "S", "2", "3", "1", "9"), self.row("P1", "X", "0", "1", "1", "8"),
+                 self.row("P2", "Y", "1", "0", "-1", "7"),
+                 self.row("P1", "社内加工費", "600", "700", "100", None, source="own")]
+        got = [(s["kind"], s["old"], s["new"], s["quantity"], s["products"]) for s in summarize_changes(rows)]
+        self.assertEqual(got, [("置き換え", "OLD", "NEW", "2（2製品）・4（1製品）", ["P1", "P2", "P3"]),
+                               ("数量", "S", None, "2 → 3", ["P1"]), ("追加", None, "X", "1", ["P1"]),
+                               ("削除", "Y", None, "1 → 0", ["P2"])])
+
+    def test_ambiguous_or_lost_places_are_not_paired(self) -> None:
+        two = [self.row("P1", "A", "1", "0", "-1"), self.row("P1", "B", "1", "0", "-1"), self.row("P1", "C", "0", "2", "2")]
+        self.assertEqual([s["kind"] for s in summarize_changes(two)], ["削除", "削除", "追加"])
+        partly = [self.row("P1", "A", "4", "2", "-2"), self.row("P1", "C", "0", "2", "2")]
+        self.assertEqual([s["kind"] for s in summarize_changes(partly)], ["数量", "追加"])
+        lost = [self.row("P1", "A", None, "-2", "-2", problems=["箇所が無い"]), self.row("P1", "C", "0", "2", "2")]
+        self.assertEqual([(s["kind"], s["quantity"]) for s in summarize_changes(lost)], [("数量", "— → -2"), ("追加", "2")])
+
+
 class Calculation(StudyCase):
     def test_now_and_plans_and_annual_impact(self) -> None:
         self.store.save_replaces(self.number, "A", [("K120", "K121")])
@@ -474,10 +501,13 @@ class StudyApiFlow(unittest.TestCase):
         self.assertEqual(total, (Decimal(1000) - Decimal(now)) * Decimal("1.03") * Decimal("1.11"))
         single = self.ok("GET", "/api/v2/calc", q + "&head=total")
         self.assertEqual((single["rows"], single["impact"]), (heads["total"]["rows"], heads["total"]["impact"]))
-        book = load_openpyxl().load_workbook(io.BytesIO(self.api.handle("GET", "/api/v2/export/result",
-                                                                        q + "&head=all", b"").body)).active
-        self.assertEqual([c.value for c in book[1]], ["対象品番", "費目", "年間台数", "今", "案A"])
-        self.assertEqual(book.max_row, 1 + 2 * 8 + 8 * 2)  # 2製品×8費目＋年間の影響と加重平均×8費目
+        book = load_openpyxl().load_workbook(io.BytesIO(self.api.handle("GET", "/api/v2/export/study", q, b"").body))
+        self.assertEqual(book["金額"].max_row, 1 + 2 * 8)  # 2製品×8費目
+        money = [r for r in book["金額"].iter_rows(min_row=2, values_only=True) if r[0] == P1 and r[2] == "製造原価"][0]
+        self.assertAlmostEqual(money[5], float(total))
+        self.assertAlmostEqual(money[7], float(total) * money[6])
+        self.assertIn(("製品の費目", P1, "社内加工費", 1000, f"台帳の値 {now}"),
+                      list(book["計算条件"].iter_rows(values_only=True)))
         # 変更一覧にも出る
         changed = [r for r in self.ok("GET", "/api/v2/changes", q + "&plan=A")["rows"] if r["source"] == "own"]
         self.assertEqual([(r["product"], r["before"], r["after"]) for r in changed], [(P1, now, "1000")])
@@ -554,9 +584,15 @@ class StudyApiFlow(unittest.TestCase):
         self.assertEqual((released["version"], released["versions"]), (1, [1]))
         self.assertEqual(self.ok("GET", "/api/v2/calc", q + "&version=1&head=material"), {
             **result, "computed_at": self.ok("GET", "/api/v2/calc", q + "&version=1&head=material")["computed_at"]})
-        excel = self.api.handle("GET", "/api/v2/export/result", q)
+        excel = self.api.handle("GET", "/api/v2/export/study", q)
         self.assertEqual(excel.status, 200)
-        self.assertTrue(excel.body.startswith(b"PK"))
+        book = load_openpyxl().load_workbook(io.BytesIO(excel.body))
+        self.assertEqual(book.sheetnames, ["まとめ", "構成の変更", "構成の明細", "金額", "計算条件"])
+        # 構成の変更は、した事ごとに1行（2製品の置き換えが1行）・明細は箇所ごと
+        self.assertIn(("置き換え", OLD, NEW, 2), [(r[0], r[1], r[3], r[6]) for r in
+                                              book["構成の変更"].iter_rows(min_row=2, values_only=True)])
+        rows = self.ok("GET", "/api/v2/changes", q + "&plan=A")["rows"]
+        self.assertEqual(book["構成の明細"].max_row, 1 + len(rows))
 
     def test_replacing_the_common_part_keeps_every_product_positive(self) -> None:
         self.ok("POST", "/api/v2/bom/import", body={"sample": True})

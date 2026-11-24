@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 from urllib.parse import quote
 
-from .formula import breakdown, registered_own
+from .formula import ADJUSTMENT_RATE, INDIRECT_RATE, breakdown, registered_own
 from .importer import (
     TABLE_FIELDS,
     ColumnMap,
@@ -251,8 +251,7 @@ class StudyApi:
             ("GET", r"/api/v2/where-used", self.where_used),
             ("GET", r"/api/v2/parts", self.parts),
             ("POST", r"/api/v2/release", self.release),
-            ("GET", r"/api/v2/export/changes", self.export_changes),
-            ("GET", r"/api/v2/export/result", self.export_result),
+            ("GET", r"/api/v2/export/study", self.export_study),
         ]
 
     def _json(self, data: Any) -> "Response":
@@ -647,7 +646,8 @@ class StudyApi:
         return rows
 
     def changes(self, params: dict[str, str]) -> "Response":
-        return self._json({"rows": self._change_rows(params)})
+        rows = self._change_rows(params)
+        return self._json({"rows": rows, "summary": summarize_changes(rows)})
 
     # ⑩ 製品の費目 -----------------------------------------------------------
 
@@ -753,46 +753,140 @@ class StudyApi:
 
     # Excel -----------------------------------------------------------------
 
-    def _xlsx(self, name: str, header: list[str], rows: list[list[Any]], numeric: set[int]) -> "Response":
+    def export_study(self, params: dict[str, str]) -> "Response":
+        """検討1つを1つの Excel に出す（構成の変更と金額の変更を別のシートに・1行1件）。"""
+        ws = self._ws(params)
+        plan = self._plan(params)
+        changes = self._change_rows({**params, "product": ""})
+        results = calculate_heads(ws)
+        money, incomplete = [], False
+        for head in HEADS.values():
+            for r in results[head]["rows"]:
+                now, after = r["now"], r["plans"].get(plan)
+                diff = None if now is None or after is None else after - now
+                flag = bool(r["now_incomplete"] or r["incomplete"].get(plan))
+                incomplete |= flag
+                money.append([r["product"], r["name"], head.value, now, after, diff, r["annual"],
+                              None if diff is None or r["annual"] is None else diff * r["annual"], "不完全" if flag else ""])
+        order = {p: i for i, p in enumerate(ws.targets)}
+        money.sort(key=lambda r: order[r[0]])  # 対象品番の順（同じ品番の中は費目の順のまま）
+        sheets: list[tuple[str, list[str], list[list[Any]]]] = [
+            ("まとめ", ["項目", "値"], [
+                ["検討番号", ws.number], ["版", "仮" if ws.version is None else ws.version],
+                ["題目", ws.header.get("title")], ["担当", ws.header.get("owner")],
+                ["出力日時", datetime.now().replace(microsecond=0).isoformat(sep=" ")],
+                ["対象品番の数", len(ws.targets)], ["不完全", "あり" if incomplete else "なし"],
+                *([f"年間の影響（{h.value}）", results[h]["impact"].get(plan)] for h in HEADS.values()),
+                *([f"台数の加重平均（1台あたり・{h.value}）", results[h]["weighted"].get(plan)] for h in HEADS.values()),
+                *([f"説明: {name}", text] for name, text in SHEET_NOTES)]),
+            ("構成の変更", ["変更", "元品番", "元の名称", "新品番", "新の名称", "数量", "製品の数", "製品", "要確認"],
+             [[s["kind"], s["old"], s["old_name"], s["new"], s["new_name"], s["quantity"], len(s["products"]),
+               "・".join(s["products"]), "・".join(s["problems"])] for s in summarize_changes(changes)]),
+            ("構成の明細", ["製品", "親", "風船", "品番", "名称", "変更前", "変更後", "差", "要確認"],
+             [[r["product"], r["parent"], r["balloon"], r["part"], r["name"], _num(r["before"]), _num(r["after"]),
+               _num(r["delta"]), "・".join(r["problems"])] for r in changes if r["source"] != "own"]),
+            ("金額", ["対象品番", "名称", "費目", "今", "変更後", "差", "年間台数", "年間の影響", "不完全"], money),
+            ("計算条件", ["種類", "対象", "項目", "値", "備考"], self._condition_rows(ws, plan)),
+        ]
+        return self._xlsx(f"検討_{ws.number}", sheets)
+
+    @staticmethod
+    def _condition_rows(ws: Workspace, plan: str) -> list[list[Any]]:
+        rows: list[list[Any]] = [["単価の時点", None, None, None, "時点は持っていない（取り込んだ原価の表の値で計算する）"],
+                                 ["率", None, "調整費", ADJUSTMENT_RATE, None], ["率", None, "間接費", INDIRECT_RATE, None]]
+        for p in ws.targets:
+            volume = ws.bom.volume(p)
+            given = ws.conditions.get(p)
+            value = given if given is not None else None if volume is None else volume.annual
+            rows.append(["年間台数", p, None, value, "検討で入力" if given is not None else "部品表" if value is not None else "未登録"])
+        rows += [["仮品番", code, name, material, "" if code in ws.temp_merged else "品目の台帳の値を使う"]
+                 for code, name, material in ws.temps]
+        for r in own_rows(ws, plan):
+            rows += [["製品の費目", r["product"], OWN_HEADS[k].value, v["after"],
+                      "台帳に値なし" if v["now"] is None else f"台帳の値 {v['now']}"]
+                     for k, v in r["heads"].items() if v["after"] is not None]
+        return rows
+
+    def _xlsx(self, name: str, sheets: list[tuple[str, list[str], list[list[Any]]]]) -> "Response":
         from .api import Response
 
-        openpyxl = load_openpyxl()
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        ws.title = name
-        ws.append(header)
-        for row in rows:
-            ws.append([Decimal(v) if i in numeric and v is not None else v for i, v in enumerate(row)])
-        ws.freeze_panes = "A2"
+        wb = load_openpyxl().Workbook()
+        wb.remove(wb.active)
+        for title, header, rows in sheets:
+            sheet = wb.create_sheet(title)
+            for values in (header, *rows):
+                sheet.append(values)
+                for cell in sheet[sheet.max_row]:
+                    if isinstance(cell.value, str):
+                        cell.data_type = "s"  # 「=」で始まる文字を式にしない
+            sheet.freeze_panes = "A2"
         out = io.BytesIO()
         wb.save(out)
         return Response(200, out.getvalue(), XLSX_TYPE,
                         {"Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}.xlsx"})
 
-    def export_changes(self, params: dict[str, str]) -> "Response":
-        rows = self._change_rows(params)
-        return self._xlsx("変更一覧", ["製品", "親", "風船", "品番", "名称", "変更前", "変更後", "差", "要確認"],
-                          [[r["product"], r["parent"], r["balloon"], r["part"], r["name"], r["before"], r["after"],
-                            r["delta"], "・".join(r["problems"])] for r in rows], {5, 6, 7})
 
-    def export_result(self, params: dict[str, str]) -> "Response":
-        data = self._calc(params)
-        plans = data["plans"]
-        if data["head"] == "all":
-            # 1行＝対象品番×費目（費目の並びは式の順）。最後に費目ごとの年間の影響と台数の加重平均
-            rows = [[r["product"], h["label"], r["annual"], r["now"], *(r["plans"][p] for p in plans)]
-                    for i in range(len(data["heads"][0]["rows"]) if data["heads"] else 0)
-                    for h in data["heads"] for r in [h["rows"][i]]]
-            rows += [["年間の影響", h["label"], None, None, *(h["impact"][p] for p in plans)] for h in data["heads"]]
-            rows += [["台数の加重平均（1台あたり）", h["label"], None, None, *(h["weighted"][p] for p in plans)]
-                     for h in data["heads"]]
-            return self._xlsx("結果", ["対象品番", "費目", "年間台数", "今", *(f"案{p}" for p in plans)], rows,
-                              set(range(2, 4 + len(plans))))
-        rows = [[r["product"], r["annual"], r["now"], *(r["plans"][p] for p in plans)] for r in data["rows"]]
-        rows.append(["年間の影響", None, None, *(data["impact"][p] for p in plans)])
-        rows.append(["台数の加重平均（1台あたり）", None, None, *(data["weighted"][p] for p in plans)])
-        return self._xlsx("結果", ["対象品番", "年間台数", "今", *(f"案{p}" for p in plans)], rows,
-                          set(range(1, 3 + len(plans))))
+# Excel の各シートの列の意味（渡した先が列を取り違えないように、まとめのシートに書く）
+SHEET_NOTES = (
+    ("構成の変更", "した事ごとに1行。置き換え＝同じ製品・親・風船番号で元品番が 0 になり新品番が増えた物。数量は1箇所あたり"),
+    ("構成の明細", "1行＝製品×親×風船×品番。変更前＝今の部品表の数量、差＝変更後−変更前。親1単位あたりの数量"),
+    ("金額", "1行＝対象品番×費目。1台あたり。差＝変更後−今、年間の影響＝差×年間台数。費目には内訳と合計が混ざるので足し合わせない"),
+    ("不完全", "未登録の原価や計算に入らない変更があり、金額が足りない行"),
+    ("単位", "金額は取り込んだ原価の表と同じ単位、数量は部品表と同じ単位"),
+)
+
+
+def _num(text: str | None) -> Decimal | None:
+    return None if text is None else Decimal(text)
+
+
+def summarize_changes(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """変更の行（製品×箇所×品番）を、した事（置き換え・数量・追加・削除）ごとに1行へまとめる。
+
+    操作の記録は使わず、今の部品表との差分だけから作る。同じ製品・親・風船番号の中で、0 になった品番が1つ・
+    増えた品番が1つの時だけ置き換えとみなす。details に製品ごとの箇所を持つ。製品の費目（金額）の行は入れない。
+    """
+    slots: dict[tuple[str, str, str | None], list[dict[str, Any]]] = {}
+    for r in rows:
+        if r["source"] != "own":
+            slots.setdefault((r["product"], r["parent"], r["balloon"]), []).append(r)
+    groups: dict[tuple[Any, ...], dict[str, Any]] = {}
+
+    def add(kind: str, old: dict[str, Any] | None, new: dict[str, Any] | None, before: str | None, after: str) -> None:
+        one = old or new
+        assert one is not None
+        problems = list(dict.fromkeys(p for r in (old, new) if r for p in r["problems"]))
+        key = (kind, old and old["part"], new and new["part"], tuple(problems))
+        g = groups.setdefault(key, {
+            "kind": kind, "old": old and old["part"], "old_name": old and old["name"], "new": new and new["part"],
+            "new_name": new and new["name"], "problems": problems, "products": [], "details": []})
+        if one["product"] not in g["products"]:
+            g["products"].append(one["product"])
+        g["details"].append({"product": one["product"], "parent": one["parent"], "balloon": one["balloon"],
+                             "before": before, "after": after})
+
+    for members in slots.values():
+        down = [r for r in members if Decimal(r["delta"]) < 0]
+        up = [r for r in members if Decimal(r["delta"]) > 0]
+        if len(down) == 1 and len(up) == 1 and down[0]["before"] is not None and Decimal(down[0]["after"]) == 0:
+            add("置き換え", down[0], up[0], down[0]["before"], up[0]["delta"])
+            continue
+        for r in down:
+            gone = r["before"] is not None and Decimal(r["after"]) == 0
+            add("削除" if gone else "数量", r, None, r["before"], r["after"])
+        for r in up:
+            if r["added"]:
+                add("追加", None, r, "0", r["after"])
+            else:
+                add("数量", r, None, r["before"], r["after"])
+    for g in groups.values():
+        texts: dict[str, set[str]] = {}
+        for d in g["details"]:
+            same = g["kind"] == "置き換え" and d["before"] == d["after"]
+            text = d["after"] if same or g["kind"] == "追加" else f"{d['before'] or '—'} → {d['after']}"
+            texts.setdefault(text, set()).add(d["product"])
+        g["quantity"] = next(iter(texts)) if len(texts) == 1 else "・".join(f"{t}（{len(p)}製品）" for t, p in texts.items())
+    return list(groups.values())
 
 
 def study_routes(api: "Api") -> list[tuple[str, str, Callable[..., "Response"]]]:
