@@ -79,9 +79,9 @@ class ReplaceAgain(FixCase):
         self.open(SIMPLE + [BomLine("Y", "1", "OLD", 1)], ["X"])
         self.store.save_replaces(self.number, "A", [("OLD", "NEW")])
         self.store.save_targets(self.number, ["X", "Y"])
-        self.assertEqual(replace_overridden(self.store.workspace(self.number), "A"), {("OLD", "NEW"): False})
+        self.assertEqual(replace_overridden(self.store.workspace(self.number), "A"), {("OLD", "NEW", None): False})
         self.store.save_grid(self.number, "A", ["X"], ["NEW"], [{"product": "X", "part": "NEW", "value": "1"}])
-        self.assertEqual(replace_overridden(self.store.workspace(self.number), "A"), {("OLD", "NEW"): True})
+        self.assertEqual(replace_overridden(self.store.workspace(self.number), "A"), {("OLD", "NEW", None): True})
 
 
 class PairAndIncomplete(FixCase):

@@ -19,6 +19,7 @@ from bomcost.study import (
     NOT_TARGET,
     OTHER_PART,
     REPLACE,
+    replace_groups,
     REWRITE,
     UNREGISTERED,
     StudyStore,
@@ -109,20 +110,22 @@ class ReplaceInput(StudyCase):
         with self.assertRaises(ValueError):
             self.store.save_replaces(self.number, "A", [("K120", "K120")])
 
-    def test_skipped_product_gets_no_change_and_the_skip_is_kept(self) -> None:
-        # 置換の組ごとに、置き換えない製品を選べる（一部の製品だけ替える）
-        self.store.save_replaces(self.number, "A", [("K120", "K121")], {"K120": ["P2"]})
-        self.assertEqual({k[0] for k in self.changes()}, {"P1", "P3"})
-        ws = self.store.workspace(self.number)
-        self.assertEqual(ws.skipped("A", "K120"), frozenset({"P2"}))
-        # 印を戻せば P2 にも入る
-        self.store.save_replaces(self.number, "A", [("K120", "K121")], {"K120": []})
-        self.assertEqual({k[0] for k in self.changes()}, {"P1", "P2", "P3"})
+    def test_row_with_a_balloon_replaces_only_that_group(self) -> None:
+        # 置換は「元品番 × 風船番号」のまとまりで選ぶ（製品ごとに選ぶのは グリッド画面・書き換え）
+        self.assertEqual(replace_groups(self.store.workspace(self.number).bom, ["P1", "P2", "P3"], "K120"),
+                         [("5", ["P3"]), ("12", ["P1", "P2"])])
+        self.store.save_replaces(self.number, "A", [("K120", "K121", "12")])
+        self.assertEqual({k[0] for k in self.changes()}, {"P1", "P2"})
+        self.assertEqual(self.store.workspace(self.number).replaces["A"], [("K120", "K121", "12")])
 
-    def test_skip_survives_taking_a_version(self) -> None:
-        self.store.save_replaces(self.number, "A", [("K120", "K121")], {"K120": ["P2"]})
-        version = self.store.take_release(self.number)
-        self.assertEqual(self.store.workspace(self.number, version).skipped("A", "K120"), frozenset({"P2"}))
+    def test_all_row_and_balloon_row_of_the_same_part_are_refused(self) -> None:
+        with self.assertRaises(ValueError):
+            self.store.save_replaces(self.number, "A", [("K120", "K121"), ("K120", "K122", "12")])
+        with self.assertRaises(ValueError):
+            self.store.save_replaces(self.number, "A", [("K120", "K121", "12"), ("K120", "K122", "12")])
+        self.store.save_replaces(self.number, "A", [("K120", "K121", "12"), ("K120", "K122", "5")])
+        self.assertEqual({(k[0], k[3]) for k in self.changes()},
+                         {("P1", "K120"), ("P1", "K121"), ("P2", "K120"), ("P2", "K121"), ("P3", "K120"), ("P3", "K122")})
 
 
 class LaterWriteWins(StudyCase):
@@ -133,11 +136,11 @@ class LaterWriteWins(StudyCase):
         self.assertEqual(got[("P2", "U10", "12", "K121")], (Decimal(1), GRID))
         self.assertEqual(got[("P1", "U10", "12", "K121")], (Decimal(2), REPLACE))
         ws = self.store.workspace(self.number)
-        self.assertEqual(replace_overridden(ws, "A"), {("K120", "K121"): True})
+        self.assertEqual(replace_overridden(ws, "A"), {("K120", "K121", None): True})
 
     def test_replace_alone_is_not_marked(self) -> None:
         self.store.save_replaces(self.number, "A", [("K120", "K121")])
-        self.assertEqual(replace_overridden(self.store.workspace(self.number), "A"), {("K120", "K121"): False})
+        self.assertEqual(replace_overridden(self.store.workspace(self.number), "A"), {("K120", "K121", None): False})
 
     def test_running_replace_again_keeps_hand_edits(self) -> None:
         self.store.save_replaces(self.number, "A", [("K120", "K121")])
@@ -393,7 +396,7 @@ class StudyApiFlow(unittest.TestCase):
         self.assertTrue(looked[P1]["registered"])
         self.assertFalse(looked["ZZ9999-001"]["registered"])
         rows = self.ok("PUT", "/api/v2/replace", q + "&plan=A", {"rows": [{"old": OLD, "new": NEW}]})["rows"]
-        self.assertEqual(rows, [{"old": OLD, "new": NEW, "overridden": False, "uses": [P1, P2], "skip": []}])
+        self.assertEqual(rows, [{"old": OLD, "new": NEW, "balloon": None, "count": 2, "overridden": False}])
         grid = self.ok("PUT", "/api/v2/grid", q + "&plan=A",
                      {"columns": [P1], "rows": ["ST0050-001"], "cells": [{"product": P1, "part": "ST0050-001",
                                                                           "value": "-1"}]})

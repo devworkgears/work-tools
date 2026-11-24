@@ -73,14 +73,8 @@ CREATE TABLE IF NOT EXISTS v2_replace (
     position INTEGER NOT NULL,
     old_part TEXT NOT NULL,
     new_part TEXT NOT NULL,
+    balloon TEXT,
     PRIMARY KEY (study_id, plan, position)
-);
-CREATE TABLE IF NOT EXISTS v2_replace_skip (
-    study_id INTEGER NOT NULL REFERENCES v2_study(study_id) ON DELETE CASCADE,
-    plan TEXT NOT NULL,
-    old_part TEXT NOT NULL,
-    product TEXT NOT NULL,
-    PRIMARY KEY (study_id, plan, old_part, product)
 );
 CREATE TABLE IF NOT EXISTS v2_change (
     study_id INTEGER NOT NULL REFERENCES v2_study(study_id) ON DELETE CASCADE,
@@ -220,6 +214,10 @@ class PlanInfo:
     grid_rows: list[str] = field(default_factory=list)
 
 
+# 置換の行（元品番, 新品番, 風船番号）。風船番号 None は全部の箇所・"" は風船番号の無い箇所
+ReplaceRow = tuple[str, str, str | None]
+
+
 @dataclass
 class Workspace:
     """1つの検討の、仮（version=None）か固めた版の中身。bom は仮なら今の部品表・版なら写し。"""
@@ -230,16 +228,12 @@ class Workspace:
     targets: list[str]
     main_product: str | None
     plans: list[PlanInfo]
-    replaces: dict[str, list[tuple[str, str]]]
+    # 案 → (元品番, 新品番, 風船番号)。風船番号 None は全部の箇所・"" は風船番号の無い箇所
+    replaces: dict[str, list[ReplaceRow]]
     changes: list[StoredChange]
     conditions: dict[str, Decimal]
     bom: Version
     attributes: Attributes = field(default_factory=dict)
-    # 案 → 元品番 → 置換で置き換えない製品
-    replace_skips: dict[str, dict[str, frozenset[str]]] = field(default_factory=dict)
-
-    def skipped(self, plan: str, old: str) -> frozenset[str]:
-        return self.replace_skips.get(plan, {}).get(old, frozenset())
 
     def attribute(self, code: str, name: str) -> str:
         return self.attributes.get(code, {}).get(name, "")
@@ -251,8 +245,29 @@ class Workspace:
         return [c for c in self.changes if c.plan == plan]
 
 
-def pair_key(old: str, new: str) -> str:
-    return f"{old}>{new}"
+def pair_key(old: str, new: str, balloon: str | None = None) -> str:
+    """置換の組から書いた変更の出どころ。風船番号で分けた組は「元品番@風船番号>新品番」。"""
+    return f"{old}>{new}" if balloon is None else f"{old}@{balloon}>{new}"
+
+
+def balloon_group(line: BomLine) -> str:
+    """置換のまとまりの風船番号（風船番号の無い箇所は空の文字）。"""
+    return line.balloon or ""
+
+
+def replace_groups(bom: Version, targets: Sequence[str], part: str) -> list[tuple[str, list[str]]]:
+    """対象品番の中で part を置き換えられる箇所を、風船番号ごとのまとまり（風船番号, 製品）にする。"""
+    groups: dict[str, list[str]] = {}
+    for product in targets:
+        for line in replace_lines(bom, product, part):
+            members = groups.setdefault(balloon_group(line), [])
+            if product not in members:
+                members.append(product)
+    return sorted(groups.items(), key=lambda kv: (kv[0] == "", _natural(kv[0])))
+
+
+def _natural(text: str) -> tuple[int, str]:
+    return (int(text), "") if text.isdigit() else (10 ** 9, text)
 
 
 def next_plan_id(existing: Iterable[str]) -> str:
@@ -496,6 +511,9 @@ class StudyStore:
         for name, _ in ATTRIBUTES:
             if name not in present:
                 conn.execute(f"ALTER TABLE v2_item ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
+        # 置換の組に風船番号の列を足す前に作った表には列を足す（NULL＝全部の箇所）
+        if "balloon" not in {r[1] for r in conn.execute("PRAGMA table_info(v2_replace)")}:
+            conn.execute("ALTER TABLE v2_replace ADD COLUMN balloon TEXT")
         conn.commit()
 
     # 部品表 -----------------------------------------------------------------
@@ -607,21 +625,17 @@ class StudyStore:
         targets = [r[0] for r in q("SELECT product FROM v2_target WHERE study_id = ? ORDER BY position", (sid,))]
         plans = [PlanInfo(p, json.loads(c), json.loads(r)) for p, c, r in q(
             "SELECT plan, grid_columns, grid_rows FROM v2_plan WHERE study_id = ? ORDER BY plan", (sid,))]
-        replaces: dict[str, list[tuple[str, str]]] = {}
-        for plan, old, new in q("SELECT plan, old_part, new_part FROM v2_replace WHERE study_id = ? "
-                                "ORDER BY plan, position", (sid,)):
-            replaces.setdefault(plan, []).append((old, new))
-        skips: dict[str, dict[str, set[str]]] = {}
-        for plan, old, product in q("SELECT plan, old_part, product FROM v2_replace_skip WHERE study_id = ?", (sid,)):
-            skips.setdefault(plan, {}).setdefault(old, set()).add(product)
+        replaces: dict[str, list[ReplaceRow]] = {}
+        for plan, old, new, balloon in q("SELECT plan, old_part, new_part, balloon FROM v2_replace WHERE study_id = ? "
+                                         "ORDER BY plan, position", (sid,)):
+            replaces.setdefault(plan, []).append((old, new, balloon))
         changes = [StoredChange(p, pr, pa, _balloon_py(b), pt, Decimal(d), s, o, seq) for p, pr, pa, b, pt, d, s, o, seq
                    in q("SELECT plan, product, parent, balloon, part, delta, source, origin, seq FROM v2_change "
                         "WHERE study_id = ? ORDER BY seq", (sid,))]
         conditions = {p: Decimal(a) for p, a in q("SELECT product, annual FROM v2_condition WHERE study_id = ?",
                                                   (sid,))}
         return Workspace(n, None, header, targets, main, plans or [PlanInfo("A")], replaces, changes, conditions,
-                         self.load_bom(), self.load_attributes(),
-                         {p: {o: frozenset(ps) for o, ps in m.items()} for p, m in skips.items()})
+                         self.load_bom(), self.load_attributes())
 
     def add_plan(self, number: str) -> str:
         """空の案を次の名前（A〜Z の空き）で足し、その名前を返す。"""
@@ -676,52 +690,50 @@ class StudyStore:
 
     # ④ 置換 -----------------------------------------------------------------
 
-    def save_replaces(self, number: str, plan: str, rows: Sequence[tuple[Any, Any]],
-                      skips: Mapping[Any, Sequence[Any]] | None = None) -> None:
-        """置換の行を入れ替え、行ごとの変更を書き直す。手で直した箇所（置換以外から書いた変更）はその箇所だけ残す。
+    def save_replaces(self, number: str, plan: str, rows: Sequence[Sequence[Any]]) -> None:
+        """置換の行（元品番, 新品番[, 風船番号]）を入れ替え、行ごとの変更を書き直す。
 
-        skips は元品番ごとの置き換えない製品（その製品には変更を書かない）。
-        同じ元品番が2行あると同じ箇所に2回足されるので、ValueError で止めて行を示す。
+        風船番号を付けた行は、その風船番号の箇所だけに効く（無い・None の行は全部の箇所）。
+        手で直した箇所（置換以外から書いた変更）はその箇所だけ残す。
+        同じ箇所に2回足されないよう、同じ元品番・同じ風船番号の行や、全部の行と風船番号の行が重なれば ValueError で止めて行を示す。
         """
         ws = self.workspace(number)
         sid = self.study_id(number)
-        pairs: list[tuple[str, str]] = []
-        seen: dict[str, int] = {}
-        for i, (old, new) in enumerate(rows, start=1):
+        pairs: list[ReplaceRow] = []
+        seen: dict[tuple[str, str | None], int] = {}
+        for i, row in enumerate(rows, start=1):
+            old, new, *rest = row
+            balloon = rest[0] if rest else None
             old_code, new_code = input_code(old, name="元品番"), input_code(new, name="新品番")
+            balloon = None if balloon is None else nfkc(str(balloon)).strip()
             if old_code == new_code:
                 raise ValueError(f"元品番と新品番が同じです（{i}行目）")
-            if old_code in seen:
-                raise ValueError(f"元品番 {old_code} が重複しています（{seen[old_code]}行目・{i}行目）")
-            seen[old_code] = i
-            pairs.append((old_code, new_code))
-        skip: dict[str, set[str]] = {}
-        for old, products in (skips or {}).items():
-            old_code = input_code(old, name="元品番")
-            if old_code in seen:
-                skip[old_code] = {input_code(p, name="置き換えない製品") for p in products}
+            clash = next((j for (o, b), j in seen.items() if o == old_code and (b == balloon or b is None or balloon is None)),
+                         None)
+            if clash is not None:
+                raise ValueError(f"元品番 {old_code} が重複しています（{clash}行目・{i}行目）")
+            seen[(old_code, balloon)] = i
+            pairs.append((old_code, new_code, balloon))
         before = ws.replaces.get(plan, [])
         with self._conn:
             self._ensure_plan(sid, plan)
             self._conn.execute("DELETE FROM v2_replace WHERE study_id = ? AND plan = ?", (sid, plan))
-            self._conn.executemany("INSERT INTO v2_replace VALUES (?, ?, ?, ?, ?)",
-                                   [(sid, plan, i, o, n) for i, (o, n) in enumerate(pairs)])
-            self._conn.execute("DELETE FROM v2_replace_skip WHERE study_id = ? AND plan = ?", (sid, plan))
-            self._conn.executemany("INSERT INTO v2_replace_skip VALUES (?, ?, ?, ?)",
-                                   [(sid, plan, o, pr) for o, ps in skip.items() for pr in sorted(ps)])
-            for old, new in set(before) | set(pairs):
+            self._conn.executemany("INSERT INTO v2_replace (study_id, plan, position, old_part, new_part, balloon) "
+                                   "VALUES (?, ?, ?, ?, ?, ?)",
+                                   [(sid, plan, i, o, n, b) for i, (o, n, b) in enumerate(pairs)])
+            for old, new, balloon in set(before) | set(pairs):
                 self._conn.execute("DELETE FROM v2_change WHERE study_id = ? AND plan = ? AND source = ? "
-                                   "AND origin = ?", (sid, plan, REPLACE, pair_key(old, new)))
+                                   "AND origin = ?", (sid, plan, REPLACE, pair_key(old, new, balloon)))
             manual = {c.place for c in ws.plan_changes(plan) if c.source != REPLACE}
-            for old, new in pairs:
+            for old, new, balloon in pairs:
                 for product in ws.targets:
-                    if product in skip.get(old, ()):
-                        continue
                     for line in replace_lines(ws.bom, product, old):
+                        if balloon is not None and balloon_group(line) != balloon:
+                            continue
                         for place, delta in (((product, line.parent, line.balloon, old), -line.quantity),
                                              ((product, line.parent, line.balloon, new), line.quantity)):
                             if place not in manual:
-                                self._put(sid, plan, place, delta, REPLACE, pair_key(old, new))
+                                self._put(sid, plan, place, delta, REPLACE, pair_key(old, new, balloon))
             self._touch(sid)
 
     # ⑤ グリッド画面 ---------------------------------------------------------------
@@ -872,7 +884,6 @@ def _snapshot(ws: Workspace) -> dict[str, Any]:
         "main_product": ws.main_product,
         "plans": [{"plan": p.plan, "grid_columns": p.grid_columns, "grid_rows": p.grid_rows} for p in ws.plans],
         "replaces": ws.replaces,
-        "replace_skips": {p: {o: sorted(ps) for o, ps in m.items()} for p, m in ws.replace_skips.items()},
         "changes": [[c.plan, c.product, c.parent, c.balloon, c.part, str(c.delta), c.source, c.origin, c.seq]
                     for c in ws.changes],
         "conditions": {k: str(v) for k, v in ws.conditions.items()},
@@ -906,35 +917,34 @@ def _from_snapshot(data: dict[str, Any], version: int) -> Workspace:
         targets=list(data["targets"]),
         main_product=data.get("main_product"),
         plans=[PlanInfo(p["plan"], p["grid_columns"], p["grid_rows"]) for p in data["plans"]],
-        replaces={k: [tuple(x) for x in v] for k, v in data["replaces"].items()},
+        # 風船番号の列を足す前に固めた版は (元品番, 新品番) の2つ。全部の箇所として読む
+        replaces={k: [(x[0], x[1], x[2] if len(x) > 2 else None) for x in v] for k, v in data["replaces"].items()},
         changes=[StoredChange(p, pr, pa, bl, pt, Decimal(d), s, o, seq) for p, pr, pa, bl, pt, d, s, o, seq
                  in data["changes"]],
         conditions={k: Decimal(v) for k, v in data["conditions"].items()},
         bom=bom,
         attributes=attributes,
-        replace_skips={p: {o: frozenset(ps) for o, ps in m.items()}
-                       for p, m in data.get("replace_skips", {}).items()},
     )
 
 
-def replace_overridden(ws: Workspace, plan: str) -> dict[tuple[str, str], bool]:
+def replace_overridden(ws: Workspace, plan: str) -> dict[ReplaceRow, bool]:
     """置換の行ごとに、その行が効く箇所を グリッド画面・書き換えで手で直した所があるか。
 
     置換の後に足した製品のように、まだ置換を当てていないだけの箇所には印を付けない。
     """
     stored = {c.place: c for c in ws.plan_changes(plan)}
     result = {}
-    for old, new in ws.replaces.get(plan, []):
+    for old, new, balloon in ws.replaces.get(plan, []):
         hit = False
         for product in ws.targets:
-            if product in ws.skipped(plan, old):
-                continue
             for line in replace_lines(ws.bom, product, old):
+                if balloon is not None and balloon_group(line) != balloon:
+                    continue
                 for place in ((product, line.parent, line.balloon, old), (product, line.parent, line.balloon, new)):
                     c = stored.get(place)
                     if c is not None and c.source != REPLACE:
                         hit = True
-        result[(old, new)] = hit
+        result[(old, new, balloon)] = hit
     return result
 
 

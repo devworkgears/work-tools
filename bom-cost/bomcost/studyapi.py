@@ -42,6 +42,7 @@ from .study import (
     parts_of,
     problem_count,
     product_lines,
+    replace_groups,
     replace_overridden,
     where_used,
 )
@@ -211,6 +212,7 @@ class StudyApi:
             ("GET", r"/api/v2/targets", self.targets),
             ("PUT", r"/api/v2/targets", self.put_targets),
             ("GET", r"/api/v2/replace", self.replace),
+            ("GET", r"/api/v2/replace/groups", self.replace_groups),
             ("PUT", r"/api/v2/replace", self.put_replace),
             ("GET", r"/api/v2/grid", self.grid),
             ("PUT", r"/api/v2/grid", self.put_grid),
@@ -401,14 +403,25 @@ class StudyApi:
         ws = self._ws(params)
         plan = self._plan(params)
         marks = replace_overridden(ws, plan)
-        # uses＝対象品番のうち元品番を使う製品・skip＝そのうち置き換えない製品
-        return self._json({"rows": [{"old": o, "new": n, "overridden": marks[(o, n)],
-                                     "uses": where_used(ws.bom, o, ws.targets)[0], "skip": sorted(ws.skipped(plan, o))}
-                                    for o, n in ws.replaces.get(plan, [])]})
+        groups: dict[str, dict[str, list[str]]] = {}
+        rows = []
+        for o, n, b in ws.replaces.get(plan, []):
+            if o not in groups:
+                groups[o] = dict(replace_groups(ws.bom, ws.targets, o))
+            # count＝この行が効く製品の数（風船番号の無い全部の行は、元品番を置き換えられる製品の数）
+            members = groups[o].get(b, []) if b is not None else sorted({p for ps in groups[o].values() for p in ps})
+            rows.append({"old": o, "new": n, "balloon": b, "count": len(members), "overridden": marks[(o, n, b)]})
+        return self._json({"rows": rows})
+
+    def replace_groups(self, params: dict[str, str]) -> "Response":
+        """元品番を置き換えられる箇所の、風船番号ごとのまとまり（風船番号・製品の数）。保存しない。"""
+        ws = self._ws(params)
+        code = input_code(params.get("code", ""), name="元品番")
+        return self._json({"code": code, "groups": [{"balloon": b, "count": len(ps)}
+                                                    for b, ps in replace_groups(ws.bom, ws.targets, code)]})
 
     def put_replace(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
         pairs = []
-        skips: dict[str, list[Any]] = {}
         seen: dict[str, int] = {}
         for i, r in enumerate(_objects(body, "rows"), start=1):
             old, new = (nfkc(str(r.get(k) or "")).strip() for k in ("old", "new"))
@@ -416,16 +429,14 @@ class StudyApi:
                 continue
             if not old or not new:
                 raise ValueError(f"元品番と新品番を入力してください（{i}行目）")
+            balloon = r.get("balloon")
             # 行の番号は画面の行（空の行も数える）で示す
-            if old in seen:
-                raise ValueError(f"元品番 {old} が重複しています（{seen[old]}行目・{i}行目）")
-            seen[old] = i
-            pairs.append((old, new))
-            skip = r.get("skip") or []
-            if not isinstance(skip, list):
-                raise ValueError(f"送る形が違います（{i}行目の skip は配列）")
-            skips[old] = skip
-        self.store.save_replaces(_number(params), self._plan(params), pairs, skips)
+            key = (old, None if balloon is None else str(balloon))
+            if key in seen:
+                raise ValueError(f"元品番 {old} が重複しています（{seen[key]}行目・{i}行目）")
+            seen[key] = i
+            pairs.append((old, new, key[1]))
+        self.store.save_replaces(_number(params), self._plan(params), pairs)
         return self.replace({"number": _number(params), "plan": self._plan(params)})
 
     # ⑤ グリッド画面 ---------------------------------------------------------------
@@ -443,7 +454,7 @@ class StudyApi:
                 columns.append(c.product)
             if c.part not in rows:
                 rows.append(c.part)
-        replace_index = {pair_key(o, n): i + 1 for i, (o, n) in enumerate(ws.replaces.get(plan, []))}
+        replace_index = {pair_key(o, n, b): i + 1 for i, (o, n, b) in enumerate(ws.replaces.get(plan, []))}
         cells: dict[str, dict[str, Decimal]] = {}
         origin: dict[str, int | None] = {}
         problem: dict[str, dict[str, bool]] = {}

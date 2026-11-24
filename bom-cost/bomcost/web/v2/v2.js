@@ -810,104 +810,99 @@ async function importDialog(after) {
 async function replaceScreen(main, cur) {
   const ro = !canWrite();
   const plan = PLAN;
-  const products = S.targets.slice();
-  const FIXED = 6; // 印・番号・元品番・名称・新品番・名称。その右に対象品番の列
-  const blank = () => ({ old: "", new: "", overridden: false, uses: [], skip: new Set(), mark: false });
-  let rows = []; // { old, new, overridden, uses: 元品番を使う対象品番（null はまだ聞いていない）, skip: 置き換えない製品, mark: 行削除の印 }
-  const usesCache = new Map();
+  // 1行＝元品番×風船番号のまとまり（その風船番号でその品番を使う対象品番の製品全部）。
+  // balloon: null＝全部の箇所・""＝風船番号の無い箇所・undefined＝元品番を打ったばかりでまだ分けていない
+  const blank = () => ({ old: "", new: "", balloon: undefined, count: null, overridden: false, mark: false });
+  let rows = [];
+  const keyOf = (r) => `${r.old}\t${r.new}\t${r.balloon ?? "*"}`;
   const load = async () => {
     const d = S.number ? await api("GET", "/api/v2/replace", q({ plan })) : { rows: [] };
-    rows = d.rows.map((r) => ({ old: r.old, new: r.new, overridden: r.overridden, uses: r.uses, skip: new Set(r.skip), mark: false }));
-    for (const r of d.rows) usesCache.set(r.old, r.uses);
+    rows = d.rows.map((r) => ({ ...blank(), old: r.old, new: r.new, balloon: r.balloon, count: r.count, overridden: r.overridden }));
     await lookup(rows.flatMap((r) => [r.old, r.new]));
   };
   await load();
-  // 元品番を打った・選んだ行の「使う製品」を埋める（埋めた行があれば true）
-  const fillUses = async () => {
+  const groupsOf = async (code) => (await api("GET", "/api/v2/replace/groups", q({ code }))).groups;
+  // 元品番を風船番号ごとの行に分ける。同じ元品番・同じ風船番号の行が既にあれば足さない
+  const expand = async (row) => {
+    const groups = await groupsOf(row.old);
+    if (!groups.length) {
+      done(`${row.old} は対象品番の中で置き換えられる箇所がありません`);
+      return [];
+    }
+    return groups.filter((g) => !rows.some((r) => r !== row && r.old === row.old && r.balloon === g.balloon))
+      .map((g) => ({ ...blank(), old: row.old, new: row.new, balloon: g.balloon, count: g.count }));
+  };
+  const splitTyped = async () => {
     let got = false;
-    for (const r of rows) {
-      if (!r.old || r.uses !== null) continue;
-      if (!usesCache.has(r.old)) {
-        const d = await api("GET", "/api/v2/where-used", q({ code: r.old, group: "inside" }));
-        usesCache.set(r.old, d.products.map((x) => x.code));
-      }
-      r.uses = usesCache.get(r.old);
+    for (const row of rows.filter((r) => r.old && r.balloon === undefined)) {
+      const parts = await expand(row);
+      rows.splice(rows.indexOf(row), 1, ...parts);
       got = true;
     }
+    if (got) saver.schedule();
     return got;
   };
   const markAll = () => {
     const all = !(rows.length && rows.every((r) => r.mark));
     for (const r of rows) r.mark = all;
   };
+  const balloonText = (b) => (b === undefined ? "" : b === null ? "全部" : b === "" ? "なし" : b);
   const body = el("div");
   const model = {
     head: () => [
       { text: rows.length && rows.every((r) => r.mark) ? "☑" : "☐", cls: "c", title: "全部の行に印", action: ro ? null : markAll },
-      "", "元品番", "名称", "新品番", "名称",
-      ...products.map((code) => ({ text: code, cls: "c", title: items.get(code)?.name ?? null })),
+      "", "元品番", "名称", { text: "風船", cls: "c" }, { text: "使う製品", cls: "r" }, "新品番", "名称", "",
     ],
     nRows: () => rows.length + (ro ? 0 : 1),
     grow: ro ? undefined : () => { rows.push(blank()); return true; },
-    nCols: () => FIXED + products.length,
+    nCols: () => 9,
     cell(r, c) {
       const row = rows[r];
       if (c === 0) return { text: row ? (row.mark ? "☑" : "☐") : "", cls: "act" };
       if (c === 1) return { text: String(r + 1), cls: "n" };
-      if (c === 2) return { text: row ? row.old : "", editable: !ro };
+      if (c === 2) return { text: row ? row.old : "", editable: !ro && (!row || row.balloon === undefined) };
       if (c === 3) return nameCell(row && row.old);
-      if (c === 4) return { text: row ? row.new : "", editable: !ro };
-      if (c === 5) return nameCell(row && row.new);
-      const product = products[c - FIXED];
-      if (!row || !row.old || row.uses === null) return { text: "" };
-      if (!row.uses.includes(product)) return { text: "—", cls: "none", title: "この製品は元品番を使っていない" };
-      const on = !row.skip.has(product);
-      return { text: on ? "☑" : "☐", cls: "act", title: on ? "この製品で置き換える" : "この製品では置き換えない" };
+      if (c === 4) return { text: row ? balloonText(row.balloon) : "", cls: "c" };
+      if (c === 5) return { text: row && row.count !== null ? String(row.count) : "", cls: "r" };
+      if (c === 6) return { text: row ? row.new : "", editable: !ro };
+      if (c === 7) return nameCell(row && row.new);
+      return row && row.overridden ? { text: "※", cls: "mark", title: "一部の製品は個別に変更あり" } : { text: "", cls: "mark" };
     },
     set(r, c, text) {
-      if (c !== 2 && c !== 4) return;
+      if (c !== 2 && c !== 6) return;
       if (r >= rows.length) {
         if (!text) return;
         rows.push(blank());
       }
       const row = rows[r];
-      if (c === 2 && row.old !== text) {
-        row.old = text;
-        row.uses = text ? null : [];
-        row.skip = new Set();
-      }
-      if (c === 4) row.new = text;
+      if (c === 2) row.old = text;
+      else row.new = text;
       row.overridden = false;
       saver.schedule();
     },
-    // 左端は行削除の印。製品の列は、押すと置き換える／置き換えないを切り替える
+    // 左端は行削除の印
     action(r, c) {
       const row = rows[r];
-      if (!row || ro) return false;
-      if (c === 0) {
-        row.mark = !row.mark;
-        return true;
-      }
-      if (c < FIXED) return false;
-      const product = products[c - FIXED];
-      if (!row.uses || !row.uses.includes(product)) return false;
-      if (row.skip.has(product)) row.skip.delete(product);
-      else row.skip.add(product);
-      saver.schedule();
+      if (!row || ro || c !== 0) return false;
+      row.mark = !row.mark;
       return true;
     },
     changed() {
-      Promise.all([lookup(rows.flatMap((r) => [r.old, r.new])), fillUses()])
+      Promise.all([splitTyped(), lookup(rows.flatMap((r) => [r.old, r.new]))])
         .then(([a, b]) => (a || b) && grid.render()).catch(fail);
     },
   };
   const grid = new Grid(body, model);
-  // 元品番と新品番の両方がそろった行だけを送る（片方だけの行は打ちかけとして画面に残す）
+  // 元品番・新品番がそろい、風船番号のまとまりに分けた行だけを送る（打ちかけの行は画面に残す）
   const saver = autosaver(cur, async () => {
     const d = await api("PUT", "/api/v2/replace", { number: S.number, plan },
-      { rows: rows.filter((r) => r.old && r.new).map((r) => ({ old: r.old, new: r.new, skip: [...r.skip] })) });
-    const marks = new Map(d.rows.map((x) => [`${x.old}\t${x.new}`, x.overridden]));
-    for (const r of rows) r.overridden = marks.get(`${r.old}\t${r.new}`) || false;
+      { rows: rows.filter((r) => r.old && r.new && r.balloon !== undefined).map((r) => ({ old: r.old, new: r.new, balloon: r.balloon })) });
+    const got = new Map(d.rows.map((x) => [keyOf(x), x]));
+    for (const r of rows) {
+      const x = got.get(keyOf(r));
+      r.overridden = x ? x.overridden : false;
+      if (x) r.count = x.count;
+    }
     grid.render();
   }, async () => {
     await load();
@@ -923,15 +918,19 @@ async function replaceScreen(main, cur) {
     grid.render();
     done(`${n} 行を消しました`);
   });
-  // 左の部品の一覧（対象品番の全製品の部品）から選んだ部品を、元品番の行に足す（新品番は打つ）
+  // 左の部品の一覧（対象品番の全製品の部品）から選んだ部品を、風船番号ごとの行に分けて足す（新品番は打つ）
   const pick = chooser({
-    chosen: S.targets, ro, note: "対象品番の部品", onAdd: (codes) => {
-      for (const code of codes) if (!rows.some((r) => r.old === code)) rows.push({ ...blank(), old: code, uses: null });
-      grid.changed();
+    chosen: S.targets, ro, note: "対象品番の部品", onAdd: async (codes) => {
+      try {
+        for (const code of codes) rows.push(...(await expand({ ...blank(), old: code })));
+        await lookup(rows.map((r) => r.old));
+        grid.render();
+      } catch (e) {
+        fail(e);
+      }
     },
   });
   await pick.ready;
-  await fillUses();
   main.append(card("置換", [del], el("div", { class: "chooser parts" }, pick.mid, el("div", { class: "work" }, body))));
   grid.render();
   grid.focus();
