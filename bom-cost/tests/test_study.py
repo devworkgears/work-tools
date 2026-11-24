@@ -109,6 +109,21 @@ class ReplaceInput(StudyCase):
         with self.assertRaises(ValueError):
             self.store.save_replaces(self.number, "A", [("K120", "K120")])
 
+    def test_skipped_product_gets_no_change_and_the_skip_is_kept(self) -> None:
+        # 置換の組ごとに、置き換えない製品を選べる（一部の製品だけ替える）
+        self.store.save_replaces(self.number, "A", [("K120", "K121")], {"K120": ["P2"]})
+        self.assertEqual({k[0] for k in self.changes()}, {"P1", "P3"})
+        ws = self.store.workspace(self.number)
+        self.assertEqual(ws.skipped("A", "K120"), frozenset({"P2"}))
+        # 印を戻せば P2 にも入る
+        self.store.save_replaces(self.number, "A", [("K120", "K121")], {"K120": []})
+        self.assertEqual({k[0] for k in self.changes()}, {"P1", "P2", "P3"})
+
+    def test_skip_survives_taking_a_version(self) -> None:
+        self.store.save_replaces(self.number, "A", [("K120", "K121")], {"K120": ["P2"]})
+        version = self.store.take_release(self.number)
+        self.assertEqual(self.store.workspace(self.number, version).skipped("A", "K120"), frozenset({"P2"}))
+
 
 class LaterWriteWins(StudyCase):
     def test_grid_over_replace_does_not_add_and_marks_the_replace_row(self) -> None:
@@ -378,7 +393,7 @@ class StudyApiFlow(unittest.TestCase):
         self.assertTrue(looked[P1]["registered"])
         self.assertFalse(looked["ZZ9999-001"]["registered"])
         rows = self.ok("PUT", "/api/v2/replace", q + "&plan=A", {"rows": [{"old": OLD, "new": NEW}]})["rows"]
-        self.assertEqual(rows, [{"old": OLD, "new": NEW, "overridden": False}])
+        self.assertEqual(rows, [{"old": OLD, "new": NEW, "overridden": False, "uses": [P1, P2], "skip": []}])
         grid = self.ok("PUT", "/api/v2/grid", q + "&plan=A",
                      {"columns": [P1], "rows": ["ST0050-001"], "cells": [{"product": P1, "part": "ST0050-001",
                                                                           "value": "-1"}]})

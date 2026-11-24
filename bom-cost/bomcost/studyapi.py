@@ -401,11 +401,14 @@ class StudyApi:
         ws = self._ws(params)
         plan = self._plan(params)
         marks = replace_overridden(ws, plan)
-        return self._json({"rows": [{"old": o, "new": n, "overridden": marks[(o, n)]}
+        # uses＝対象品番のうち元品番を使う製品・skip＝そのうち置き換えない製品
+        return self._json({"rows": [{"old": o, "new": n, "overridden": marks[(o, n)],
+                                     "uses": where_used(ws.bom, o, ws.targets)[0], "skip": sorted(ws.skipped(plan, o))}
                                     for o, n in ws.replaces.get(plan, [])]})
 
     def put_replace(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
         pairs = []
+        skips: dict[str, list[Any]] = {}
         seen: dict[str, int] = {}
         for i, r in enumerate(_objects(body, "rows"), start=1):
             old, new = (nfkc(str(r.get(k) or "")).strip() for k in ("old", "new"))
@@ -418,7 +421,11 @@ class StudyApi:
                 raise ValueError(f"元品番 {old} が重複しています（{seen[old]}行目・{i}行目）")
             seen[old] = i
             pairs.append((old, new))
-        self.store.save_replaces(_number(params), self._plan(params), pairs)
+            skip = r.get("skip") or []
+            if not isinstance(skip, list):
+                raise ValueError(f"送る形が違います（{i}行目の skip は配列）")
+            skips[old] = skip
+        self.store.save_replaces(_number(params), self._plan(params), pairs, skips)
         return self.replace({"number": _number(params), "plan": self._plan(params)})
 
     # ⑤ グリッド画面 ---------------------------------------------------------------

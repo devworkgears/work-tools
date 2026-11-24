@@ -144,7 +144,7 @@ const PLAN = "A";
 
 // 左＝対象品番（印を付ける）、まん中＝印の製品の部品（絞り込み・印を付けて［表に入れる］）。
 // onProducts(印の製品) は印が変わるたびに呼び、false を返せばその変更を取り消す。onAdd(部品の品番) は［表に入れる］で呼ぶ
-function chooser({ chosen, single = false, onProducts = null, onAdd = null, ro = false }) {
+function chooser({ chosen, single = false, onProducts = null, onAdd = null, ro = false, note = null }) {
   const checked = new Set(chosen.filter((c) => S.targets.includes(c)));
   const left = el("div", { class: "pane" });
   const mid = onAdd ? el("div", { class: "pane" }) : null;
@@ -202,7 +202,7 @@ function chooser({ chosen, single = false, onProducts = null, onAdd = null, ro =
     if (!mid) return;
     const word = filter.value.trim().toLowerCase();
     const shown = parts.filter((p) => !word || p.code.toLowerCase().includes(word) || (p.name || "").toLowerCase().includes(word));
-    midNote.textContent = `印の ${of} 製品の部品`;
+    midNote.textContent = note ?? `印の ${of} 製品の部品`;
     fill(midTable, el("table", { class: "list" }, el("tr", {}, el("th", {}, ""), el("th", {}, "品番"), el("th", { class: "r", title: "印を付けた製品のうち、使う製品の数" }, "使う"), el("th", {}, "名称")),
       shown.map((p) => {
         if (!partChecks.has(p.code)) partChecks.set(p.code, el("input", { type: "checkbox" }));
@@ -809,49 +809,103 @@ async function importDialog(after) {
 
 async function replaceScreen(main, cur) {
   const ro = !canWrite();
-  const EMPTY_ROW = () => ({ old: "", new: "" });
   const plan = PLAN;
-  let rows = [];
+  const products = S.targets.slice();
+  const FIXED = 6; // 印・番号・元品番・名称・新品番・名称。その右に対象品番の列
+  const blank = () => ({ old: "", new: "", overridden: false, uses: [], skip: new Set(), mark: false });
+  let rows = []; // { old, new, overridden, uses: 元品番を使う対象品番（null はまだ聞いていない）, skip: 置き換えない製品, mark: 行削除の印 }
+  const usesCache = new Map();
   const load = async () => {
     const d = S.number ? await api("GET", "/api/v2/replace", q({ plan })) : { rows: [] };
-    rows = d.rows.map((r) => ({ ...r }));
+    rows = d.rows.map((r) => ({ old: r.old, new: r.new, overridden: r.overridden, uses: r.uses, skip: new Set(r.skip), mark: false }));
+    for (const r of d.rows) usesCache.set(r.old, r.uses);
     await lookup(rows.flatMap((r) => [r.old, r.new]));
   };
   await load();
+  // 元品番を打った・選んだ行の「使う製品」を埋める（埋めた行があれば true）
+  const fillUses = async () => {
+    let got = false;
+    for (const r of rows) {
+      if (!r.old || r.uses !== null) continue;
+      if (!usesCache.has(r.old)) {
+        const d = await api("GET", "/api/v2/where-used", q({ code: r.old, group: "inside" }));
+        usesCache.set(r.old, d.products.map((x) => x.code));
+      }
+      r.uses = usesCache.get(r.old);
+      got = true;
+    }
+    return got;
+  };
+  const markAll = () => {
+    const all = !(rows.length && rows.every((r) => r.mark));
+    for (const r of rows) r.mark = all;
+  };
   const body = el("div");
   const model = {
-    head: () => ["", "元品番", "名称", "新品番", "名称", ""],
+    head: () => [
+      { text: rows.length && rows.every((r) => r.mark) ? "☑" : "☐", cls: "c", title: "全部の行に印", action: ro ? null : markAll },
+      "", "元品番", "名称", "新品番", "名称",
+      ...products.map((code) => ({ text: code, cls: "c", title: items.get(code)?.name ?? null })),
+    ],
     nRows: () => rows.length + (ro ? 0 : 1),
-    grow: ro ? undefined : () => { rows.push(EMPTY_ROW()); return true; },
-    nCols: () => 6,
+    grow: ro ? undefined : () => { rows.push(blank()); return true; },
+    nCols: () => FIXED + products.length,
     cell(r, c) {
-      const row = rows[r] || {};
-      if (c === 0) return { text: String(r + 1), cls: "n" };
-      if (c === 1) return { text: row.old || "", editable: !ro };
-      if (c === 2) return nameCell(row.old);
-      if (c === 3) return { text: row.new || "", editable: !ro };
-      if (c === 4) return nameCell(row.new);
-      return row.overridden ? { text: "※", cls: "mark", title: "一部の製品は個別に変更あり" } : { text: "", cls: "mark" };
+      const row = rows[r];
+      if (c === 0) return { text: row ? (row.mark ? "☑" : "☐") : "", cls: "act" };
+      if (c === 1) return { text: String(r + 1), cls: "n" };
+      if (c === 2) return { text: row ? row.old : "", editable: !ro };
+      if (c === 3) return nameCell(row && row.old);
+      if (c === 4) return { text: row ? row.new : "", editable: !ro };
+      if (c === 5) return nameCell(row && row.new);
+      const product = products[c - FIXED];
+      if (!row || !row.old || row.uses === null) return { text: "" };
+      if (!row.uses.includes(product)) return { text: "—", cls: "none", title: "この製品は元品番を使っていない" };
+      const on = !row.skip.has(product);
+      return { text: on ? "☑" : "☐", cls: "act", title: on ? "この製品で置き換える" : "この製品では置き換えない" };
     },
     set(r, c, text) {
-      if (c !== 1 && c !== 3) return;
+      if (c !== 2 && c !== 4) return;
       if (r >= rows.length) {
         if (!text) return;
-        rows.push({ old: "", new: "" });
+        rows.push(blank());
       }
-      rows[r][c === 1 ? "old" : "new"] = text;
-      rows[r].overridden = false;
+      const row = rows[r];
+      if (c === 2 && row.old !== text) {
+        row.old = text;
+        row.uses = text ? null : [];
+        row.skip = new Set();
+      }
+      if (c === 4) row.new = text;
+      row.overridden = false;
       saver.schedule();
     },
+    // 左端は行削除の印。製品の列は、押すと置き換える／置き換えないを切り替える
+    action(r, c) {
+      const row = rows[r];
+      if (!row || ro) return false;
+      if (c === 0) {
+        row.mark = !row.mark;
+        return true;
+      }
+      if (c < FIXED) return false;
+      const product = products[c - FIXED];
+      if (!row.uses || !row.uses.includes(product)) return false;
+      if (row.skip.has(product)) row.skip.delete(product);
+      else row.skip.add(product);
+      saver.schedule();
+      return true;
+    },
     changed() {
-      lookup(rows.flatMap((r) => [r.old, r.new])).then((got) => got && grid.render()).catch(fail);
+      Promise.all([lookup(rows.flatMap((r) => [r.old, r.new])), fillUses()])
+        .then(([a, b]) => (a || b) && grid.render()).catch(fail);
     },
   };
   const grid = new Grid(body, model);
   // 元品番と新品番の両方がそろった行だけを送る（片方だけの行は打ちかけとして画面に残す）
   const saver = autosaver(cur, async () => {
     const d = await api("PUT", "/api/v2/replace", { number: S.number, plan },
-      { rows: rows.filter((r) => r.old && r.new).map((r) => ({ old: r.old, new: r.new })) });
+      { rows: rows.filter((r) => r.old && r.new).map((r) => ({ old: r.old, new: r.new, skip: [...r.skip] })) });
     const marks = new Map(d.rows.map((x) => [`${x.old}\t${x.new}`, x.overridden]));
     for (const r of rows) r.overridden = marks.get(`${r.old}\t${r.new}`) || false;
     grid.render();
@@ -859,15 +913,27 @@ async function replaceScreen(main, cur) {
     await load();
     grid.render();
   });
-  // まん中で選んだ部品を元品番の行に足す（新品番は打つ）
+  const del = el("button", { class: "btn", disabled: ro }, "行削除");
+  del.addEventListener("click", () => {
+    if (Grid.active) Grid.active.commit();
+    const n = rows.filter((r) => r.mark).length;
+    if (!n) return alert("消す行の左端に印を付けてください");
+    rows = rows.filter((r) => !r.mark);
+    saver.schedule();
+    grid.render();
+    done(`${n} 行を消しました`);
+  });
+  // 左の部品の一覧（対象品番の全製品の部品）から選んだ部品を、元品番の行に足す（新品番は打つ）
   const pick = chooser({
-    chosen: S.targets, ro, onAdd: (codes) => {
-      for (const code of codes) if (!rows.some((r) => r.old === code)) rows.push({ old: code, new: "" });
+    chosen: S.targets, ro, note: "対象品番の部品", onAdd: (codes) => {
+      for (const code of codes) if (!rows.some((r) => r.old === code)) rows.push({ ...blank(), old: code, uses: null });
       grid.changed();
     },
   });
   await pick.ready;
-  main.append(card("置換", [], el("div", { class: "chooser" }, pick.left, pick.mid, el("div", { class: "work" }, body))));
+  await fillUses();
+  main.append(card("置換", [del], el("div", { class: "chooser parts" }, pick.mid, el("div", { class: "work" }, body))));
+  grid.render();
   grid.focus();
 }
 

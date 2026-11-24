@@ -1,6 +1,6 @@
 // Excel 風の格子。セルを選び、Enter・矢印で移り、打てば書き換え、タブ区切りの貼り付けで行が足される。
 // 中身は model が持つ: nRows()・nCols()・cell(r, c) → {text, cls, editable, th}・set(r, c, text)。
-// 任意で head()（見出しの行）・action(r, c)（クリックで動くセル）・changed()（書き換えの後に1回）・
+// 任意で head()（見出しの行・{ text, cls, title, action } で押せる見出し）・action(r, c)（クリックで動くセル）・changed()（書き換えの後に1回）・
 // grow()（空の行を1行足す。足せなければ false）。
 "use strict";
 
@@ -71,6 +71,17 @@ class Grid {
         const th = document.createElement("th");
         th.textContent = label(h.text ?? h);
         if (h.cls) th.className = h.cls;
+        if (h.title) th.title = h.title;
+        // 押せる見出し（全部の行に印を付ける など）
+        if (h.action) {
+          th.style.cursor = "pointer";
+          th.addEventListener("mousedown", (e) => {
+            e.preventDefault();
+            this.commit();
+            h.action();
+            this.changed();
+          });
+        }
         tr.append(th);
       }
       rows.push(tr);

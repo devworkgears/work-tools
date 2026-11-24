@@ -75,6 +75,13 @@ CREATE TABLE IF NOT EXISTS v2_replace (
     new_part TEXT NOT NULL,
     PRIMARY KEY (study_id, plan, position)
 );
+CREATE TABLE IF NOT EXISTS v2_replace_skip (
+    study_id INTEGER NOT NULL REFERENCES v2_study(study_id) ON DELETE CASCADE,
+    plan TEXT NOT NULL,
+    old_part TEXT NOT NULL,
+    product TEXT NOT NULL,
+    PRIMARY KEY (study_id, plan, old_part, product)
+);
 CREATE TABLE IF NOT EXISTS v2_change (
     study_id INTEGER NOT NULL REFERENCES v2_study(study_id) ON DELETE CASCADE,
     plan TEXT NOT NULL,
@@ -228,6 +235,11 @@ class Workspace:
     conditions: dict[str, Decimal]
     bom: Version
     attributes: Attributes = field(default_factory=dict)
+    # 案 → 元品番 → 置換で置き換えない製品
+    replace_skips: dict[str, dict[str, frozenset[str]]] = field(default_factory=dict)
+
+    def skipped(self, plan: str, old: str) -> frozenset[str]:
+        return self.replace_skips.get(plan, {}).get(old, frozenset())
 
     def attribute(self, code: str, name: str) -> str:
         return self.attributes.get(code, {}).get(name, "")
@@ -599,13 +611,17 @@ class StudyStore:
         for plan, old, new in q("SELECT plan, old_part, new_part FROM v2_replace WHERE study_id = ? "
                                 "ORDER BY plan, position", (sid,)):
             replaces.setdefault(plan, []).append((old, new))
+        skips: dict[str, dict[str, set[str]]] = {}
+        for plan, old, product in q("SELECT plan, old_part, product FROM v2_replace_skip WHERE study_id = ?", (sid,)):
+            skips.setdefault(plan, {}).setdefault(old, set()).add(product)
         changes = [StoredChange(p, pr, pa, _balloon_py(b), pt, Decimal(d), s, o, seq) for p, pr, pa, b, pt, d, s, o, seq
                    in q("SELECT plan, product, parent, balloon, part, delta, source, origin, seq FROM v2_change "
                         "WHERE study_id = ? ORDER BY seq", (sid,))]
         conditions = {p: Decimal(a) for p, a in q("SELECT product, annual FROM v2_condition WHERE study_id = ?",
                                                   (sid,))}
         return Workspace(n, None, header, targets, main, plans or [PlanInfo("A")], replaces, changes, conditions,
-                         self.load_bom(), self.load_attributes())
+                         self.load_bom(), self.load_attributes(),
+                         {p: {o: frozenset(ps) for o, ps in m.items()} for p, m in skips.items()})
 
     def add_plan(self, number: str) -> str:
         """空の案を次の名前（A〜Z の空き）で足し、その名前を返す。"""
@@ -660,9 +676,11 @@ class StudyStore:
 
     # ④ 置換 -----------------------------------------------------------------
 
-    def save_replaces(self, number: str, plan: str, rows: Sequence[tuple[Any, Any]]) -> None:
+    def save_replaces(self, number: str, plan: str, rows: Sequence[tuple[Any, Any]],
+                      skips: Mapping[Any, Sequence[Any]] | None = None) -> None:
         """置換の行を入れ替え、行ごとの変更を書き直す。手で直した箇所（置換以外から書いた変更）はその箇所だけ残す。
 
+        skips は元品番ごとの置き換えない製品（その製品には変更を書かない）。
         同じ元品番が2行あると同じ箇所に2回足されるので、ValueError で止めて行を示す。
         """
         ws = self.workspace(number)
@@ -677,18 +695,28 @@ class StudyStore:
                 raise ValueError(f"元品番 {old_code} が重複しています（{seen[old_code]}行目・{i}行目）")
             seen[old_code] = i
             pairs.append((old_code, new_code))
+        skip: dict[str, set[str]] = {}
+        for old, products in (skips or {}).items():
+            old_code = input_code(old, name="元品番")
+            if old_code in seen:
+                skip[old_code] = {input_code(p, name="置き換えない製品") for p in products}
         before = ws.replaces.get(plan, [])
         with self._conn:
             self._ensure_plan(sid, plan)
             self._conn.execute("DELETE FROM v2_replace WHERE study_id = ? AND plan = ?", (sid, plan))
             self._conn.executemany("INSERT INTO v2_replace VALUES (?, ?, ?, ?, ?)",
                                    [(sid, plan, i, o, n) for i, (o, n) in enumerate(pairs)])
+            self._conn.execute("DELETE FROM v2_replace_skip WHERE study_id = ? AND plan = ?", (sid, plan))
+            self._conn.executemany("INSERT INTO v2_replace_skip VALUES (?, ?, ?, ?)",
+                                   [(sid, plan, o, pr) for o, ps in skip.items() for pr in sorted(ps)])
             for old, new in set(before) | set(pairs):
                 self._conn.execute("DELETE FROM v2_change WHERE study_id = ? AND plan = ? AND source = ? "
                                    "AND origin = ?", (sid, plan, REPLACE, pair_key(old, new)))
             manual = {c.place for c in ws.plan_changes(plan) if c.source != REPLACE}
             for old, new in pairs:
                 for product in ws.targets:
+                    if product in skip.get(old, ()):
+                        continue
                     for line in replace_lines(ws.bom, product, old):
                         for place, delta in (((product, line.parent, line.balloon, old), -line.quantity),
                                              ((product, line.parent, line.balloon, new), line.quantity)):
@@ -844,6 +872,7 @@ def _snapshot(ws: Workspace) -> dict[str, Any]:
         "main_product": ws.main_product,
         "plans": [{"plan": p.plan, "grid_columns": p.grid_columns, "grid_rows": p.grid_rows} for p in ws.plans],
         "replaces": ws.replaces,
+        "replace_skips": {p: {o: sorted(ps) for o, ps in m.items()} for p, m in ws.replace_skips.items()},
         "changes": [[c.plan, c.product, c.parent, c.balloon, c.part, str(c.delta), c.source, c.origin, c.seq]
                     for c in ws.changes],
         "conditions": {k: str(v) for k, v in ws.conditions.items()},
@@ -883,6 +912,8 @@ def _from_snapshot(data: dict[str, Any], version: int) -> Workspace:
         conditions={k: Decimal(v) for k, v in data["conditions"].items()},
         bom=bom,
         attributes=attributes,
+        replace_skips={p: {o: frozenset(ps) for o, ps in m.items()}
+                       for p, m in data.get("replace_skips", {}).items()},
     )
 
 
@@ -896,6 +927,8 @@ def replace_overridden(ws: Workspace, plan: str) -> dict[tuple[str, str], bool]:
     for old, new in ws.replaces.get(plan, []):
         hit = False
         for product in ws.targets:
+            if product in ws.skipped(plan, old):
+                continue
             for line in replace_lines(ws.bom, product, old):
                 for place in ((product, line.parent, line.balloon, old), (product, line.parent, line.balloon, new)):
                     c = stored.get(place)

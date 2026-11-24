@@ -129,3 +129,5 @@ table.list tr.pick:hover td { background: var(--soft); }
 .pane tr.on td { background: var(--soft); }
 .pane .row { margin: 6px; }
 .work { min-width: 0; overflow: auto; }
+.chooser.parts { grid-template-columns: 320px minmax(0, 1fr); }
+table.grid td.none { background: var(--head); color: var(--sub); text-align: center; }
