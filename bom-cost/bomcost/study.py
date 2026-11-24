@@ -13,7 +13,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, Iterable, Mapping, Sequence
 
-from .formula import COMPARE_HEADS, Breakdown, Head, breakdown, registered_own
+from .formula import COMPARE_HEADS, Breakdown, Head, OwnValues, breakdown, registered_own
 from .model import BomLine, CostHead, CostRow, Item, Version, Volume
 from .normalize import to_code, to_decimal, to_optional_code
 from .rollup import CostCalculator
@@ -452,7 +452,7 @@ def calculate(ws: Workspace, head: Head | CostHead = Head.MANUFACTURING) -> dict
     return calculate_heads(ws, (head,))[head]
 
 
-def own_values(ws: Workspace, plan: str, product: str, own: Any) -> Any:
+def own_values(ws: Workspace, plan: str, product: str, own: OwnValues) -> OwnValues:
     """製品自身の値に、案で書き換えた費目を当てる。"""
     for key, head in OWN_HEADS.items():
         value = ws.owns.get(plan, {}).get((product, key))
