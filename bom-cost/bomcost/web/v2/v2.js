@@ -1370,19 +1370,23 @@ async function rewriteScreen(main, cur) {
 
 // ⑥ 変更一覧 -------------------------------------------------------------
 
-// 構成の変更を、した事（置き換え・数量・追加・削除）ごとに1行で出す。製品の数を押すと製品ごとの箇所。
+// 構成の変更を、部品から（した事〔置き換え・数量・追加・削除〕ごとに1行・製品の数を押すと製品ごとの箇所）か、
+// 製品から（製品×した事ごとに1行・変更の無い対象品番も出す）で見る。
 // 金額の変更（⑩ 製品の費目の書き換え）は下に分けて出す
 async function changesScreen(main) {
   const plan = PLAN;
   let product = "";
+  let view = "part"; // part＝部品から・product＝製品から
   let rows = [];
+  let byProduct = [];
   let owns = [];
   const ownBox = el("div");
   const load = async () => {
     const d = await api("GET", "/api/v2/changes", q({ plan, product }));
     rows = d.summary;
+    byProduct = d.by_product;
     owns = d.rows.filter((r) => r.source === "own");
-    await lookup([...rows.flatMap((r) => r.products), ...owns.map((r) => r.product)]);
+    await lookup([...byProduct.map((r) => r.product), ...owns.map((r) => r.product)]);
     fill(ownBox, owns.length ? [el("h3", {}, "製品の費目の書き換え"), el("table", { class: "list" },
       el("tr", {}, ["製品", "名称", "費目", "台帳の値", "書き換えた値"].map((t) => el("th", {}, t))),
       owns.map((r) => el("tr", {}, el("td", {}, r.product), el("td", {}, nameCell(r.product).text), el("td", {}, r.part),
@@ -1398,7 +1402,8 @@ async function changesScreen(main) {
   };
   const named = (code, name) => (code === null ? { text: "" } : name === null ? { text: "未登録", cls: "bad" } : { text: name });
   const body = el("div");
-  const model = {
+  const problemCell = (row) => ({ text: row.problems.join("・"), cls: row.problems.length ? "bad" : "" });
+  const partModel = {
     head: () => ["", "変更", "元品番", "名称", "新品番", "名称", { text: "数量", cls: "r" }, { text: "製品", cls: "r" }, "要確認"],
     nRows: () => rows.length,
     nCols: () => 9,
@@ -1413,7 +1418,7 @@ async function changesScreen(main) {
         case 5: return named(row.new, row.new_name);
         case 6: return { text: row.quantity, cls: "r" };
         case 7: return { text: String(row.products.length), cls: "r link", title: "押すと製品ごとの箇所" };
-        default: return { text: row.problems.join("・"), cls: row.problems.length ? "bad" : "" };
+        default: return problemCell(row);
       }
     },
     set() {},
@@ -1422,7 +1427,41 @@ async function changesScreen(main) {
       return false;
     },
   };
-  const grid = new Grid(body, model);
+  // 製品の品番と名称は、その製品の最初の行にだけ出す
+  const productModel = {
+    head: () => ["", "製品", "名称", "変更", "元品番", "名称", "新品番", "名称", { text: "数量", cls: "r" }, "親", { text: "風船", cls: "c" }, "要確認"],
+    nRows: () => byProduct.length,
+    nCols: () => 12,
+    cell(r, c) {
+      const row = byProduct[r];
+      const first = r === 0 || byProduct[r - 1].product !== row.product;
+      switch (c) {
+        case 0: return { text: String(r + 1), cls: "n" };
+        case 1: return { text: first ? row.product : "" };
+        case 2: return first ? nameCell(row.product) : { text: "" };
+        case 3: return { text: row.kind };
+        case 4: return { text: row.old ?? "" };
+        case 5: return named(row.old, row.old_name);
+        case 6: return { text: row.new ?? "" };
+        case 7: return named(row.new, row.new_name);
+        case 8: return { text: row.quantity, cls: "r" };
+        case 9: return { text: row.parent ?? "" };
+        case 10: return { text: row.kind === "変更なし" ? "" : row.balloon ?? "—", cls: "c" };
+        default: return problemCell(row);
+      }
+    },
+    set() {},
+  };
+  let grid = new Grid(body, partModel);
+  const views = el("div", { class: "chips" });
+  const drawViews = () => fill(views, [["part", "部品から"], ["product", "製品から"]].map(([k, text]) =>
+    el("button", { class: "chip" + (view === k ? " on" : ""), onclick: () => {
+      view = k;
+      drawViews();
+      grid = new Grid(body, view === "part" ? partModel : productModel);
+      grid.focus();
+    } }, text)));
+  drawViews();
   const productSelect = el("select", { class: "in", style: "min-width:90px" },
     el("option", { value: "" }, "全製品"), S.targets.map((p) => el("option", { value: p }, p)));
   productSelect.addEventListener("change", async () => {
@@ -1432,7 +1471,7 @@ async function changesScreen(main) {
   });
   main.append(card("変更一覧", [productSelect,
     el("button", { class: "btn", onclick: () => exportStudy().catch(fail) }, "Excel"),
-  ], [body, ownBox]));
+  ], [el("div", { class: "row" }, views), body, ownBox]));
   grid.focus();
 }
 

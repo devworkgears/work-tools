@@ -32,7 +32,7 @@ from bomcost.study import (
     replace_overridden,
     where_used,
 )
-from bomcost.studyapi import summarize_changes
+from bomcost.studyapi import changes_by_product, summarize_changes
 
 ALL = ("item", "bom_line", "cost", "volume")
 # 設計検討の見本（samples_v2）の品番
@@ -291,6 +291,16 @@ class Summary(unittest.TestCase):
         self.assertEqual(got, [("置き換え", "OLD", "NEW", "2（2製品）・4（1製品）", ["P1", "P2", "P3"]),
                                ("数量", "S", None, "2 → 3", ["P1"]), ("追加", None, "X", "1", ["P1"]),
                                ("削除", "Y", None, "1 → 0", ["P2"])])
+
+    def test_by_product_lists_every_target_in_order_even_without_changes(self) -> None:
+        rows = [self.row("P3", "OLD", "2", "0", "-2"), self.row("P3", "NEW", "0", "2", "2"),
+                self.row("P1", "S", "2", "3", "1", "9"), self.row("P3", "S", "2", "4", "2", "9"),
+                self.row("Q9", "Y", "1", "0", "-1", "7")]
+        got = changes_by_product(summarize_changes(rows), ["P1", "P2", "P3"])
+        self.assertEqual([(r["product"], r["kind"], r["old"], r["new"], r["quantity"]) for r in got], [
+            ("P1", "数量", "S", None, "2 → 3"), ("P2", "変更なし", None, None, ""),
+            ("P3", "置き換え", "OLD", "NEW", "2"), ("P3", "数量", "S", None, "2 → 4"),
+            ("Q9", "削除", "Y", None, "1 → 0")])  # 対象品番の外の製品は後ろ
 
     def test_ambiguous_or_lost_places_are_not_paired(self) -> None:
         two = [self.row("P1", "A", "1", "0", "-1"), self.row("P1", "B", "1", "0", "-1"), self.row("P1", "C", "0", "2", "2")]
@@ -591,8 +601,12 @@ class StudyApiFlow(unittest.TestCase):
         # 構成の変更は、した事ごとに1行（2製品の置き換えが1行）・明細は箇所ごと
         self.assertIn(("置き換え", OLD, NEW, 2), [(r[0], r[1], r[3], r[6]) for r in
                                               book["構成の変更"].iter_rows(min_row=2, values_only=True)])
-        rows = self.ok("GET", "/api/v2/changes", q + "&plan=A")["rows"]
-        self.assertEqual(book["構成の明細"].max_row, 1 + len(rows))
+        # 構成の明細は製品から（画面の「製品から」と同じ行・変更の無い対象品番も出る）
+        by_product = self.ok("GET", "/api/v2/changes", q + "&plan=A")["by_product"]
+        self.assertEqual([(r[0], r[2]) for r in book["構成の明細"].iter_rows(min_row=2, values_only=True)],
+                         [(r["product"], r["kind"]) for r in by_product])
+        self.assertEqual([r["kind"] for r in self.ok("GET", "/api/v2/changes", q + f"&product={P2}")["by_product"]],
+                         [r["kind"] for r in by_product if r["product"] == P2])
 
     def test_replacing_the_common_part_keeps_every_product_positive(self) -> None:
         self.ok("POST", "/api/v2/bom/import", body={"sample": True})

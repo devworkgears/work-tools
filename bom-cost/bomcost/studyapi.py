@@ -647,7 +647,10 @@ class StudyApi:
 
     def changes(self, params: dict[str, str]) -> "Response":
         rows = self._change_rows(params)
-        return self._json({"rows": rows, "summary": summarize_changes(rows)})
+        summary = summarize_changes(rows)
+        product = params.get("product", "").strip()
+        targets = [p for p in self._ws(params).targets if not product or p == product]
+        return self._json({"rows": rows, "summary": summary, "by_product": changes_by_product(summary, targets)})
 
     # ⑩ 製品の費目 -----------------------------------------------------------
 
@@ -782,9 +785,11 @@ class StudyApi:
             ("構成の変更", ["変更", "元品番", "元の名称", "新品番", "新の名称", "数量", "製品の数", "製品", "要確認"],
              [[s["kind"], s["old"], s["old_name"], s["new"], s["new_name"], s["quantity"], len(s["products"]),
                "・".join(s["products"]), "・".join(s["problems"])] for s in summarize_changes(changes)]),
-            ("構成の明細", ["製品", "親", "風船", "品番", "名称", "変更前", "変更後", "差", "要確認"],
-             [[r["product"], r["parent"], r["balloon"], r["part"], r["name"], _num(r["before"]), _num(r["after"]),
-               _num(r["delta"]), "・".join(r["problems"])] for r in changes if r["source"] != "own"]),
+            ("構成の明細", ["製品", "名称", "変更", "元品番", "元の名称", "新品番", "新の名称", "変更前", "変更後", "親", "風船", "要確認"],
+             [[r["product"], ws.bom.items[r["product"]].name if r["product"] in ws.bom.items else None, r["kind"],
+               r["old"], r["old_name"], r["new"], r["new_name"], _num(r["before"]), _num(r["after"]), r["parent"],
+               r["balloon"], "・".join(r["problems"])]
+              for r in changes_by_product(summarize_changes(changes), ws.targets)]),
             ("金額", ["対象品番", "名称", "費目", "今", "変更後", "差", "年間台数", "年間の影響", "不完全"], money),
             ("計算条件", ["種類", "対象", "項目", "値", "備考"], self._condition_rows(ws, plan)),
         ]
@@ -829,7 +834,8 @@ class StudyApi:
 # Excel の各シートの列の意味（渡した先が列を取り違えないように、まとめのシートに書く）
 SHEET_NOTES = (
     ("構成の変更", "した事ごとに1行。置き換え＝同じ製品・親・風船番号で元品番が 0 になり新品番が増えた物。数量は1箇所あたり"),
-    ("構成の明細", "1行＝製品×親×風船×品番。変更前＝今の部品表の数量、差＝変更後−変更前。親1単位あたりの数量"),
+    ("構成の明細", "1行＝製品×した事×箇所（親・風船）。変更の無い対象品番も「変更なし」で出す。数量は親1単位あたりで、"
+                   "置き換えは変更前＝元品番の数量・変更後＝新品番の数量"),
     ("金額", "1行＝対象品番×費目。1台あたり。差＝変更後−今、年間の影響＝差×年間台数。費目には内訳と合計が混ざるので足し合わせない"),
     ("不完全", "未登録の原価や計算に入らない変更があり、金額が足りない行"),
     ("単位", "金額は取り込んだ原価の表と同じ単位、数量は部品表と同じ単位"),
@@ -883,10 +889,23 @@ def summarize_changes(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         texts: dict[str, set[str]] = {}
         for d in g["details"]:
             same = g["kind"] == "置き換え" and d["before"] == d["after"]
-            text = d["after"] if same or g["kind"] == "追加" else f"{d['before'] or '—'} → {d['after']}"
-            texts.setdefault(text, set()).add(d["product"])
+            d["quantity"] = d["after"] if same or g["kind"] == "追加" else f"{d['before'] or '—'} → {d['after']}"
+            texts.setdefault(d["quantity"], set()).add(d["product"])
         g["quantity"] = next(iter(texts)) if len(texts) == 1 else "・".join(f"{t}（{len(p)}製品）" for t, p in texts.items())
     return list(groups.values())
+
+
+def changes_by_product(summary: list[dict[str, Any]], targets: list[str]) -> list[dict[str, Any]]:
+    """した事のまとめを製品ごとに並べ直す（対象品番の順・変更の無い対象品番は「変更なし」・対象品番の外の製品は後ろ）。"""
+    names = ("kind", "old", "old_name", "new", "new_name", "problems")
+    found: dict[str, list[dict[str, Any]]] = {}
+    for s in summary:
+        for d in s["details"]:
+            found.setdefault(d["product"], []).append({**{k: s[k] for k in names}, **d})
+    none = {"kind": "変更なし", "old": None, "old_name": None, "new": None, "new_name": None, "problems": [],
+            "parent": None, "balloon": None, "before": None, "after": None, "quantity": ""}
+    products = [*targets, *(p for p in found if p not in targets)]
+    return [r for p in products for r in found.get(p, [{**none, "product": p}])]
 
 
 def study_routes(api: "Api") -> list[tuple[str, str, Callable[..., "Response"]]]:
