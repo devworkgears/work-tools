@@ -141,12 +141,94 @@ function dialog(title, body, buttons = []) {
   return { overlay, close };
 }
 
-function planSelect(value, onchange) {
-  const select = el("select", { class: "in", style: "min-width:70px" },
-    S.plans.map((p) => el("option", { value: p }, `案${p}`)));
-  select.value = value;
-  select.addEventListener("change", () => onchange(select.value, select));
-  return select;
+// 案の切り替えは画面から外した（まずは案A だけで使う）。案の持ち方はサーバに残してある
+const PLAN = "A";
+
+// 左＝対象品番（印を付ける）、まん中＝印の製品の部品（絞り込み・印を付けて［表に入れる］）。
+// onProducts(印の製品) は印が変わるたびに呼び、false を返せばその変更を取り消す。onAdd(部品の品番) は［表に入れる］で呼ぶ
+function chooser({ chosen, single = false, onProducts = null, onAdd = null, ro = false }) {
+  const checked = new Set(chosen.filter((c) => S.targets.includes(c)));
+  const left = el("div", { class: "pane" });
+  const mid = onAdd ? el("div", { class: "pane" }) : null;
+  const filter = el("input", { class: "in", style: "width:100%;box-sizing:border-box", placeholder: "品番・名称で絞り込み" });
+  let parts = [];
+  let of = 0;
+  const partChecks = new Map();
+  const ordered = () => S.targets.filter((t) => checked.has(t));
+  const drawLeft = () => {
+    const rows = S.targets.map((code) => {
+      const box = el("input", { type: single ? "radio" : "checkbox", name: single ? "chooser-product" : null, checked: checked.has(code) });
+      box.addEventListener("change", () => {
+        const before = new Set(checked);
+        if (single) checked.clear();
+        if (box.checked) checked.add(code);
+        else checked.delete(code);
+        if (onProducts && onProducts(ordered()) === false) {
+          checked.clear();
+          for (const c of before) checked.add(c);
+        }
+        changed();
+      });
+      const info = items.get(code);
+      return el("tr", { class: checked.has(code) ? "on" : null }, el("td", {}, box), el("td", {}, code), el("td", {}, info && info.registered ? info.name : ""));
+    });
+    const all = single ? null : el("input", { type: "checkbox", checked: checked.size === S.targets.length && S.targets.length > 0 });
+    if (all) all.addEventListener("change", () => {
+      const before = new Set(checked);
+      checked.clear();
+      if (all.checked) for (const t of S.targets) checked.add(t);
+      if (onProducts && onProducts(ordered()) === false) {
+        checked.clear();
+        for (const c of before) checked.add(c);
+      }
+      changed();
+    });
+    fill(left, el("div", { class: "t" }, "対象品番", el("span", { class: "mini", style: "font-weight:400" }, single ? "1つ選ぶ" : `${checked.size}/${S.targets.length}`)),
+      el("div", { class: "scroll" }, el("table", { class: "list" }, el("tr", {}, el("th", {}, all), el("th", {}, "品番"), el("th", {}, "名称")), rows)));
+  };
+  // まん中の枠は1回だけ組み、絞り込みの欄は作り直さない（打っている途中で欄から外れないように）。描き直すのは件数と表だけ
+  const midNote = el("span", { class: "mini", style: "font-weight:400" });
+  const midTable = el("div", { class: "scroll" });
+  if (mid) {
+    const add = el("button", { class: "btn", disabled: ro }, "表に入れる →");
+    add.addEventListener("click", () => {
+      const codes = parts.filter((p) => partChecks.get(p.code)?.checked).map((p) => p.code);
+      if (!codes.length) return alert("表に入れる部品に印を付けてください");
+      onAdd(codes);
+      for (const box of partChecks.values()) box.checked = false;
+    });
+    fill(mid, el("div", { class: "t" }, "部品", midNote), el("div", { class: "row" }, filter), midTable,
+      el("div", { class: "row" }, el("span", { class: "sp" }), add));
+  }
+  const drawMid = () => {
+    if (!mid) return;
+    const word = filter.value.trim().toLowerCase();
+    const shown = parts.filter((p) => !word || p.code.toLowerCase().includes(word) || (p.name || "").toLowerCase().includes(word));
+    midNote.textContent = `印の ${of} 製品の部品`;
+    fill(midTable, el("table", { class: "list" }, el("tr", {}, el("th", {}, ""), el("th", {}, "品番"), el("th", { class: "r", title: "印を付けた製品のうち、使う製品の数" }, "使う"), el("th", {}, "名称")),
+      shown.map((p) => {
+        if (!partChecks.has(p.code)) partChecks.set(p.code, el("input", { type: "checkbox" }));
+        return el("tr", {}, el("td", {}, partChecks.get(p.code)), el("td", {}, p.code), el("td", { class: "r" }, `${p.used}/${of}`), el("td", {}, p.name ?? "未登録"));
+      })));
+  };
+  const loadParts = async () => {
+    if (!mid) return;
+    const d = await api("GET", "/api/v2/parts", q({ products: ordered().join(",") }));
+    parts = d.parts;
+    of = d.of;
+    drawMid();
+  };
+  const changed = () => {
+    drawLeft();
+    loadParts().catch(fail);
+  };
+  filter.addEventListener("input", drawMid);
+  const ready = (async () => {
+    await lookup(S.targets);
+    drawLeft();
+    await loadParts();
+  })();
+  return { left, mid, ordered, ready };
 }
 
 // 画面を離れる前に、打ちかけのセルを確定して一時保存を送り切る
@@ -268,13 +350,6 @@ function applyStudy(data) {
   S.problems = data.problems;
   S.plans = data.plans.length ? data.plans : ["A"];
   if (!S.plans.includes(S.plan)) S.plan = S.plans[0];
-}
-
-// 押した時点で空の案として保存する（ほかの画面の案の選択にすぐ出す）
-async function addPlan() {
-  const d = await api("POST", "/api/v2/plans", { number: S.number }, {});
-  applyStudy(d);
-  return d.plan;
 }
 
 // ② 設計検討 -------------------------------------------------------------
@@ -739,7 +814,7 @@ async function importDialog(after) {
 async function replaceScreen(main, cur) {
   const ro = !canWrite();
   const EMPTY_ROW = () => ({ old: "", new: "" });
-  let plan = S.plan;
+  const plan = PLAN;
   let rows = [];
   const load = async () => {
     const d = S.number ? await api("GET", "/api/v2/replace", q({ plan })) : { rows: [] };
@@ -788,13 +863,15 @@ async function replaceScreen(main, cur) {
     await load();
     grid.render();
   });
-  const select = planSelect(plan, async (value) => {
-    await leave(cur);
-    plan = S.plan = value;
-    await load().catch(fail);
-    grid.render();
+  // まん中で選んだ部品を元品番の行に足す（新品番は打つ）
+  const pick = chooser({
+    chosen: S.targets, ro, onAdd: (codes) => {
+      for (const code of codes) if (!rows.some((r) => r.old === code)) rows.push({ old: code, new: "" });
+      grid.changed();
+    },
   });
-  main.append(card("置換", [select], body));
+  await pick.ready;
+  main.append(card("置換", [], el("div", { class: "chooser" }, pick.left, pick.mid, el("div", { class: "work" }, body))));
   grid.focus();
 }
 
@@ -802,8 +879,8 @@ async function replaceScreen(main, cur) {
 
 async function gridScreen(main, cur) {
   const ro = !canWrite();
-  let plan = S.plan;
-  let cols = []; // 親品番
+  const plan = PLAN;
+  let cols = []; // 列の製品（左で印を付けた対象品番＋使用先で足した製品）
   let rows = []; // { part, cells: 列の位置ごとの値, origin, problems }
   let original = new Map(); // 「親品番\t品番」 → 保存済みの値
   const key = (product, part) => `${product}\t${part}`;
@@ -822,7 +899,7 @@ async function gridScreen(main, cur) {
   const model = {
     nRows: () => 2 + rows.length + (ro ? 0 : 1),
     grow: ro ? undefined : () => { rows.push({ part: "", cells: [], origin: null, problems: {}, locked: {} }); return true; },
-    nCols: () => 4 + cols.length + (ro ? 0 : 1),
+    nCols: () => 4 + cols.length,
     cell(r, c) {
       if (r === 0) {
         if (c === 0) return { text: "", cls: "n" };
@@ -830,7 +907,7 @@ async function gridScreen(main, cur) {
         if (c < 4) return { text: "", th: true };
         const code = cols[c - 4] || "";
         const outside = code && !S.targets.includes(code);
-        return { text: code, editable: !ro, cls: outside ? "bad" : "", title: outside ? "要確認" : null };
+        return { text: code, th: true, cls: outside ? "bad" : "", title: outside ? "要確認（対象品番に無いので計算に入らない）" : null };
       }
       if (r === 1) {
         if (c === 0) return { text: "", cls: "n" };
@@ -857,13 +934,7 @@ async function gridScreen(main, cur) {
       };
     },
     set(r, c, text) {
-      if (r === 0 && c >= 4) {
-        const idx = c - 4;
-        if (idx >= cols.length) {
-          if (!text) return;
-          cols.push(text);
-        } else cols[idx] = text;
-      } else if (r >= 2 && c === 1) {
+      if (r >= 2 && c === 1) {
         const i = r - 2;
         if (i >= rows.length) {
           if (!text) return;
@@ -937,32 +1008,6 @@ async function gridScreen(main, cur) {
     await load();
     grid.render();
   });
-  const tabs = el("div", { class: "tabs" });
-  const drawTabs = () => {
-    fill(tabs,
-      S.plans.map((p) => el("button", { class: p === plan ? "on" : "", onclick: () => switchPlan(p) }, `案${p}`)),
-      ro ? null : el("button", {
-        onclick: async () => {
-          await leave(cur);
-          try {
-            const p = await addPlan();
-            await switchPlan(p);
-            done(`案${p} を追加しました`);
-          } catch (e) {
-            fail(e);
-          }
-        },
-      }, "＋"));
-  };
-  const switchPlan = async (p) => {
-    if (p === plan) return drawTabs();
-    await leave(cur);
-    plan = S.plan = p;
-    drawTabs();
-    await load().catch(fail);
-    grid.render();
-  };
-  drawTabs();
   const whereUsed = () => {
     const row = rows[grid.sel.r - 2];
     if (!row || !row.part) return alert("品番の行を選んでください");
@@ -981,10 +1026,35 @@ async function gridScreen(main, cur) {
     grid.render();
     return fresh.length;
   };
-  main.append(card(tabs, [
+  // 列は左で印を付けた対象品番の順。使用先で足した対象品番の外の製品は右に残す。
+  // 数量の入った列の印を外す時は、その列の数量を消すかを聞く（隠したまま計算に入るのを防ぐ）
+  const setColumns = (products) => {
+    const extra = cols.filter((c) => c && !S.targets.includes(c));
+    const next = [...products, ...extra];
+    const dropped = cols.filter((c) => c && !next.includes(c));
+    const filled = dropped.filter((code) => rows.some((row) => (row.cells[cols.indexOf(code)] ?? "") !== ""));
+    if (filled.length && !confirm(`${filled.join("・")} の列に数量が入っています。列を外すと、その数量を消します。よろしいですか？`)) return false;
+    rows = rows.map((row) => ({ ...row, cells: next.map((code) => (cols.includes(code) ? row.cells[cols.indexOf(code)] ?? "" : "")) }));
+    cols = next;
+    saver.schedule();
+    model.changed();
+    grid.render();
+    return true;
+  };
+  // まん中で選んだ部品を行に足す
+  const addRows = (codes) => {
+    for (const code of codes) if (!rows.some((r) => r.part === code)) rows.push({ part: code, cells: [], origin: null, problems: {}, locked: {} });
+    saver.schedule();
+    grid.changed();
+  };
+  const first = cols.some((c) => S.targets.includes(c)) ? cols : S.targets;
+  const pick = chooser({ chosen: first, ro, onProducts: ro ? () => false : setColumns, onAdd: addRows });
+  await pick.ready;
+  if (!ro && !cols.length && S.targets.length) setColumns(pick.ordered());
+  main.append(card("グリッド画面", [
     el("button", { class: "btn", onclick: whereUsed, disabled: !S.number }, "使用先"),
     el("button", { class: "btn", onclick: conditionsDialog, disabled: !S.number }, "計算条件"),
-  ], body));
+  ], el("div", { class: "chooser" }, pick.left, pick.mid, el("div", { class: "work" }, body))));
   grid.focus();
 }
 
@@ -1072,7 +1142,7 @@ async function conditionsDialog() {
 
 async function rewriteScreen(main, cur) {
   const ro = !canWrite();
-  let plan = S.plan;
+  const plan = PLAN;
   let product = S.targets[0] || "";
   let rows = [];
   const load = async () => {
@@ -1127,20 +1197,20 @@ async function rewriteScreen(main, cur) {
     },
   };
   const grid = new Grid(body, model);
-  const productSelect = el("select", { class: "in", style: "min-width:90px" }, S.targets.map((p) => el("option", { value: p }, p)));
-  productSelect.value = product;
-  productSelect.addEventListener("change", async () => {
-    await leave(cur);
-    product = productSelect.value;
-    await load().catch(fail);
-    grid.render();
+  // 製品は左の対象品番から1つ選ぶ
+  const pick = chooser({
+    chosen: product ? [product] : [], single: true, onProducts: (chosen) => {
+      const next = chosen[0] || "";
+      if (next === product) return true;
+      leave(cur).then(async () => {
+        product = next;
+        await load();
+        grid.render();
+      }).catch(fail);
+      return true;
+    },
   });
-  const select = planSelect(plan, async (value) => {
-    await leave(cur);
-    plan = S.plan = value;
-    await load().catch(fail);
-    grid.render();
-  });
+  await pick.ready;
   // 親と品番のそろった行だけを送る（親の無い行は打ちかけとして画面に残す）
   const saver = autosaver(cur, async () => {
     if (!product) return;
@@ -1151,14 +1221,14 @@ async function rewriteScreen(main, cur) {
     await load();
     grid.render();
   });
-  main.append(card("書き換え", [productSelect, select], body));
+  main.append(card("書き換え", [], el("div", { class: "chooser two" }, pick.left, el("div", { class: "work" }, body))));
   grid.focus();
 }
 
 // ⑥ 変更一覧 -------------------------------------------------------------
 
 async function changesScreen(main) {
-  let plan = S.plan;
+  const plan = PLAN;
   let product = "";
   let rows = [];
   const load = async () => {
@@ -1195,12 +1265,7 @@ async function changesScreen(main) {
     await load().catch(fail);
     grid.render();
   });
-  const select = planSelect(plan, async (value) => {
-    plan = S.plan = value;
-    await load().catch(fail);
-    grid.render();
-  });
-  main.append(card("変更一覧", [productSelect, select,
+  main.append(card("変更一覧", [productSelect,
     el("button", { class: "btn", onclick: () => download("/api/v2/export/changes", q({ plan, product }), `変更一覧_${S.number}.xlsx`).catch(fail) }, "Excel"),
   ], body));
   grid.focus();

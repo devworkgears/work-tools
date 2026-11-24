@@ -39,6 +39,7 @@ from .study import (
     input_optional_code,
     nfkc,
     pair_key,
+    parts_of,
     problem_count,
     product_lines,
     replace_overridden,
@@ -222,6 +223,7 @@ class StudyApi:
             ("PUT", r"/api/v2/conditions", self.put_conditions),
             ("GET", r"/api/v2/calc", self.calc),
             ("GET", r"/api/v2/where-used", self.where_used),
+            ("GET", r"/api/v2/parts", self.parts),
             ("POST", r"/api/v2/release", self.release),
             ("GET", r"/api/v2/export/changes", self.export_changes),
             ("GET", r"/api/v2/export/result", self.export_result),
@@ -596,6 +598,15 @@ class StudyApi:
             data["products"] = [{"code": c, "name": ws.bom.items[c].name if c in ws.bom.items else None}
                                 for c in codes]
         return self._json(data)
+
+    def parts(self, params: dict[str, str]) -> "Response":
+        """印を付けた製品（products をカンマで区切る・対象品番の中だけ）の部品と、何製品で使うか。保存しない。"""
+        ws = self._ws(params)
+        chosen = [c.strip() for c in params.get("products", "").split(",") if c.strip()]
+        products = [t for t in ws.targets if t in set(chosen)]
+        items = ws.bom.items
+        return self._json({"of": len(products), "parts": [
+            {"code": c, "name": items[c].name if c in items else None, "used": n} for c, n in parts_of(ws.bom, products)]})
 
     def release(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
         version = self.store.take_release(_number(params))

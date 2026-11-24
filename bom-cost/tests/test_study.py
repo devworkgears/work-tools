@@ -350,6 +350,18 @@ class StudyApiFlow(unittest.TestCase):
         number = made["header"]["number"]
         self.assertEqual(self.ok("GET", "/api/v2/targets", f"number={number}")["main_product"], P2)
 
+    def test_parts_of_chosen_targets_lists_common_parts_first(self) -> None:
+        self.ok("POST", "/api/v2/bom/import", body={"sample": True})
+        number = self.ok("POST", "/api/v2/studies", body={"products": [P1, P2]})["header"]["number"]
+        q = f"number={number}"
+        both = self.ok("GET", "/api/v2/parts", q + f"&products={P1},{P2}")
+        self.assertEqual(both["of"], 2)
+        self.assertEqual(both["parts"][0]["used"], 2)  # 2製品で共通の部品が先
+        self.assertEqual(next(p["used"] for p in both["parts"] if p["code"] == OLD), 2)
+        # 対象品番に無い製品は数えない
+        self.assertEqual(self.ok("GET", "/api/v2/parts", q + f"&products={P1},ZZ9999-001")["of"], 1)
+        self.assertEqual(self.ok("GET", "/api/v2/parts", q + "&products=")["parts"], [])
+
     def test_create_with_a_bad_target_makes_no_study(self) -> None:
         raw = json.dumps({"products": [P1, 1.5]}).encode("utf-8")  # 小数の品番は元の表記が分からないので受けない
         self.assertGreaterEqual(self.api.handle("POST", "/api/v2/studies", "", raw).status, 400)

@@ -118,3 +118,14 @@ table.list td.r { text-align: right; }
 table.list tr.pick { cursor: pointer; }
 table.list tr.pick:hover td { background: var(--soft); }
 .msg { color: var(--warn); font-size: 12px; white-space: pre-wrap; }
+
+/* ④⑤⑧: 左＝対象品番・まん中＝部品・右＝入力の表 */
+.chooser { display: grid; grid-template-columns: 210px 320px minmax(0, 1fr); gap: 10px; align-items: start; }
+.chooser.two { grid-template-columns: 210px minmax(0, 1fr); }
+.pane { border: 1px solid var(--line); min-width: 0; background: var(--panel); }
+.pane > .t { background: var(--head); padding: 4px 8px; font-weight: 600; display: flex; gap: 6px; align-items: center; }
+.pane .scroll { max-height: 62vh; overflow: auto; }
+.pane table.list { width: 100%; }
+.pane tr.on td { background: var(--soft); }
+.pane .row { margin: 6px; }
+.work { min-width: 0; overflow: auto; }

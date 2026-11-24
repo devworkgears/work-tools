@@ -304,6 +304,17 @@ def line_quantity(bom: Version, parent: str, balloon: str | None, part: str) -> 
     return total
 
 
+def parts_of(bom: Version, products: Sequence[str]) -> list[tuple[str, int]]:
+    """製品たちの下の部品と、そのうち何製品で使うか。多くの製品で使う部品を先に、同じ数なら構成に出た順。"""
+    used: dict[str, int] = {}
+    order: dict[str, int] = {}
+    for product in dict.fromkeys(products):
+        for code in dict.fromkeys(line.child for line in product_lines(bom, product)):
+            used[code] = used.get(code, 0) + 1
+            order.setdefault(code, len(order))
+    return sorted(used.items(), key=lambda kv: (-kv[1], order[kv[0]]))
+
+
 def where_used(bom: Version, part: str, targets: Sequence[str]) -> tuple[list[str], list[str]]:
     """部品を使う製品を（範囲内, 範囲外）で。製品は一番上の品目（どこの子でもない）か対象品番。"""
     part = to_code(part)
