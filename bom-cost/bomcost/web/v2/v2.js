@@ -953,7 +953,7 @@ async function whereUsedDialog(code, onAdd = null) {
           const n = onAdd(chosen);
           done(n ? `${n} 製品を列に足しました（［実行］で保存）` : "選んだ製品はもう列にあります");
         };
-        list.replaceChildren(el("table", { class: "list", style: "margin-top:8px" },
+        fill(list, el("table", { class: "list", style: "margin-top:8px" },
           el("tr", {}, onAdd ? el("th", {}, all) : null, el("th", {}, "品番"), el("th", {}, "名称")),
           g.products.map((p, i) => el("tr", {}, onAdd ? el("td", {}, checks[i]) : null, el("td", {}, p.code), el("td", {}, p.name ?? "")))),
           onAdd && g.products.length ? el("div", { class: "row", style: "margin:8px 0 0" },
