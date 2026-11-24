@@ -8,10 +8,8 @@ const S = {
   version: null, // null は仮
   header: null,
   versions: [],
-  plans: ["A"],
   targets: [],
   problems: 0,
-  plan: "A",
   draft: null, // 新規作成で番号が付く前に入れた物 { header, targets, main }
 };
 const items = new Map(); // 品番 → 右の列の値（/api/v2/lookup）
@@ -348,8 +346,6 @@ function applyStudy(data) {
   S.versions = data.versions;
   S.targets = data.targets;
   S.problems = data.problems;
-  S.plans = data.plans.length ? data.plans : ["A"];
-  if (!S.plans.includes(S.plan)) S.plan = S.plans[0];
 }
 
 // ② 設計検討 -------------------------------------------------------------
@@ -448,7 +444,7 @@ async function hubScreen(main, cur) {
 async function setMode(mode) {
   await leave();
   if (mode === "new") {
-    Object.assign(S, { number: "", version: null, header: null, versions: [], plans: ["A"], targets: [], problems: 0, plan: "A",
+    Object.assign(S, { number: "", version: null, header: null, versions: [], targets: [], problems: 0,
       draft: { header: {}, targets: [], main: null } });
     items.clear();
   } else S.draft = null;
