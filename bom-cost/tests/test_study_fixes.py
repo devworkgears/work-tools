@@ -136,7 +136,8 @@ class GrPlaces(FixCase):
         r = api.handle("POST", "/api/v2/grid/locked", f"number={number}&plan=A",
                        json.dumps({"columns": ["X", "Ｙ", ""], "rows": ["B", "NEW"]}).encode())
         self.assertEqual(r.status, 200, r.body)
-        self.assertEqual(r.json(), {"locked": {"B": {"X": True}}})
+        # 風船番号: 2か所にある製品は「複数」・その製品に無い品番は出さない
+        self.assertEqual(r.json(), {"locked": {"B": {"X": True}}, "balloons": {"B": {"X": "複数", "Y": "1"}, "NEW": {}}})
         self.assertEqual(store.connection.total_changes, before)
 
     def test_e_new_part_alone_goes_under_the_product(self) -> None:

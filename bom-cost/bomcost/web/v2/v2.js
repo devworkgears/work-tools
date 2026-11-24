@@ -455,7 +455,7 @@ async function hubScreen(main, cur) {
   if (run) run.addEventListener("click", async () => {
     if (!draft.targets.some(Boolean)) return fail(new Error("対象品番を入れてから実行してください（［対象品番］で選ぶ）"));
     try {
-      applyStudy(await api("POST", "/api/v2/studies", {}, { ...header(), products: draft.targets.filter(Boolean), main_product: draft.main }));
+      applyStudy(await api("POST", "/api/v2/studies", {}, { ...header(), products: draft.targets.filter(Boolean) }));
       S.mode = "edit";
       S.draft = null;
       notice(`検討 ${S.number} を作成しました（対象品番 ${S.targets.length} 製品）`);
@@ -520,7 +520,7 @@ async function setMode(mode) {
       tell("switch");
     }
     Object.assign(S, { number: "", version: null, header: null, versions: [], targets: [], problems: 0,
-      draft: { header: {}, targets: [], main: null } });
+      draft: { header: {}, targets: [] } });
     items.clear();
   } else S.draft = null;
   S.mode = mode;
@@ -556,34 +556,30 @@ async function targetsScreen(main, cur) {
   const ro = !(canWrite() || draft);
   const EMPTY_ROW = () => "";
   let rows = draft ? draft.targets : [];
-  let mainProduct = draft ? draft.main : null;
   if (S.number) {
     const d = await api("GET", "/api/v2/targets", q());
     rows = d.targets.slice();
-    mainProduct = d.main_product;
   }
   await lookup(rows);
   const body = el("div");
   const model = {
-    head: () => ["", "品番", "名称", "代表", "規格", "組立図", { text: "主対象", cls: "c" }, { text: "年間台数", cls: "r" }, { text: "材料費", cls: "r" }, { text: "製造原価", cls: "r" }],
+    head: () => ["", "品番", "名称", "代表", "規格", "組立図", { text: "年間台数", cls: "r" }, { text: "材料費", cls: "r" }, { text: "製造原価", cls: "r" }],
     nRows: () => rows.length + (ro ? 0 : 1),
     grow: ro ? undefined : () => { rows.push(EMPTY_ROW()); return true; },
-    nCols: () => 10,
+    nCols: () => 9,
     cell(r, c) {
       const code = rows[r] || "";
       if (c === 0) return { text: String(r + 1), cls: "n" };
       if (c === 1) return { text: code, editable: !ro };
       if (!code) return { text: "" };
       if (c === 2) return nameCell(code);
-      // 主対象は1つだけ。選んだ行にだけ印を出す（ほかの行は押すと主対象になる）
-      if (c === 6) return { text: mainProduct === code ? "●" : "", cls: "act", title: ro ? null : "押すと主対象にする" };
       const info = items.get(code);
       if (!info || !info.registered) return { text: "" };
       if (c === 3) return { text: info.model, cls: "auto" };
       if (c === 4) return { text: info.product_spec, cls: "auto" };
       if (c === 5) return { text: info.drawing, cls: "auto" };
-      if (c === 7) return { text: fmt(info.annual), cls: "auto r" };
-      if (c === 8) return { text: fmt(info.material), cls: "auto r" };
+      if (c === 6) return { text: fmt(info.annual), cls: "auto r" };
+      if (c === 7) return { text: fmt(info.material), cls: "auto r" };
       return { text: fmt(info.manufacturing), cls: "auto r" };
     },
     set(r, c, text) {
@@ -594,30 +590,22 @@ async function targetsScreen(main, cur) {
       } else rows[r] = text;
       touched();
     },
-    action(r, c) {
-      if (c !== 6 || ro || !rows[r]) return false;
-      mainProduct = rows[r];
-      touched();
-      return true;
-    },
     changed() {
       lookup(rows).then((got) => got && grid.render()).catch(fail);
     },
   };
   const grid = new Grid(body, model);
   const saver = autosaver(cur, async () => {
-    const d = await api("PUT", "/api/v2/targets", { number: S.number }, { products: rows.filter(Boolean), main_product: mainProduct });
+    const d = await api("PUT", "/api/v2/targets", { number: S.number }, { products: rows.filter(Boolean) });
     S.targets = d.targets;
   }, async () => {
     const d = await api("GET", "/api/v2/targets", q());
     rows = d.targets.slice();
-    mainProduct = d.main_product;
     grid.render();
   });
   // 変えた時: 番号の前は S.draft に持ち、番号があればその場で一時保存
   function touched() {
-    if (draft) draft.main = mainProduct;
-    else saver.schedule();
+    if (!draft) saver.schedule();
   }
 
   const addCodes = (codes) => {
@@ -1039,67 +1027,106 @@ async function gridScreen(main, cur) {
   const ro = !canWrite();
   const plan = PLAN;
   let cols = []; // 列の製品（左で印を付けた対象品番＋使用先で足した製品）
-  let rows = []; // { part, cells: 列の位置ごとの値, origin, problems }
+  let rows = []; // { part, cells: 列の位置ごとの値, origin, problems, locked, balloons: 製品 → 風船番号 }
+  let mainProduct = null; // 並びの基準（主対象の風船番号の順。主対象に無い部品は後ろ）
   let original = new Map(); // 「親品番\t品番」 → 保存済みの値
   const key = (product, part) => `${product}\t${part}`;
   const load = async () => {
     const d = S.number ? await api("GET", "/api/v2/grid", q({ plan })) : { columns: [], rows: [] };
     cols = d.columns.slice();
-    rows = d.rows.map((r) => ({ part: r.part, cells: cols.map((c) => r.cells[c] ?? ""), origin: r.origin, problems: r.problems || {}, locked: r.locked || {} }));
+    rows = d.rows.map((r) => ({ part: r.part, cells: cols.map((c) => r.cells[c] ?? ""), origin: r.origin, problems: r.problems || {},
+      locked: r.locked || {}, balloons: r.balloons || {} }));
+    mainProduct = d.main_product ?? null;
+    sortRows();
     original = new Map();
     for (const r of d.rows) {
       for (const [c, v] of Object.entries(r.cells)) original.set(key(c, r.part), v);
     }
     await lookup([...cols, ...rows.map((r) => r.part)]);
   };
+  // 主対象の風船番号の順に並べる（数として比べる）。主対象に無い・主対象が無い部品は、今の順のまま後ろ
+  function sortRows() {
+    if (!mainProduct) return;
+    const at = (row) => row.balloons && row.balloons[mainProduct];
+    const placed = rows.filter((row) => row.part && at(row));
+    const rest = rows.filter((row) => !(row.part && at(row)));
+    placed.sort((a, b) => at(a).localeCompare(at(b), "ja", { numeric: true }));
+    rows = [...placed, ...rest];
+  }
   await load();
   const body = el("div");
+  // 表の行 → 部品の行。部品1つにつき、上に風船の行・下に数量の行。最後の1行は品番を打つ空の行
+  const place = (r) => {
+    const d = r - 1;
+    const i = Math.floor(d / 2);
+    if (i >= rows.length) return { i: rows.length, kind: "new" };
+    return { i, kind: d % 2 === 0 ? "balloon" : "qty" };
+  };
+  const P = 5; // 製品の列が始まる位置
   const model = {
     // 見出しは1段（表の1行目）。親品番の列は品番と名称を縦書きにして、列の幅を数量の桁だけにする
-    nRows: () => 1 + rows.length + (ro ? 0 : 1),
-    grow: ro ? undefined : () => { rows.push({ part: "", cells: [], origin: null, problems: {}, locked: {} }); return true; },
-    nCols: () => 4 + cols.length,
+    nRows: () => 1 + 2 * rows.length + (ro ? 0 : 1),
+    grow: ro ? undefined : () => { rows.push({ part: "", cells: [], origin: null, problems: {}, locked: {}, balloons: {} }); return true; },
+    nCols: () => P + cols.length,
     cell(r, c) {
       if (r === 0) {
         if (c === 0) return { text: "", cls: "n" };
         if (c === 1) return { text: "品番 ↓　親品番 →", th: true, cls: "foot" };
         if (c === 2) return { text: "名称", th: true, cls: "foot" };
-        if (c === 3) return { text: "", th: true };
-        const code = cols[c - 4] || "";
+        if (c === 3 || c === 4) return { text: "", th: true };
+        const code = cols[c - P] || "";
         const outside = code && !S.targets.includes(code);
         const info = code ? items.get(code) : null;
         const name = info ? (info.registered ? info.name : "未登録") : "";
-        return { text: code ? `${code}\n${name}` : "", th: true, cls: "vh" + (outside || (info && !info.registered) ? " bad" : ""),
-          title: outside ? "要確認（対象品番に無いので計算に入らない）" : code ? `${code} ${name}` : null };
+        const star = code && code === mainProduct ? "★ " : "";
+        return { text: code ? `${star}${code}\n${name}` : "", th: true, cls: "vh" + (outside || (info && !info.registered) ? " bad" : ""),
+          title: outside ? "要確認（対象品番に無いので計算に入らない）" : code ? `${star}${code} ${name}` : null };
       }
-      const i = r - 1;
+      const { i, kind } = place(r);
       const row = rows[i];
-      if (c === 0) return { text: String(i + 1), cls: "n" };
-      if (c === 1) return { text: row ? row.part : "", editable: !ro };
-      if (c === 2) return nameCell(row && row.part);
-      if (c === 3) return row && row.origin ? { text: `④${row.origin}`, cls: "mark", title: `置換 ${row.origin}` } : { text: "", cls: "mark" };
-      const code = cols[c - 4];
-      const value = row ? row.cells[c - 4] ?? "" : "";
-      const locked = !!(row && code && row.locked[code]);
-      const bad = locked || (row && code && (row.problems[code] || (value !== "" && !isNumber(value))));
+      if (kind === "new") {
+        if (c === 0) return { text: String(i + 1), cls: "n" };
+        if (c === 1) return { text: "", editable: !ro };
+        return { text: "", cls: c >= P ? "q" : "" };
+      }
+      if (kind === "balloon") {
+        if (c === 0) return { text: String(i + 1), cls: "n" };
+        if (c === 1) return { text: row.part, editable: !ro };
+        if (c === 2) return nameCell(row.part);
+        if (c === 3) return row.origin ? { text: `④${row.origin}`, cls: "mark", title: `置換 ${row.origin}` } : { text: "", cls: "mark" };
+        if (c === 4) return { text: "風船", cls: "auto" };
+        const code = cols[c - P];
+        return { text: (code && row.balloons[code]) || "", cls: "auto c q" };
+      }
+      if (c === 0) return { text: "", cls: "n" };
+      if (c === 4) return { text: "数量", cls: "foot" };
+      if (c < P) return { text: "" };
+      const code = cols[c - P];
+      const value = row.cells[c - P] ?? "";
+      const locked = !!(code && row.locked[code]);
+      const bad = locked || (code && (row.problems[code] || (value !== "" && !isNumber(value))));
       return {
-        text: value, editable: !ro && !!row && !!code && !locked, cls: "r q" + (bad ? " bad" : ""),
+        text: value, editable: !ro && !!row.part && !!code && !locked, cls: "r q" + (bad ? " bad" : ""),
         title: locked ? "要確認（複数の箇所にある・書き換えで直す）" : null,
       };
     },
     set(r, c, text) {
-      if (r >= 1 && c === 1) {
-        const i = r - 1;
-        if (i >= rows.length) {
+      if (r < 1) return;
+      const { i, kind } = place(r);
+      if (c === 1 && kind !== "qty") {
+        if (kind === "new") {
           if (!text) return;
-          rows.push({ part: text, cells: [], origin: null, problems: {}, locked: {} });
-        } else rows[i].part = text;
-      } else if (r >= 1 && c >= 4) {
-        const row = rows[r - 1];
-        if (!row || !cols[c - 4]) return;
+          rows.push({ part: text, cells: [], origin: null, problems: {}, locked: {}, balloons: {} });
+        } else {
+          rows[i].part = text;
+          rows[i].balloons = {};
+        }
+      } else if (kind === "qty" && c >= P) {
+        const row = rows[i];
+        if (!cols[c - P]) return;
         // 数でない数量はその場で弾く（入れずに元の値のまま）
-        if (text !== "" && !isNumber(text)) return alert(`数量は数で入力してください（${row.part} × ${cols[c - 4]}「${text}」）`);
-        row.cells[c - 4] = text;
+        if (text !== "" && !isNumber(text)) return alert(`数量は数で入力してください（${row.part} × ${cols[c - P]}「${text}」）`);
+        row.cells[c - P] = text;
         row.problems = {};
       } else return;
       saver.schedule();
@@ -1120,7 +1147,10 @@ async function gridScreen(main, cur) {
     lockAsked = asked;
     const d = await api("POST", "/api/v2/grid/locked", q({ plan }), { columns, rows: parts });
     if (asked !== lockAsked) return; // 後から打った分の問い合わせが先に済んでいる
-    for (const row of rows) row.locked = d.locked[row.part] || {};
+    for (const row of rows) {
+      row.locked = d.locked[row.part] || {};
+      row.balloons = d.balloons[row.part] || {};
+    }
     grid.render();
   };
   const grid = new Grid(body, model);
@@ -1156,6 +1186,7 @@ async function gridScreen(main, cur) {
       row.problems = got ? got.problems || {} : {};
       row.locked = got ? got.locked || {} : {};
       row.origin = got ? got.origin : null;
+      row.balloons = got ? got.balloons || {} : {};
     }
     grid.render();
   }, async () => {
@@ -1163,7 +1194,7 @@ async function gridScreen(main, cur) {
     grid.render();
   });
   const whereUsed = () => {
-    const row = rows[grid.sel.r - 1];
+    const row = grid.sel.r >= 1 ? rows[place(grid.sel.r).i] : null;
     if (!row || !row.part) return alert("品番の行を選んでください");
     whereUsedDialog(row.part, ro ? null : addColumns);
   };
@@ -1190,6 +1221,7 @@ async function gridScreen(main, cur) {
     if (filled.length && !confirm(`${filled.join("・")} の列に数量が入っています。列を外すと、その数量を消します。よろしいですか？`)) return false;
     rows = rows.map((row) => ({ ...row, cells: next.map((code) => (cols.includes(code) ? row.cells[cols.indexOf(code)] ?? "" : "")) }));
     cols = next;
+    lockAsked = ""; // 列が変われば風船番号も取り直す
     saver.schedule();
     model.changed();
     grid.render();
@@ -1200,7 +1232,19 @@ async function gridScreen(main, cur) {
   const pick = chooser({ chosen: first, ro, onProducts: ro ? () => false : setColumns });
   await pick.ready;
   if (!ro && !cols.length && S.targets.length) setColumns(pick.ordered());
+  // 主対象は対象品番の中から1つ。替えると並びと★だけが変わり、打った数量は変わらない
+  const mainPick = el("select", { class: "in", disabled: ro || !S.number, onchange: async () => {
+    try {
+      const d = await api("PUT", "/api/v2/main-product", { number: S.number }, { main_product: mainPick.value || null });
+      mainProduct = d.main_product;
+      sortRows();
+      grid.render();
+    } catch (e) {
+      fail(e);
+    }
+  } }, el("option", { value: "" }, "（なし）"), S.targets.map((code) => el("option", { value: code, selected: code === mainProduct }, code)));
   main.append(card("グリッド画面", [
+    el("label", { class: "inline" }, "主対象 ", mainPick),
     el("button", { class: "btn", onclick: whereUsed, disabled: !S.number }, "使用先"),
     el("button", { class: "btn", onclick: conditionsDialog, disabled: !S.number }, "計算条件"),
   ], el("div", { class: "chooser two" }, pick.left, el("div", { class: "work" }, body))));

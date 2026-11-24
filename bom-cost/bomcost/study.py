@@ -136,6 +136,7 @@ Attributes = dict[str, dict[str, str]]  # 品番 → 属性の名前 → 値（�
 
 REPLACE = "replace"
 GRID = "grid"
+KEEP = object()  # save_targets で主対象を今のまま持つ印
 REWRITE = "rewrite"
 
 NOT_TARGET = "対象品番に無い"
@@ -766,10 +767,14 @@ class StudyStore:
 
     # 対象品番 ---------------------------------------------------------------
 
-    def save_targets(self, number: str, products: Sequence[Any], main_product: Any = None) -> None:
+    def save_targets(self, number: str, products: Sequence[Any], main_product: Any = KEEP) -> None:
+        """対象品番を入れ替える。main_product を渡さなければ、今の主対象を（対象品番に残れば）そのまま持つ。"""
         sid = self.study_id(number)
         codes = list(dict.fromkeys(input_code(p, name="対象品番") for p in products
                                    if p is not None and str(p).strip()))
+        if main_product is KEEP:
+            main_product = self._conn.execute("SELECT main_product FROM v2_study WHERE study_id = ?",
+                                              (sid,)).fetchone()[0]
         main = input_optional_code(main_product, name="主対象")
         if main is not None and main not in codes:
             main = None
@@ -777,6 +782,17 @@ class StudyStore:
             self._conn.execute("DELETE FROM v2_target WHERE study_id = ?", (sid,))
             self._conn.executemany("INSERT INTO v2_target VALUES (?, ?, ?)",
                                    [(sid, i, code) for i, code in enumerate(codes)])
+            self._conn.execute("UPDATE v2_study SET main_product = ? WHERE study_id = ?", (main, sid))
+            self._touch(sid)
+
+    def save_main(self, number: str, main_product: Any) -> None:
+        """⑤グリッド画面の並びの基準にする主対象を1つ選ぶ（空なら外す）。対象品番の中からだけ選べる。"""
+        sid = self.study_id(number)
+        main = input_optional_code(main_product, name="主対象")
+        targets = [r[0] for r in self._conn.execute("SELECT product FROM v2_target WHERE study_id = ?", (sid,))]
+        if main is not None and main not in targets:
+            raise ValueError(f"主対象は対象品番から選んでください（{main}）")
+        with self._conn:
             self._conn.execute("UPDATE v2_study SET main_product = ? WHERE study_id = ?", (main, sid))
             self._touch(sid)
 
@@ -1097,6 +1113,16 @@ def grid_places(ws: Workspace, plan: str, product: str, part: str) -> set[tuple[
     places = {(l.parent, l.balloon) for l in occurrences(ws.bom, product, part)}
     places |= {(c.parent, c.balloon) for c in ws.plan_changes(plan) if c.product == product and c.part == part}
     return places
+
+
+def grid_balloon(ws: Workspace, plan: str, product: str, part: str) -> str | None:
+    """グリッド画面の風船の行に出す、製品の中でのその品番の風船番号（無ければ None・風船番号の無い箇所は「－」・2か所以上は「複数」）。"""
+    places = grid_places(ws, plan, product, part)
+    if not places:
+        return None
+    if len(places) > 1:
+        return "複数"
+    return next(iter(places))[1] or "－"
 
 
 def grid_locked(ws: Workspace, plan: str, product: str, part: str) -> bool:

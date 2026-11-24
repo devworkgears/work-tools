@@ -370,6 +370,21 @@ class StudyApiFlow(unittest.TestCase):
         number = made["header"]["number"]
         self.assertEqual(self.ok("GET", "/api/v2/targets", f"number={number}")["main_product"], P2)
 
+    def test_main_product_is_chosen_on_the_grid_and_kept_by_the_target_list(self) -> None:
+        self.ok("POST", "/api/v2/bom/import", body={"sample": True})
+        number = self.ok("POST", "/api/v2/studies", body={"products": [P1, P2]})["header"]["number"]
+        q = f"number={number}"
+        self.assertEqual(self.ok("PUT", "/api/v2/main-product", q, {"main_product": P2})["main_product"], P2)
+        self.assertEqual(self.ok("GET", "/api/v2/grid", q + "&plan=A")["main_product"], P2)
+        # ③で対象品番を直しても、主対象は残る（主対象を外した時だけ消える）
+        self.ok("PUT", "/api/v2/targets", q, {"products": [P2, P1]})
+        self.assertEqual(self.ok("GET", "/api/v2/targets", q)["main_product"], P2)
+        self.ok("PUT", "/api/v2/targets", q, {"products": [P1]})
+        self.assertIsNone(self.ok("GET", "/api/v2/targets", q)["main_product"])
+        bad = self.api.handle("PUT", "/api/v2/main-product", q, json.dumps({"main_product": P2}).encode())
+        self.assertEqual(bad.status, 400, bad.body)
+        self.assertIsNone(self.ok("PUT", "/api/v2/main-product", q, {"main_product": ""})["main_product"])
+
     def test_temp_items_price_an_unregistered_new_part(self) -> None:
         self.ok("POST", "/api/v2/bom/import", body={"sample": True})
         number = self.ok("POST", "/api/v2/studies", body={"products": [P1, P2]})["header"]["number"]
@@ -484,7 +499,9 @@ class StudyApiFlow(unittest.TestCase):
                                                                           "value": "-1"}]})
         self.assertEqual(grid["rows"][0]["cells"], {P1: "-1"})
         self.assertIn({"part": OLD, "origin": 1, "cells": {P1: "-2", P2: "-2"}, "problems": {}, "locked": {}},
-                      grid["rows"])
+                      [{k: v for k, v in r.items() if k != "balloons"} for r in grid["rows"]])
+        # 風船の行: 列の製品ごとに、その製品でのその品番の風船番号
+        self.assertEqual(sorted(next(r for r in grid["rows"] if r["part"] == OLD)["balloons"]), [P1, P2])
         changes = self.ok("GET", "/api/v2/changes", q + "&plan=A")["rows"]
         self.assertTrue(any(r["part"] == NEW and r["added"] for r in changes))
         before = self.store.connection.total_changes

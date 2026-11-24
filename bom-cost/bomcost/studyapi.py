@@ -37,6 +37,7 @@ from .study import (
     calculate,
     calculate_heads,
     own_rows,
+    grid_balloon,
     grid_locked,
     input_code,
     input_optional_code,
@@ -59,6 +60,15 @@ SAMPLES_DIR = Path(__file__).resolve().parent.parent / "samples_v2"
 XLSX_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 LABELS_NAME = "labels.json"
 
+
+def _balloons(ws: Workspace, plan: str, columns: list[str], part: str) -> dict[str, str]:
+    """列の製品ごとの、その品番の風船番号（その製品に無ければ入れない）。"""
+    out = {}
+    for product in columns:
+        balloon = grid_balloon(ws, plan, product, part)
+        if balloon is not None:
+            out[product] = balloon
+    return out
 
 def _s(value: Decimal | None) -> str | None:
     return None if value is None else str(value)
@@ -215,6 +225,7 @@ class StudyApi:
             ("PUT", r"/api/v2/study", self.put_study),
             ("GET", r"/api/v2/targets", self.targets),
             ("PUT", r"/api/v2/targets", self.put_targets),
+            ("PUT", r"/api/v2/main-product", self.put_main),
             ("GET", r"/api/v2/replace", self.replace),
             ("GET", r"/api/v2/replace/groups", self.replace_groups),
             ("PUT", r"/api/v2/replace", self.put_replace),
@@ -407,7 +418,15 @@ class StudyApi:
         products = body.get("products") or []
         if not isinstance(products, list):
             raise ValueError("送る形が違います（products は配列）")
-        self.store.save_targets(_number(params), [str(p) for p in products], body.get("main_product"))
+        codes = [str(p) for p in products]
+        if "main_product" in body:
+            self.store.save_targets(_number(params), codes, body.get("main_product"))
+        else:
+            self.store.save_targets(_number(params), codes)
+        return self.targets({"number": _number(params)})
+
+    def put_main(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
+        self.store.save_main(_number(params), body.get("main_product"))
         return self.targets({"number": _number(params)})
 
     # ④ 置換 -----------------------------------------------------------------
@@ -456,7 +475,10 @@ class StudyApi:
     # ⑤ グリッド画面 ---------------------------------------------------------------
 
     def grid(self, params: dict[str, str]) -> "Response":
-        """列＝親品番（打った物＋変更のある製品）・行＝品番・セル＝その製品でのその品番の増減の計。"""
+        """列＝親品番（打った物＋変更のある製品）・行＝品番・セル＝その製品でのその品番の増減の計。
+
+        balloons は行ごとに、その製品でのその品番の風船番号（風船の行に出す）。main_product は並びの基準。
+        """
         ws = self._ws(params)
         plan = self._plan(params)
         info = next((p for p in ws.plans if p.plan == plan), None)
@@ -485,8 +507,10 @@ class StudyApi:
             "columns": columns,
             "rows": [{"part": r, "origin": origin.get(r),
                       "cells": {p: _s(v) for p, v in cells.get(r, {}).items()},
-                      "problems": problem.get(r, {}), "locked": locked[r]} for r in rows],
+                      "problems": problem.get(r, {}), "locked": locked[r],
+                      "balloons": _balloons(ws, plan, columns, r)} for r in rows],
             "targets": ws.targets,
+            "main_product": ws.main_product,
         })
 
     def add_plan(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
@@ -502,7 +526,8 @@ class StudyApi:
         columns = [input_code(c, name="親品番") for c in _list(body, "columns") if c is not None and str(c).strip()]
         rows = [input_code(r, name="品番") for r in _list(body, "rows") if r is not None and str(r).strip()]
         locked = {r: {p: True for p in columns if grid_locked(ws, plan, p, r)} for r in rows}
-        return self._json({"locked": {r: v for r, v in locked.items() if v}})
+        return self._json({"locked": {r: v for r, v in locked.items() if v},
+                           "balloons": {r: _balloons(ws, plan, columns, r) for r in rows}})
 
     def put_grid(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
         self.store.save_grid(_number(params), self._plan(params), _list(body, "columns"), _list(body, "rows"),
