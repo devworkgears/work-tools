@@ -575,7 +575,8 @@ async function targetsScreen(main, cur) {
       if (c === 1) return { text: code, editable: !ro };
       if (!code) return { text: "" };
       if (c === 2) return nameCell(code);
-      if (c === 6) return { text: mainProduct === code ? "●" : "○", cls: "act" };
+      // 主対象は1つだけ。選んだ行にだけ印を出す（ほかの行は押すと主対象になる）
+      if (c === 6) return { text: mainProduct === code ? "●" : "", cls: "act", title: ro ? null : "押すと主対象にする" };
       const info = items.get(code);
       if (!info || !info.registered) return { text: "" };
       if (c === 3) return { text: info.model, cls: "auto" };
