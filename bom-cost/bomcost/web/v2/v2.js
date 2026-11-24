@@ -914,7 +914,20 @@ async function gridScreen(main, cur) {
   const whereUsed = () => {
     const row = rows[grid.sel.r - 2];
     if (!row || !row.part) return alert("品番の行を選んでください");
-    whereUsedDialog(row.part);
+    whereUsedDialog(row.part, ro ? null : addColumns);
+  };
+  // 使用先で選んだ製品を、まだ無ければ列の右端に足す。足した数を返す
+  const addColumns = (codes) => {
+    const fresh = codes.filter((c) => !cols.includes(c));
+    if (!fresh.length) return 0;
+    // 見出しを消した右端の空き列は詰めてから足す（空き列の下に残った値も捨てる）
+    while (cols.length && !cols[cols.length - 1]) cols.pop();
+    for (const row of rows) row.cells.length = Math.min(row.cells.length, cols.length);
+    cols.push(...fresh);
+    cur.dirty = true;
+    model.changed();
+    grid.render();
+    return fresh.length;
   };
   main.append(card(tabs, [
     el("button", { class: "btn", onclick: whereUsed, disabled: !S.number }, "使用先"),
@@ -924,16 +937,27 @@ async function gridScreen(main, cur) {
   grid.focus();
 }
 
-async function whereUsedDialog(code) {
+// onAdd があれば、開いた製品に印を付けてグリッドの列に足せる（onAdd は足した数を返す）
+async function whereUsedDialog(code, onAdd = null) {
   try {
     const d = await api("GET", "/api/v2/where-used", q({ code }));
     const list = el("div");
     const open = async (group) => {
       try {
         const g = await api("GET", "/api/v2/where-used", q({ code, group }));
+        const checks = g.products.map((p) => el("input", { type: "checkbox", value: p.code }));
+        const all = el("input", { type: "checkbox", onchange: () => checks.forEach((c) => { c.checked = all.checked; }) });
+        const add = () => {
+          const chosen = checks.filter((c) => c.checked).map((c) => c.value);
+          if (!chosen.length) return alert("列に足す製品に印を付けてください");
+          const n = onAdd(chosen);
+          done(n ? `${n} 製品を列に足しました（［実行］で保存）` : "選んだ製品はもう列にあります");
+        };
         list.replaceChildren(el("table", { class: "list", style: "margin-top:8px" },
-          el("tr", {}, el("th", {}, "品番"), el("th", {}, "名称")),
-          g.products.map((p) => el("tr", {}, el("td", {}, p.code), el("td", {}, p.name ?? "")))));
+          el("tr", {}, onAdd ? el("th", {}, all) : null, el("th", {}, "品番"), el("th", {}, "名称")),
+          g.products.map((p, i) => el("tr", {}, onAdd ? el("td", {}, checks[i]) : null, el("td", {}, p.code), el("td", {}, p.name ?? "")))),
+          onAdd && g.products.length ? el("div", { class: "row", style: "margin:8px 0 0" },
+            el("button", { class: "btn pri", onclick: add }, "選んだ製品を列に足す")) : null);
       } catch (e) {
         fail(e);
       }
@@ -1141,7 +1165,7 @@ async function resultScreen(main) {
   const stamp = el("span", { class: "mini", style: "font-weight:400" });
   const table = el("div");
   const chips = el("div", { class: "chips" });
-  const drawChips = () => fill(chips, [["total", "合計"], ["material", "材料"]].map(([k, label]) =>
+  const drawChips = () => fill(chips, [["total", "合計"], ["material", "材料"], ["processing", "加工"], ["amortization", "型費"]].map(([k, label]) =>
     el("button", { class: "chip" + (head === k ? " on" : ""), onclick: () => { head = k; drawChips(); if (data) compute(); } }, label)));
   const draw = () => {
     if (!data) return table.replaceChildren();

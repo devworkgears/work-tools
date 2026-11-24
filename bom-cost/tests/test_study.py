@@ -13,6 +13,7 @@ from bomcost.model import BomLine, CostHead, CostRow, Item, Version, Volume
 from bomcost.store import Store
 from bomcost.study import (
     GRID,
+    HEADS,
     NEGATIVE,
     NO_PLACE,
     NOT_TARGET,
@@ -265,6 +266,18 @@ class Calculation(StudyCase):
         # 製造原価 ＝ 材料費 × 1.03 × 1.11（直接費・償却費は未登録で 0）
         self.assertEqual(p1["now"], Decimal("308.691"))
         self.assertEqual(p1["plans"]["A"], Decimal("354.423"))
+
+    def test_processing_and_amortization_heads_are_the_product_own_values(self) -> None:
+        # 部品の置き換えで変わるのは材料費だけ。加工（社内加工費）は未登録なら 0、型費（償却費）は未登録なら空で不完全
+        self.store.save_replaces(self.number, "A", [("K120", "K121")])
+        ws = self.store.workspace(self.number)
+        processing = calculate(ws, HEADS["processing"])["rows"][0]
+        self.assertEqual((processing["now"], processing["plans"]["A"]), (Decimal(0), Decimal(0)))
+        self.assertFalse(processing["now_incomplete"] or processing["incomplete"]["A"])
+        amortization = calculate(ws, HEADS["amortization"])
+        self.assertIsNone(amortization["rows"][0]["plans"]["A"])
+        self.assertTrue(amortization["rows"][0]["incomplete"]["A"])
+        self.assertTrue(amortization["impact_incomplete"]["A"])
 
     def test_calculation_does_not_write(self) -> None:
         self.store.save_replaces(self.number, "A", [("K120", "K121")])

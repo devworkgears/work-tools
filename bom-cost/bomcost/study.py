@@ -170,7 +170,8 @@ def input_amount(value: Any, *, name: str = "数量") -> Decimal:
             raise ValueError(f"{name}の桁が多すぎます（{value}）")
     return amount
 
-HEADS: dict[str, CostHead] = {"total": CostHead.MANUFACTURING, "material": CostHead.MATERIAL}
+HEADS: dict[str, CostHead] = {"total": CostHead.MANUFACTURING, "material": CostHead.MATERIAL,
+                               "processing": CostHead.PROCESSING, "amortization": CostHead.AMORTIZATION}
 
 Place = tuple[str, str, str | None, str]  # 製品・親・風船番号・品番
 
