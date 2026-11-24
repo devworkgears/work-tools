@@ -95,6 +95,14 @@ CREATE TABLE IF NOT EXISTS v2_condition (
     annual TEXT NOT NULL,
     PRIMARY KEY (study_id, product)
 );
+CREATE TABLE IF NOT EXISTS v2_temp_item (
+    study_id INTEGER NOT NULL REFERENCES v2_study(study_id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    code TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    material TEXT,
+    PRIMARY KEY (study_id, position)
+);
 CREATE TABLE IF NOT EXISTS v2_release (
     study_id INTEGER NOT NULL REFERENCES v2_study(study_id) ON DELETE CASCADE,
     version INTEGER NOT NULL,
@@ -216,6 +224,8 @@ class PlanInfo:
 
 # 置換の行（元品番, 新品番, 風船番号）。風船番号 None は全部の箇所・"" は風船番号の無い箇所
 ReplaceRow = tuple[str, str, str | None]
+# 仮品番（品番, 名称, 材料費）。部品の原価は製品の材料費にだけ入るので、持つのは材料費だけ（None は未登録）
+TempRow = tuple[str, str, Decimal | None]
 
 
 @dataclass
@@ -234,6 +244,9 @@ class Workspace:
     conditions: dict[str, Decimal]
     bom: Version
     attributes: Attributes = field(default_factory=dict)
+    temps: list[TempRow] = field(default_factory=list)
+    # temps のうち部品表に混ぜた品番（品目の台帳に同じ品番がある仮品番は、台帳の方を使うので混ぜない）
+    temp_merged: set[str] = field(default_factory=set)
 
     def attribute(self, code: str, name: str) -> str:
         return self.attributes.get(code, {}).get(name, "")
@@ -243,6 +256,23 @@ class Workspace:
 
     def plan_changes(self, plan: str) -> list[StoredChange]:
         return [c for c in self.changes if c.plan == plan]
+
+
+def merge_temps(bom: Version, temps: Sequence[TempRow]) -> set[str]:
+    """仮品番のうち bom の品目に無い物を、品目と材料費の行として足す。足した品番を返す。"""
+    merged = set()
+    for code, name, material in temps:
+        if code in bom.items:
+            continue
+        bom.add_item(Item(code, name))
+        bom.add_cost(CostRow(code, {CostHead.MATERIAL: material}))
+        merged.add(code)
+    return merged
+
+
+def unregistered_parts(ws: Workspace) -> list[str]:
+    """変更に出てくる品番のうち、品目の台帳にも仮品番にも無い物（変更に出た順）。"""
+    return list(dict.fromkeys(c.part for c in ws.changes if c.part not in ws.bom.items))
 
 
 def pair_key(old: str, new: str, balloon: str | None = None) -> str:
@@ -632,8 +662,12 @@ class StudyStore:
                         "WHERE study_id = ? ORDER BY seq", (sid,))]
         conditions = {p: Decimal(a) for p, a in q("SELECT product, annual FROM v2_condition WHERE study_id = ?",
                                                   (sid,))}
+        temps: list[TempRow] = [(c, nm, _dec(m)) for c, nm, m in q(
+            "SELECT code, name, material FROM v2_temp_item WHERE study_id = ? ORDER BY position", (sid,))]
+        bom = self.load_bom()
+        merged = merge_temps(bom, temps)
         return Workspace(n, None, header, targets, main, plans or [PlanInfo("A")], replaces, changes, conditions,
-                         self.load_bom(), self.load_attributes())
+                         bom, self.load_attributes(), temps, merged)
 
     def add_plan(self, number: str) -> str:
         """空の案を次の名前（A〜Z の空き）で足し、その名前を返す。"""
@@ -831,6 +865,29 @@ class StudyStore:
                     self._put(sid, plan, place, delta, REWRITE)
             self._touch(sid)
 
+    # ⑨ 仮品番 ---------------------------------------------------------------
+
+    def save_temps(self, number: str, rows: Sequence[Mapping[str, Any]]) -> None:
+        """仮品番の行（code・name・material）を入れ替える。品番の無い行は飛ばし、同じ品番が2行あれば ValueError。"""
+        sid = self.study_id(number)
+        temps: list[TempRow] = []
+        seen: dict[str, int] = {}
+        for i, r in enumerate(rows, start=1):
+            if not str(r.get("code") or "").strip():
+                continue
+            code = input_code(r.get("code"))
+            if code in seen:
+                raise ValueError(f"品番 {code} が重複しています（{seen[code]}行目・{i}行目）")
+            seen[code] = i
+            value = r.get("material")
+            material = None if value is None or str(value).strip() == "" else input_amount(value, name="材料費")
+            temps.append((code, str(r.get("name") or "").strip(), material))
+        with self._conn:
+            self._conn.execute("DELETE FROM v2_temp_item WHERE study_id = ?", (sid,))
+            self._conn.executemany("INSERT INTO v2_temp_item VALUES (?, ?, ?, ?, ?)",
+                                   [(sid, i, c, nm, _txt(m)) for i, (c, nm, m) in enumerate(temps)])
+            self._touch(sid)
+
     # 計算条件・版 -----------------------------------------------------------
 
     def save_conditions(self, number: str, annual: Mapping[str, Any]) -> None:
@@ -885,6 +942,9 @@ def _snapshot(ws: Workspace) -> dict[str, Any]:
         "changes": [[c.plan, c.product, c.parent, c.balloon, c.part, str(c.delta), c.source, c.origin, c.seq]
                     for c in ws.changes],
         "conditions": {k: str(v) for k, v in ws.conditions.items()},
+        # 仮品番は bom の写しにも入る（変更に出る品番は写す）。画面で見せるために元の行も残す
+        "temps": [[c, nm, _txt(m)] for c, nm, m in ws.temps],
+        "temp_merged": sorted(ws.temp_merged),
         "bom": {
             "items": [[i.code, i.name, i.kind, i.specification, *(ws.attribute(i.code, n) for n, _ in ATTRIBUTES)]
                       for i in bom.items.values() if i.code in codes],
@@ -922,6 +982,8 @@ def _from_snapshot(data: dict[str, Any], version: int) -> Workspace:
         conditions={k: Decimal(v) for k, v in data["conditions"].items()},
         bom=bom,
         attributes=attributes,
+        temps=[(c, nm, _dec(m)) for c, nm, m in data.get("temps", [])],
+        temp_merged=set(data.get("temp_merged", [])),
     )
 
 

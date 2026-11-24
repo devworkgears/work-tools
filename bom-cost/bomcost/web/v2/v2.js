@@ -1,7 +1,7 @@
-// 設計検討の画面。② から ③ はその場で、④〜⑧ は別の窓で開く（② は開いたまま）。入れた値はその場で一時保存する（⑦の［実行］は点検と計算だけで、書かない）。
+// 設計検討の画面。② から ③ はその場で、④〜⑨ は別の窓で開く（② は開いたまま）。入れた値はその場で一時保存する（⑦の［実行］は点検と計算だけで、書かない）。
 "use strict";
 
-const NUM = { 2: "②", 3: "③", 4: "④", 5: "⑤", 6: "⑥", 7: "⑦", 8: "⑧" };
+const NUM = { 2: "②", 3: "③", 4: "④", 5: "⑤", 6: "⑥", 7: "⑦", 8: "⑧", 9: "⑨" };
 const S = {
   mode: "edit", // new・edit・view
   number: "",
@@ -15,8 +15,8 @@ const S = {
 const items = new Map(); // 品番 → 右の列の値（/api/v2/lookup）
 let current = null; // 開いている画面 { key, saver }
 
-// 別の窓: ② から ④〜⑧ を開く。窓の URL に画面・検討番号・版・処理を載せる
-const NAMES = { 4: "置換", 5: "グリッド画面", 6: "変更一覧", 7: "結果", 8: "書き換え" };
+// 別の窓: ② から ④〜⑨ を開く。窓の URL に画面・検討番号・版・処理を載せる
+const NAMES = { 4: "置換", 5: "グリッド画面", 6: "変更一覧", 7: "結果", 8: "書き換え", 9: "仮品番" };
 const PARAMS = new URLSearchParams(location.search);
 const POPUP = PARAMS.has("screen");
 // 窓どうしの知らせ。saved＝その検討を一時保存した（ほかの窓は戻った時に読み直す）・switch＝② が別の検討・版に替えた（別の窓は閉じる）
@@ -110,7 +110,7 @@ function q(extra = {}) {
 async function lookup(codes) {
   const need = [...new Set(codes.filter((c) => c && !items.has(c)))];
   if (!need.length) return false;
-  const params = S.version === null ? {} : q();
+  const params = S.number ? q() : {};
   const data = await api("POST", "/api/v2/lookup", params, { codes: need });
   for (const [code, info] of Object.entries(data.items)) items.set(code, info);
   return true;
@@ -121,6 +121,7 @@ function nameCell(code) {
   const info = items.get(code);
   if (!info) return { text: "", cls: "auto" };
   if (!info.registered) return { text: "未登録", cls: "bad" };
+  if (info.temp) return { text: `${info.name}（仮）`, cls: "auto", title: "仮品番（⑨ で登録した品番）" };
   return { text: info.name, cls: "auto" };
 }
 
@@ -344,6 +345,7 @@ window.addEventListener("focus", async () => {
   if (!stale || !current || !S.number) return;
   if ((Grid.active && Grid.active.editing) || (current.saver && current.saver.pending)) return;
   stale = false;
+  items.clear();
   try {
     await loadStudy(S.number, S.version, false);
     if (current.key !== 7) openScreen(current.key);
@@ -504,7 +506,7 @@ async function hubScreen(main, cur) {
         run))),
     el("div", { class: "groups" },
       el("fieldset", { class: "grp" }, big(3, "対象品番")),
-      el("fieldset", { class: "grp" }, big(4, "置換"), big(5, "グリッド画面"), big(8, "書き換え")),
+      el("fieldset", { class: "grp" }, big(4, "置換"), big(5, "グリッド画面"), big(8, "書き換え"), big(9, "仮品番")),
       el("fieldset", { class: "grp" }, big(6, "変更一覧", S.problems ? [" ", el("span", { class: "pill warn" }, S.problems)] : null), big(7, "結果")),
       release),
   );
@@ -1485,6 +1487,110 @@ async function resultScreen(main) {
   ], [el("div", { class: "row" }, el("span", { class: "mini" }, "費目"), chips), table]));
 }
 
+// ⑨ 仮品番 -------------------------------------------------------------
+// 品目の台帳に無い品番の名称と材料費（1個あたり）。この検討の計算にだけ使う（部品の原価は製品の材料費にだけ入るので材料費だけ）
+
+async function tempScreen(main, cur) {
+  const ro = !canWrite();
+  const blank = () => ({ code: "", name: "", material: "", master: false, mark: false });
+  let rows = [];
+  let unregistered = [];
+  const load = async () => {
+    const d = await api("GET", "/api/v2/temp-items", q());
+    rows = d.rows.map((r) => ({ ...blank(), code: r.code, name: r.name, material: r.material ?? "", master: r.master }));
+    unregistered = d.unregistered;
+  };
+  await load();
+  const note = el("span", { class: "mini" });
+  const drawNote = () => {
+    const shown = unregistered.slice(0, 5).join("・") + (unregistered.length > 5 ? "…" : "");
+    note.textContent = unregistered.length ? `変更に出てくる未登録の品番 ${unregistered.length} 件（${shown}）` : "変更に出てくる未登録の品番はありません";
+  };
+  drawNote();
+  const markAll = () => {
+    const all = !(rows.length && rows.every((r) => r.mark));
+    for (const r of rows) r.mark = all;
+  };
+  const body = el("div");
+  const model = {
+    head: () => [
+      { text: rows.length && rows.every((r) => r.mark) ? "☑" : "☐", cls: "c", title: "全部の行に印", action: ro ? null : markAll },
+      "", "品番", "名称", { text: "材料費", cls: "r" }, "",
+    ],
+    nRows: () => rows.length + (ro ? 0 : 1),
+    grow: ro ? undefined : () => { rows.push(blank()); return true; },
+    nCols: () => 6,
+    cell(r, c) {
+      const row = rows[r];
+      if (c === 0) return { text: row ? (row.mark ? "☑" : "☐") : "", cls: "act" };
+      if (c === 1) return { text: String(r + 1), cls: "n" };
+      if (c === 2) return { text: row ? row.code : "", editable: !ro };
+      if (c === 3) return { text: row ? row.name : "", editable: !ro };
+      if (c === 4) return { text: row ? row.material : "", editable: !ro, cls: "r" };
+      return row && row.master ? { text: "台帳にあり（台帳の値を使う）", cls: "bad" } : { text: "" };
+    },
+    set(r, c, text) {
+      if (c < 2 || c > 4) return;
+      // 数でない材料費はその場で弾く（入れずに元の値のまま）
+      if (c === 4 && text !== "" && !isNumber(text)) return alert(`材料費は数で入力してください（「${text}」）`);
+      if (r >= rows.length) {
+        if (!text) return;
+        rows.push(blank());
+      }
+      rows[r][["code", "name", "material"][c - 2]] = text;
+      saver.schedule();
+    },
+    action(r, c) {
+      const row = rows[r];
+      if (!row || ro || c !== 0) return false;
+      row.mark = !row.mark;
+      return true;
+    },
+  };
+  const grid = new Grid(body, model);
+  // 品番を打った行だけを送る（名称だけ打った行は画面に残す）。台帳にあるかの印と未登録の一覧は返ってきた物で直す
+  const saver = autosaver(cur, async () => {
+    const d = await api("PUT", "/api/v2/temp-items", { number: S.number },
+      { rows: rows.filter((r) => r.code).map((r) => ({ code: r.code, name: r.name, material: r.material })) });
+    const master = new Map(d.rows.map((x) => [x.code, x.master]));
+    for (const r of rows) r.master = master.get(r.code) ?? false;
+    unregistered = d.unregistered;
+    items.clear();
+    drawNote();
+    grid.render();
+  }, async () => {
+    await load();
+    drawNote();
+    grid.render();
+  });
+  const addUnregistered = el("button", { class: "btn", disabled: ro }, "未登録を表に入れる");
+  addUnregistered.addEventListener("click", () => {
+    if (Grid.active) Grid.active.commit();
+    const fresh = unregistered.filter((code) => !rows.some((r) => r.code === code));
+    if (!fresh.length) return done("表に入れる未登録の品番はありません");
+    rows.push(...fresh.map((code) => ({ ...blank(), code })));
+    saver.schedule();
+    grid.render();
+    done(`${fresh.length} 件を表に入れました（名称と材料費を入れてください）`);
+  });
+  const del = el("button", { class: "btn", disabled: ro }, "行削除");
+  del.addEventListener("click", () => {
+    if (Grid.active) Grid.active.commit();
+    const n = rows.filter((r) => r.mark).length;
+    if (!n) return alert("消す行の左端に印を付けてください");
+    rows = rows.filter((r) => !r.mark);
+    saver.schedule();
+    grid.render();
+    done(`${n} 行を消しました`);
+  });
+  main.append(card("仮品番", [addUnregistered, del], [
+    el("div", { class: "row" }, el("span", { class: "mini" }, "品目の台帳に無い品番の名称と材料費（1個あたり）。この検討の計算にだけ使います"), el("span", { class: "sp" }), note),
+    body,
+  ]));
+  grid.render();
+  grid.focus();
+}
+
 const SCREENS = {
   2: hubScreen,
   3: targetsScreen,
@@ -1493,6 +1599,7 @@ const SCREENS = {
   6: changesScreen,
   7: resultScreen,
   8: rewriteScreen,
+  9: tempScreen,
 };
 
 // 別の窓は URL の検討を読んでその画面を開く

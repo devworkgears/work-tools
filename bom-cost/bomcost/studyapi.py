@@ -44,6 +44,7 @@ from .study import (
     product_lines,
     replace_groups,
     replace_overridden,
+    unregistered_parts,
     where_used,
 )
 
@@ -221,6 +222,8 @@ class StudyApi:
             ("GET", r"/api/v2/rewrite", self.rewrite),
             ("PUT", r"/api/v2/rewrite", self.put_rewrite),
             ("GET", r"/api/v2/changes", self.changes),
+            ("GET", r"/api/v2/temp-items", self.temp_items),
+            ("PUT", r"/api/v2/temp-items", self.put_temp_items),
             ("GET", r"/api/v2/conditions", self.conditions),
             ("PUT", r"/api/v2/conditions", self.put_conditions),
             ("GET", r"/api/v2/calc", self.calc),
@@ -286,10 +289,14 @@ class StudyApi:
         return self._json({"tables": kinds, "warnings": warnings, "counts": self.store.bom_counts()})
 
     def lookup(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
-        """品番の右の列（名称・代表・規格・組立図・年間台数・材料費・製造原価）。無い品番は registered: false。"""
-        if params.get("number") and params.get("version"):
+        """品番の右の列（名称・代表・規格・組立図・年間台数・材料費・製造原価）。無い品番は registered: false。
+
+        number があればその検討の部品表（版の写し・仮品番を混ぜた物）で引き、仮品番は temp: true。
+        """
+        temp: set[str] = set()
+        if params.get("number"):
             ws = self._ws(params)
-            bom, attributes = ws.bom, ws.attributes
+            bom, attributes, temp = ws.bom, ws.attributes, ws.temp_merged
         else:
             bom, attributes = self.store.load_bom(), self.store.load_attributes()
         codes = [nfkc(str(c)).strip() for c in _list(body, "codes") if c is not None and str(c).strip()]
@@ -307,6 +314,7 @@ class StudyApi:
             volume = bom.volume(code)
             result[code] = {
                 "registered": True,
+                "temp": code in temp,
                 "name": item.name,
                 "specification": item.specification,
                 "kind": item.kind,
@@ -566,6 +574,20 @@ class StudyApi:
 
     def changes(self, params: dict[str, str]) -> "Response":
         return self._json({"rows": self._change_rows(params)})
+
+    # ⑨ 仮品番 ---------------------------------------------------------------
+
+    def temp_items(self, params: dict[str, str]) -> "Response":
+        """仮品番の行（master: 品目の台帳に同じ品番があり、台帳の値を使う）と、変更に出る未登録の品番。"""
+        ws = self._ws(params)
+        return self._json({
+            "rows": [{"code": c, "name": nm, "material": _s(m), "master": c not in ws.temp_merged} for c, nm, m in ws.temps],
+            "unregistered": unregistered_parts(ws),
+        })
+
+    def put_temp_items(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
+        self.store.save_temps(_number(params), _objects(body, "rows"))
+        return self.temp_items({"number": _number(params)})
 
     # ⑦ 結果・計算条件 -------------------------------------------------------
 

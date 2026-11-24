@@ -368,7 +368,40 @@ class StudyApiFlow(unittest.TestCase):
         number = made["header"]["number"]
         self.assertEqual(self.ok("GET", "/api/v2/targets", f"number={number}")["main_product"], P2)
 
-    def test_parts_of_chosen_targets_lists_common_parts_first(self) -> None:
+    def test_temp_items_price_an_unregistered_new_part(self) -> None:
+        self.ok("POST", "/api/v2/bom/import", body={"sample": True})
+        number = self.ok("POST", "/api/v2/studies", body={"products": [P1, P2]})["header"]["number"]
+        q = f"number={number}"
+        tmp = "ZZ0001-001"
+        price = self.ok("POST", "/api/v2/lookup", q, {"codes": [NEW]})["items"][NEW]["material"]
+        # 新品番を未登録の品番にすると、結果は不完全で、仮品番の画面に未登録として出る
+        self.ok("PUT", "/api/v2/replace", q + "&plan=A", {"rows": [{"old": OLD, "new": tmp}]})
+        self.assertTrue(all(r["incomplete"]["A"] for r in self.ok("GET", "/api/v2/calc", q + "&head=material")["rows"]))
+        self.assertEqual(self.ok("GET", "/api/v2/temp-items", q)["unregistered"], [tmp])
+        # 仮品番に新品番と同じ材料費を入れると、新品番に置き換えた時と同じ値で、不完全の印が外れる
+        got = self.ok("PUT", "/api/v2/temp-items", q, {"rows": [{"code": tmp, "name": "仮の部品", "material": price},
+                                                               {"code": NEW, "name": "台帳にある品番"}, {"code": ""}]})
+        self.assertEqual(got["rows"], [{"code": tmp, "name": "仮の部品", "material": price, "master": False},
+                                       {"code": NEW, "name": "台帳にある品番", "material": None, "master": True}])
+        self.assertEqual(got["unregistered"], [])
+        looked = self.ok("POST", "/api/v2/lookup", q, {"codes": [tmp, NEW]})["items"]
+        self.assertEqual((looked[tmp]["name"], looked[tmp]["temp"], looked[NEW]["temp"]), ("仮の部品", True, False))
+        with_temp = self.ok("GET", "/api/v2/calc", q + "&head=material")
+        self.assertFalse(any(r["incomplete"]["A"] for r in with_temp["rows"]))
+        self.ok("PUT", "/api/v2/replace", q + "&plan=A", {"rows": [{"old": OLD, "new": NEW}]})
+        self.assertEqual(self.ok("GET", "/api/v2/calc", q + "&head=material")["impact"], with_temp["impact"])
+        # 版数取得で仮品番も固まる
+        self.ok("PUT", "/api/v2/replace", q + "&plan=A", {"rows": [{"old": OLD, "new": tmp}]})
+        version = self.ok("POST", "/api/v2/release", q, {})["version"]
+        self.ok("PUT", "/api/v2/temp-items", q, {"rows": []})
+        fixed = f"{q}&version={version}"
+        self.assertEqual(self.ok("GET", "/api/v2/temp-items", fixed)["rows"][0]["code"], tmp)
+        self.assertEqual(self.ok("GET", "/api/v2/calc", fixed + "&head=material")["impact"], with_temp["impact"])
+        # 同じ品番の2行は受けない
+        raw = json.dumps({"rows": [{"code": tmp}, {"code": tmp}]}).encode("utf-8")
+        self.assertGreaterEqual(self.api.handle("PUT", "/api/v2/temp-items", q, raw).status, 400)
+
+    def test_parts_of_chosen_targets_are_in_part_number_order(self) -> None:
         self.ok("POST", "/api/v2/bom/import", body={"sample": True})
         number = self.ok("POST", "/api/v2/studies", body={"products": [P1, P2]})["header"]["number"]
         q = f"number={number}"
