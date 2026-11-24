@@ -174,3 +174,31 @@ jobs:
           gh release create "$TAG" -R "$GITHUB_REPOSITORY" --verify-tag --draft --title "$TAG" --notes-file notes.md \
             dist/bom-cost-win64.zip dist/bom-cost-win64.manifest.txt
           gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --draft=false
+
+      # Only the newest release stays. Nothing is deleted unless the release made above is the latest one.
+      - name: Delete older releases and tags
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          latest=$(gh release view -R "$GITHUB_REPOSITORY" --json tagName --jq .tagName | tr -d '\r')
+          if [ "$latest" != "$TAG" ]; then
+            echo "::warning::the latest release is $latest, not $TAG; nothing is deleted"
+            exit 0
+          fi
+          list() { tr -d '\r' | grep -E '^bom-cost-v[0-9]+\.[0-9]+\.[0-9]+$' || true; }
+          gh release list -R "$GITHUB_REPOSITORY" --limit 1000 --json tagName --jq '.[].tagName' > raw_releases.txt
+          git ls-remote --tags --refs "https://github.com/$GITHUB_REPOSITORY.git" > raw_tags.txt
+          list < raw_releases.txt > releases.txt
+          sed 's#^.*refs/tags/##' raw_tags.txt | list > tags.txt
+          sort -u releases.txt tags.txt > all.txt
+          while read -r old; do
+            lower=$(printf '%s\n' "$old" "$TAG" | sort -V | sed -n 1p)
+            if [ "$old" = "$TAG" ] || [ "$lower" != "$old" ]; then continue; fi
+            if grep -qxF "$old" releases.txt; then
+              gh release delete "$old" -R "$GITHUB_REPOSITORY" --yes < /dev/null
+            fi
+            if grep -qxF "$old" tags.txt; then
+              gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$old" < /dev/null
+            fi
+            echo "deleted $old"
+          done < all.txt
