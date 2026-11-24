@@ -85,8 +85,11 @@ fieldset.grp { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8
 table.grid { border-collapse: collapse; font-size: 12px; white-space: nowrap; }
 table.grid th, table.grid td { border: 1px solid var(--line); padding: 3px 8px; min-width: 60px; height: 24px; text-align: left; }
 table.grid th { background: var(--head); color: var(--sub); font-weight: 600; }
+table.grid th.vh { writing-mode: vertical-rl; white-space: pre-line; vertical-align: bottom; height: 150px; padding: 6px 4px; min-width: 0; width: 44px; line-height: 1.3; }
+table.grid th.foot { vertical-align: bottom; }
 table.grid td.n { color: var(--sub); text-align: right; min-width: 32px; background: var(--head); }
 table.grid td.in { background: #fff; min-width: 100px; }
+table.grid td.q { min-width: 44px; }
 table.grid td.auto { color: var(--sub); background: #fafbfc; }
 table.grid td.r, table.grid th.r { text-align: right; font-variant-numeric: tabular-nums; }
 table.grid td.c, table.grid th.c { text-align: center; }

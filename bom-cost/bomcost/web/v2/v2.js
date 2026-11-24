@@ -1054,28 +1054,24 @@ async function gridScreen(main, cur) {
   await load();
   const body = el("div");
   const model = {
-    nRows: () => 2 + rows.length + (ro ? 0 : 1),
+    // 見出しは1段（表の1行目）。親品番の列は品番と名称を縦書きにして、列の幅を数量の桁だけにする
+    nRows: () => 1 + rows.length + (ro ? 0 : 1),
     grow: ro ? undefined : () => { rows.push({ part: "", cells: [], origin: null, problems: {}, locked: {} }); return true; },
     nCols: () => 4 + cols.length,
     cell(r, c) {
       if (r === 0) {
         if (c === 0) return { text: "", cls: "n" };
-        if (c === 1) return { text: "親品番 →", th: true };
-        if (c < 4) return { text: "", th: true };
+        if (c === 1) return { text: "品番 ↓　親品番 →", th: true, cls: "foot" };
+        if (c === 2) return { text: "名称", th: true, cls: "foot" };
+        if (c === 3) return { text: "", th: true };
         const code = cols[c - 4] || "";
         const outside = code && !S.targets.includes(code);
-        return { text: code, th: true, cls: outside ? "bad" : "", title: outside ? "要確認（対象品番に無いので計算に入らない）" : null };
-      }
-      if (r === 1) {
-        if (c === 0) return { text: "", cls: "n" };
-        if (c === 1) return { text: "品番 ↓", th: true };
-        if (c === 2) return { text: "名称", th: true };
-        if (c === 3) return { text: "", th: true };
-        const code = cols[c - 4];
         const info = code ? items.get(code) : null;
-        return { text: info ? (info.registered ? info.name : "未登録") : "", th: true, cls: info && !info.registered ? "bad" : "" };
+        const name = info ? (info.registered ? info.name : "未登録") : "";
+        return { text: code ? `${code}\n${name}` : "", th: true, cls: "vh" + (outside || (info && !info.registered) ? " bad" : ""),
+          title: outside ? "要確認（対象品番に無いので計算に入らない）" : code ? `${code} ${name}` : null };
       }
-      const i = r - 2;
+      const i = r - 1;
       const row = rows[i];
       if (c === 0) return { text: String(i + 1), cls: "n" };
       if (c === 1) return { text: row ? row.part : "", editable: !ro };
@@ -1086,19 +1082,19 @@ async function gridScreen(main, cur) {
       const locked = !!(row && code && row.locked[code]);
       const bad = locked || (row && code && (row.problems[code] || (value !== "" && !isNumber(value))));
       return {
-        text: value, editable: !ro && !!row && !!code && !locked, cls: "r" + (bad ? " bad" : ""),
+        text: value, editable: !ro && !!row && !!code && !locked, cls: "r q" + (bad ? " bad" : ""),
         title: locked ? "要確認（複数の箇所にある・書き換えで直す）" : null,
       };
     },
     set(r, c, text) {
-      if (r >= 2 && c === 1) {
-        const i = r - 2;
+      if (r >= 1 && c === 1) {
+        const i = r - 1;
         if (i >= rows.length) {
           if (!text) return;
           rows.push({ part: text, cells: [], origin: null, problems: {}, locked: {} });
         } else rows[i].part = text;
-      } else if (r >= 2 && c >= 4) {
-        const row = rows[r - 2];
+      } else if (r >= 1 && c >= 4) {
+        const row = rows[r - 1];
         if (!row || !cols[c - 4]) return;
         // 数でない数量はその場で弾く（入れずに元の値のまま）
         if (text !== "" && !isNumber(text)) return alert(`数量は数で入力してください（${row.part} × ${cols[c - 4]}「${text}」）`);
@@ -1166,7 +1162,7 @@ async function gridScreen(main, cur) {
     grid.render();
   });
   const whereUsed = () => {
-    const row = rows[grid.sel.r - 2];
+    const row = rows[grid.sel.r - 1];
     if (!row || !row.part) return alert("品番の行を選んでください");
     whereUsedDialog(row.part, ro ? null : addColumns);
   };
@@ -1198,20 +1194,15 @@ async function gridScreen(main, cur) {
     grid.render();
     return true;
   };
-  // まん中で選んだ部品を行に足す
-  const addRows = (codes) => {
-    for (const code of codes) if (!rows.some((r) => r.part === code)) rows.push({ part: code, cells: [], origin: null, problems: {}, locked: {} });
-    saver.schedule();
-    grid.changed();
-  };
   const first = cols.some((c) => S.targets.includes(c)) ? cols : S.targets;
-  const pick = chooser({ chosen: first, ro, onProducts: ro ? () => false : setColumns, onAdd: addRows });
+  // 部品の行はグリッドに直に打つか貼る（部品を一覧から選んで入れるのは ④ の役目）
+  const pick = chooser({ chosen: first, ro, onProducts: ro ? () => false : setColumns });
   await pick.ready;
   if (!ro && !cols.length && S.targets.length) setColumns(pick.ordered());
   main.append(card("グリッド画面", [
     el("button", { class: "btn", onclick: whereUsed, disabled: !S.number }, "使用先"),
     el("button", { class: "btn", onclick: conditionsDialog, disabled: !S.number }, "計算条件"),
-  ], el("div", { class: "chooser" }, pick.left, pick.mid, el("div", { class: "work" }, body))));
+  ], el("div", { class: "chooser two" }, pick.left, el("div", { class: "work" }, body))));
   grid.focus();
 }
 
