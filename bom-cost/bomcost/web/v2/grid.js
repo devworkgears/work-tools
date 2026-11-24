@@ -164,7 +164,7 @@ class Grid {
     td.append(input);
     this.editing = { r, c, input };
     input.addEventListener("keydown", (e) => this.onEditKey(e));
-    // 後回しにすると、打ったまま押した［実行］・×が書き換えより先に動き、打った物が落ちる
+    // 後回しにすると、打ったまま押した［保存］・×が書き換えより先に動き、打った物が落ちる
     input.addEventListener("blur", () => this.commit());
     input.focus();
     input.setSelectionRange(input.value.length, input.value.length);

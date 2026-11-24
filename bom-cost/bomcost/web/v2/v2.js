@@ -1,4 +1,4 @@
-// 設計検討の画面。② から ③〜⑧ を開き、閉じると ② へ戻る。書くのは各画面の［実行］の時だけ。
+// 設計検討の画面。② から ③〜⑧ を開き、閉じると ② へ戻る。書くのは各画面の［保存］の時だけ。
 "use strict";
 
 const NUM = { 2: "②", 3: "③", 4: "④", 5: "⑤", 6: "⑥", 7: "⑦", 8: "⑧" };
@@ -151,10 +151,10 @@ function planSelect(value, onchange) {
 function confirmLeave(cur) {
   if (Grid.active) Grid.active.commit();
   const writable = cur.writable ?? canWrite();
-  return !cur.dirty || !writable || confirm("未実行の変更を破棄します。よろしいですか？");
+  return !cur.dirty || !writable || confirm("保存していない変更を破棄します。よろしいですか？");
 }
 
-// L: 再読み込み・タブを閉じる時も、未実行があれば止める
+// L: 再読み込み・タブを閉じる時も、保存していない変更があれば止める
 window.addEventListener("beforeunload", (e) => {
   if (Grid.active) Grid.active.commit();
   if (current && current.dirty && (current.writable ?? canWrite())) {
@@ -163,10 +163,16 @@ window.addEventListener("beforeunload", (e) => {
   }
 });
 
-function done(text = "実行しました") {
+function done(text) {
   const t = new Date();
   const hm = `${String(t.getHours()).padStart(2, "0")}:${String(t.getMinutes()).padStart(2, "0")}`;
   document.getElementById("status").textContent = `${text} ${hm}`;
+}
+
+// 保存した時: 何を保存したかを窓で出し、下の帯にも残す
+function saved(text) {
+  done(text);
+  alert(text);
 }
 
 // 画面の枠 --------------------------------------------------------------
@@ -264,7 +270,7 @@ async function hubScreen(main, cur) {
   const fields = [field("題目", "title", 260), field("担当", "owner"), field("承認者", "approver"), field("開発番号", "dev_number")];
   const state = S.number ? (S.version === null ? "仮" : `版${S.version}`) : "";
   const updated = h.updated_at ? h.updated_at.slice(0, 10).replaceAll("-", "/") : "";
-  const run = el("button", { class: "btn pri", style: "align-self:flex-end", disabled: ro || (S.mode !== "new" && !S.number) }, "実行");
+  const run = el("button", { class: "btn pri", style: "align-self:flex-end", disabled: ro || (S.mode !== "new" && !S.number) }, "保存");
   run.addEventListener("click", async () => {
     const body = {};
     for (const input of main.querySelectorAll("input[data-key]")) body[input.dataset.key] = input.value;
@@ -272,10 +278,11 @@ async function hubScreen(main, cur) {
       if (S.mode === "new") {
         applyStudy(await api("POST", "/api/v2/studies", {}, body));
         S.mode = "edit";
+        saved(`検討 ${S.number} を作成しました`);
       } else {
         applyStudy(await api("PUT", "/api/v2/study", { number: S.number }, body));
+        saved(`検討 ${S.number} の見出しを保存しました`);
       }
-      done();
       openScreen(2);
     } catch (e) {
       fail(e);
@@ -428,7 +435,7 @@ async function targetsScreen(main, cur) {
       .filter((code) => code && !code.includes("品番"));
     addCodes(codes);
   });
-  const run = el("button", { class: "btn pri", disabled: ro }, "実行");
+  const run = el("button", { class: "btn pri", disabled: ro }, "保存");
   run.addEventListener("click", async () => {
     try {
       const d = await api("PUT", "/api/v2/targets", { number: S.number }, { products: rows.filter(Boolean), main_product: mainProduct });
@@ -436,7 +443,7 @@ async function targetsScreen(main, cur) {
       mainProduct = d.main_product;
       S.targets = d.targets;
       cur.dirty = false;
-      done();
+      saved(`対象品番を保存しました（${d.targets.length} 製品）`);
       grid.render();
     } catch (e) {
       fail(e);
@@ -735,14 +742,14 @@ async function replaceScreen(main, cur) {
     await load().catch(fail);
     grid.render();
   });
-  const run = el("button", { class: "btn pri", disabled: ro }, "実行");
+  const run = el("button", { class: "btn pri", disabled: ro }, "保存");
   run.addEventListener("click", async () => {
     try {
       const d = await api("PUT", "/api/v2/replace", { number: S.number, plan },
         { rows: rows.filter((r) => r.old || r.new).map((r) => ({ old: r.old, new: r.new })) });
       rows = d.rows;
       cur.dirty = false;
-      done();
+      saved(`案${plan} の置換を保存しました`);
       grid.render();
     } catch (e) {
       fail(e);
@@ -881,10 +888,10 @@ async function gridScreen(main, cur) {
     await api("PUT", "/api/v2/grid", { number: S.number, plan },
       { columns: cols.filter(Boolean), rows: rows.map((r) => r.part).filter(Boolean), cells });
     await load();
-    done();
+    saved(`案${plan} のグリッドを保存しました`);
     grid.render();
   };
-  const run = el("button", { class: "btn pri", disabled: ro, onclick: () => save().catch(fail) }, "実行");
+  const run = el("button", { class: "btn pri", disabled: ro, onclick: () => save().catch(fail) }, "保存");
   const tabs = el("div", { class: "tabs" });
   const drawTabs = () => {
     fill(tabs,
@@ -951,7 +958,7 @@ async function whereUsedDialog(code, onAdd = null) {
           const chosen = checks.filter((c) => c.checked).map((c) => c.value);
           if (!chosen.length) return alert("列に足す製品に印を付けてください");
           const n = onAdd(chosen);
-          done(n ? `${n} 製品を列に足しました（［実行］で保存）` : "選んだ製品はもう列にあります");
+          done(n ? `${n} 製品を列に足しました（［保存］を押すまで保存されません）` : "選んだ製品はもう列にあります");
         };
         fill(list, el("table", { class: "list", style: "margin-top:8px" },
           el("tr", {}, onAdd ? el("th", {}, all) : null, el("th", {}, "品番"), el("th", {}, "名称")),
@@ -996,12 +1003,12 @@ async function conditionsDialog() {
           try {
             await api("PUT", "/api/v2/conditions", { number: S.number }, { annual });
             box.close();
-            done();
+            saved("計算条件（年間台数）を保存しました");
           } catch (e) {
             fail(e);
           }
         },
-      }, "実行"),
+      }, "保存"),
       el("button", { class: "btn", onclick: () => box.close() }, "閉じる"),
     ]);
   } catch (e) {
@@ -1087,7 +1094,7 @@ async function rewriteScreen(main, cur) {
     await load().catch(fail);
     grid.render();
   });
-  const run = el("button", { class: "btn pri", disabled: ro || !product }, "実行");
+  const run = el("button", { class: "btn pri", disabled: ro || !product }, "保存");
   run.addEventListener("click", async () => {
     try {
       const send = rows.filter((r) => r.part).map((r) => {
@@ -1096,7 +1103,7 @@ async function rewriteScreen(main, cur) {
       });
       await api("PUT", "/api/v2/rewrite", { number: S.number, plan }, { product, rows: send });
       await load();
-      done();
+      saved(`案${plan} の ${product} の書き換えを保存しました`);
       grid.render();
     } catch (e) {
       fail(e);
