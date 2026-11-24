@@ -36,6 +36,7 @@ from .study import (
     calculate,
     grid_locked,
     input_code,
+    input_optional_code,
     nfkc,
     pair_key,
     problem_count,
@@ -348,8 +349,16 @@ class StudyApi:
         return self._json({"studies": self.store.list_studies()})
 
     def create_study(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
+        """products があれば対象品番も入れて作る。品番の形が違えば検討を作らずに止める。"""
+        products = body.get("products") or []
+        if not isinstance(products, list):
+            raise ValueError("送る形が違います（products は配列）")
+        codes = [input_code(p, name="対象品番") for p in products if p is not None and str(p).strip()]
+        input_optional_code(body.get("main_product"), name="主対象")
         number = self.store.create_study(_text(body, "title"), _text(body, "owner"), _text(body, "approver"),
                                          _text(body, "dev_number"))
+        if codes:
+            self.store.save_targets(number, codes, body.get("main_product"))
         return self._study_json(self.store.workspace(number))
 
     def study(self, params: dict[str, str]) -> "Response":

@@ -1,4 +1,4 @@
-// 設計検討の画面。② から ③〜⑧ を開き、閉じると ② へ戻る。書くのは各画面の［保存］の時だけ。
+// 設計検討の画面。② から ③〜⑧ を開き、閉じると ② へ戻る。入れた値はその場で一時保存する（⑦の［実行］は点検と計算だけで、書かない）。
 "use strict";
 
 const NUM = { 2: "②", 3: "③", 4: "④", 5: "⑤", 6: "⑥", 7: "⑦", 8: "⑧" };
@@ -12,9 +12,10 @@ const S = {
   targets: [],
   problems: 0,
   plan: "A",
+  draft: null, // 新規作成で番号が付く前に入れた物 { header, targets, main }
 };
 const items = new Map(); // 品番 → 右の列の値（/api/v2/lookup）
-let current = null; // 開いている画面 { key, dirty }
+let current = null; // 開いている画面 { key, saver }
 
 // 道具 ------------------------------------------------------------------
 
@@ -148,16 +149,17 @@ function planSelect(value, onchange) {
   return select;
 }
 
-function confirmLeave(cur) {
+// 画面を離れる前に、打ちかけのセルを確定して一時保存を送り切る
+async function leave(cur = current) {
   if (Grid.active) Grid.active.commit();
-  const writable = cur.writable ?? canWrite();
-  return !cur.dirty || !writable || confirm("保存していない変更を破棄します。よろしいですか？");
+  if (cur && cur.saver) await cur.saver.flush();
 }
 
-// L: 再読み込み・タブを閉じる時も、保存していない変更があれば止める
+// 再読み込み・タブを閉じる時に、まだ送っていない一時保存があれば送って引き止める
 window.addEventListener("beforeunload", (e) => {
   if (Grid.active) Grid.active.commit();
-  if (current && current.dirty && (current.writable ?? canWrite())) {
+  if (current && current.saver && current.saver.pending) {
+    current.saver.flush();
     e.preventDefault();
     e.returnValue = "";
   }
@@ -169,10 +171,45 @@ function done(text) {
   document.getElementById("status").textContent = `${text} ${hm}`;
 }
 
-// 保存した時: 何を保存したかを窓で出し、下の帯にも残す
-function saved(text) {
+// 知らせを窓で出し、下の帯にも残す
+function notice(text) {
   done(text);
   alert(text);
+}
+
+// 入れた値をその場で一時保存する。続けて打った分はまとめて1回で送る。
+// サーバに弾かれた時は知らせて、保存済みの状態を読み直す（弾かれた値は残らない）
+function autosaver(owner, save, reload) {
+  let timer = null;
+  let chain = Promise.resolve();
+  const run = () => {
+    timer = null;
+    chain = chain.then(save).then(() => done("一時保存しました")).catch(async (e) => {
+      fail(e);
+      try {
+        await reload();
+      } catch (e2) {
+        fail(e2);
+      }
+    });
+    return chain;
+  };
+  const saver = {
+    schedule() {
+      clearTimeout(timer);
+      timer = setTimeout(run, 300);
+    },
+    flush() {
+      if (timer === null) return chain;
+      clearTimeout(timer);
+      return run();
+    },
+    get pending() {
+      return timer !== null;
+    },
+  };
+  owner.saver = saver;
+  return saver;
 }
 
 // 画面の枠 --------------------------------------------------------------
@@ -186,7 +223,7 @@ function card(title, tools, body) {
 
 async function openScreen(key) {
   Grid.active = null;
-  current = { key, dirty: false };
+  current = { key };
   document.getElementById("scrno").textContent = NUM[key];
   const main = document.getElementById("screen");
   main.replaceChildren();
@@ -194,14 +231,13 @@ async function openScreen(key) {
   try {
     await SCREENS[key](main, current);
   } catch (e) {
-    current.dirty = false;
     fill(main, card(NUM[key], [], ""));
     done(`読込に失敗しました（${e && e.message ? e.message : e}）`);
   }
 }
 
-function closeScreen() {
-  if (!confirmLeave(current)) return;
+async function closeScreen() {
+  await leave();
   openHub();
 }
 
@@ -245,44 +281,47 @@ async function addPlan() {
 
 async function hubScreen(main, cur) {
   const ro = S.mode === "view" || S.version !== null;
-  cur.writable = !ro;
+  const draft = S.mode === "new" ? S.draft : null;
   const modes = [["new", "新規作成"], ["edit", "修正"], ["view", "照会"]];
   const numberInput = el("input", { class: "in", style: "min-width:110px", value: S.number, disabled: S.mode === "new" });
   const versionSelect = el("select", { class: "in", style: "min-width:70px", disabled: S.mode === "new" },
     el("option", { value: "" }, "仮"), S.versions.map((v) => el("option", { value: String(v) }, String(v))));
   versionSelect.value = S.version === null ? "" : String(S.version);
-  const read = () => {
+  const read = async () => {
     const number = numberInput.value.trim();
-    if (!number || !confirmLeave(cur)) return;
+    if (!number) return;
+    await leave(cur);
     loadStudy(number, versionSelect.value || null).catch(fail);
   };
   numberInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") read();
   });
 
-  const h = S.header || {};
+  const h = draft ? draft.header : S.header || {};
   const field = (label, key, width) => {
     const input = el("input", { class: ro ? "in ro" : "in", value: h[key] || "", readonly: ro, tabindex: ro ? "-1" : null, style: width ? `min-width:${width}px` : null });
     input.dataset.key = key;
-    input.addEventListener("input", () => { cur.dirty = true; });
+    input.addEventListener("input", () => {
+      if (draft) draft.header[key] = input.value;
+      else if (S.number) saver.schedule();
+    });
     return el("label", { class: "f" }, label, input);
   };
+  const header = () => Object.fromEntries([...main.querySelectorAll("input[data-key]")].map((i) => [i.dataset.key, i.value]));
+  const saver = autosaver(cur, async () => applyStudy(await api("PUT", "/api/v2/study", { number: S.number }, header())),
+    () => loadStudy(S.number, S.version));
   const fields = [field("題目", "title", 260), field("担当", "owner"), field("承認者", "approver"), field("開発番号", "dev_number")];
   const state = S.number ? (S.version === null ? "仮" : `版${S.version}`) : "";
   const updated = h.updated_at ? h.updated_at.slice(0, 10).replaceAll("-", "/") : "";
-  const run = el("button", { class: "btn pri", style: "align-self:flex-end", disabled: ro || (S.mode !== "new" && !S.number) }, "保存");
-  run.addEventListener("click", async () => {
-    const body = {};
-    for (const input of main.querySelectorAll("input[data-key]")) body[input.dataset.key] = input.value;
+  // 新規作成は ③ で対象品番を選んでから［実行］で作る。作った時に番号が付く
+  const run = draft ? el("button", { class: "btn pri", style: "align-self:flex-end" }, "実行") : null;
+  if (run) run.addEventListener("click", async () => {
+    if (!draft.targets.some(Boolean)) return fail(new Error("対象品番を入れてから実行してください（［対象品番］で選ぶ）"));
     try {
-      if (S.mode === "new") {
-        applyStudy(await api("POST", "/api/v2/studies", {}, body));
-        S.mode = "edit";
-        saved(`検討 ${S.number} を作成しました`);
-      } else {
-        applyStudy(await api("PUT", "/api/v2/study", { number: S.number }, body));
-        saved(`検討 ${S.number} の見出しを保存しました`);
-      }
+      applyStudy(await api("POST", "/api/v2/studies", {}, { ...header(), products: draft.targets.filter(Boolean), main_product: draft.main }));
+      S.mode = "edit";
+      S.draft = null;
+      notice(`検討 ${S.number} を作成しました（対象品番 ${S.targets.length} 製品）`);
       openScreen(2);
     } catch (e) {
       fail(e);
@@ -290,10 +329,14 @@ async function hubScreen(main, cur) {
   });
 
   const needStudy = !S.number;
-  const big = (key, label, extra) => el("button", { class: "btn big", disabled: key !== 3 && needStudy, onclick: () => { if (confirmLeave(cur)) openScreen(key); } }, label, extra);
+  const big = (key, label, extra) => el("button", {
+    class: "btn big", disabled: key !== 3 && needStudy,
+    onclick: async () => { await leave(cur); openScreen(key); },
+  }, label, extra);
   const release = el("button", { class: "btn big", style: "margin-left:24px;align-self:center", disabled: !canWrite() }, "版数取得");
   release.addEventListener("click", async () => {
-    if (!confirmLeave(cur) || !confirm(`${S.number} の版を取得します。取得した版は書き換えできません。よろしいですか？`)) return;
+    await leave(cur);
+    if (!confirm(`${S.number} の版を取得します。取得した版は書き換えできません。よろしいですか？`)) return;
     try {
       const taken = await api("POST", "/api/v2/release", { number: S.number }, {});
       await loadStudy(S.number, null);
@@ -327,12 +370,13 @@ async function hubScreen(main, cur) {
   );
 }
 
-function setMode(mode) {
-  if (!confirmLeave(current)) return;
+async function setMode(mode) {
+  await leave();
   if (mode === "new") {
-    Object.assign(S, { number: "", version: null, header: null, versions: [], plans: ["A"], targets: [], problems: 0, plan: "A" });
+    Object.assign(S, { number: "", version: null, header: null, versions: [], plans: ["A"], targets: [], problems: 0, plan: "A",
+      draft: { header: {}, targets: [], main: null } });
     items.clear();
-  }
+  } else S.draft = null;
   S.mode = mode;
   openScreen(2);
 }
@@ -345,8 +389,8 @@ async function studyListDialog() {
         el("tr", {}, ["検討番号", "題目", "担当", "最終更新日", "版"].map((t) => el("th", {}, t))),
         data.studies.map((s) => el("tr", {
           class: "pick",
-          onclick: () => {
-            if (!confirmLeave(current)) return;
+          onclick: async () => {
+            await leave();
             d.close();
             loadStudy(s.number, null).catch(fail);
           },
@@ -361,10 +405,12 @@ async function studyListDialog() {
 // ③ 対象品番 -------------------------------------------------------------
 
 async function targetsScreen(main, cur) {
-  const ro = !canWrite();
+  // 新規作成で番号が付く前は、選んだ物を S.draft に持つ（② の［実行］で検討と一緒に作る）
+  const draft = S.mode === "new" && !S.number ? S.draft : null;
+  const ro = !(canWrite() || draft);
   const EMPTY_ROW = () => "";
-  let rows = [];
-  let mainProduct = null;
+  let rows = draft ? draft.targets : [];
+  let mainProduct = draft ? draft.main : null;
   if (S.number) {
     const d = await api("GET", "/api/v2/targets", q());
     rows = d.targets.slice();
@@ -399,12 +445,12 @@ async function targetsScreen(main, cur) {
         if (!text) return;
         rows.push(text);
       } else rows[r] = text;
-      cur.dirty = true;
+      touched();
     },
     action(r, c) {
       if (c !== 6 || ro || !rows[r]) return false;
       mainProduct = rows[r];
-      cur.dirty = true;
+      touched();
       return true;
     },
     changed() {
@@ -412,10 +458,24 @@ async function targetsScreen(main, cur) {
     },
   };
   const grid = new Grid(body, model);
+  const saver = autosaver(cur, async () => {
+    const d = await api("PUT", "/api/v2/targets", { number: S.number }, { products: rows.filter(Boolean), main_product: mainProduct });
+    S.targets = d.targets;
+  }, async () => {
+    const d = await api("GET", "/api/v2/targets", q());
+    rows = d.targets.slice();
+    mainProduct = d.main_product;
+    grid.render();
+  });
+  // 変えた時: 番号の前は S.draft に持ち、番号があればその場で一時保存
+  function touched() {
+    if (draft) draft.main = mainProduct;
+    else saver.schedule();
+  }
 
   const addCodes = (codes) => {
     for (const code of codes) if (code && !rows.includes(code)) rows.push(code);
-    cur.dirty = true;
+    touched();
     grid.changed();
   };
   const csvInput = el("input", { type: "file", accept: ".csv,.txt", style: "display:none" });
@@ -435,20 +495,6 @@ async function targetsScreen(main, cur) {
       .filter((code) => code && !code.includes("品番"));
     addCodes(codes);
   });
-  const run = el("button", { class: "btn pri", disabled: ro }, "保存");
-  run.addEventListener("click", async () => {
-    try {
-      const d = await api("PUT", "/api/v2/targets", { number: S.number }, { products: rows.filter(Boolean), main_product: mainProduct });
-      rows = d.targets.slice();
-      mainProduct = d.main_product;
-      S.targets = d.targets;
-      cur.dirty = false;
-      saved(`対象品番を保存しました（${d.targets.length} 製品）`);
-      grid.render();
-    } catch (e) {
-      fail(e);
-    }
-  });
   main.append(card("対象品番", [
     el("button", { class: "btn", disabled: ro, onclick: () => productSearchDialog(addCodes) }, "品番検索"),
     el("button", { class: "btn", disabled: ro, onclick: () => csvInput.click() }, "CSV取込"), csvInput,
@@ -456,12 +502,11 @@ async function targetsScreen(main, cur) {
       class: "btn", disabled: ro, onclick: () => {
         if (grid.sel.r < rows.length) {
           rows.splice(grid.sel.r, 1);
-          cur.dirty = true;
+          touched();
           grid.render();
         }
       },
     }, "行削除"),
-    run,
   ], [body, el("div", { class: "row", style: "margin:8px 0 0" }, el("span", { class: "sp" }),
     el("button", { class: "btn quiet", onclick: () => importDialog(() => { items.clear(); lookup(rows).then(() => grid.render()).catch(fail); }) }, "部品表データ取込（モック）"))]));
   grid.focus();
@@ -700,7 +745,6 @@ async function replaceScreen(main, cur) {
     const d = S.number ? await api("GET", "/api/v2/replace", q({ plan })) : { rows: [] };
     rows = d.rows.map((r) => ({ ...r }));
     await lookup(rows.flatMap((r) => [r.old, r.new]));
-    cur.dirty = false;
   };
   await load();
   const body = el("div");
@@ -726,36 +770,31 @@ async function replaceScreen(main, cur) {
       }
       rows[r][c === 1 ? "old" : "new"] = text;
       rows[r].overridden = false;
-      cur.dirty = true;
+      saver.schedule();
     },
     changed() {
       lookup(rows.flatMap((r) => [r.old, r.new])).then((got) => got && grid.render()).catch(fail);
     },
   };
   const grid = new Grid(body, model);
-  const select = planSelect(plan, async (value, sel) => {
-    if (!confirmLeave(cur)) {
-      sel.value = plan;
-      return;
-    }
+  // 元品番と新品番の両方がそろった行だけを送る（片方だけの行は打ちかけとして画面に残す）
+  const saver = autosaver(cur, async () => {
+    const d = await api("PUT", "/api/v2/replace", { number: S.number, plan },
+      { rows: rows.filter((r) => r.old && r.new).map((r) => ({ old: r.old, new: r.new })) });
+    const marks = new Map(d.rows.map((x) => [`${x.old}\t${x.new}`, x.overridden]));
+    for (const r of rows) r.overridden = marks.get(`${r.old}\t${r.new}`) || false;
+    grid.render();
+  }, async () => {
+    await load();
+    grid.render();
+  });
+  const select = planSelect(plan, async (value) => {
+    await leave(cur);
     plan = S.plan = value;
     await load().catch(fail);
     grid.render();
   });
-  const run = el("button", { class: "btn pri", disabled: ro }, "保存");
-  run.addEventListener("click", async () => {
-    try {
-      const d = await api("PUT", "/api/v2/replace", { number: S.number, plan },
-        { rows: rows.filter((r) => r.old || r.new).map((r) => ({ old: r.old, new: r.new })) });
-      rows = d.rows;
-      cur.dirty = false;
-      saved(`案${plan} の置換を保存しました`);
-      grid.render();
-    } catch (e) {
-      fail(e);
-    }
-  });
-  main.append(card("置換", [select, run], body));
+  main.append(card("置換", [select], body));
   grid.focus();
 }
 
@@ -766,21 +805,17 @@ async function gridScreen(main, cur) {
   let plan = S.plan;
   let cols = []; // 親品番
   let rows = []; // { part, cells: 列の位置ごとの値, origin, problems }
-  let original = new Map(); // 「親品番\t品番」 → 読んだ値
-  const fromReplace = new Set(); // 置換から入った品番
+  let original = new Map(); // 「親品番\t品番」 → 保存済みの値
   const key = (product, part) => `${product}\t${part}`;
   const load = async () => {
     const d = S.number ? await api("GET", "/api/v2/grid", q({ plan })) : { columns: [], rows: [] };
     cols = d.columns.slice();
     rows = d.rows.map((r) => ({ part: r.part, cells: cols.map((c) => r.cells[c] ?? ""), origin: r.origin, problems: r.problems || {}, locked: r.locked || {} }));
     original = new Map();
-    fromReplace.clear();
     for (const r of d.rows) {
       for (const [c, v] of Object.entries(r.cells)) original.set(key(c, r.part), v);
-      if (r.origin) fromReplace.add(r.part);
     }
     await lookup([...cols, ...rows.map((r) => r.part)]);
-    cur.dirty = false;
   };
   await load();
   const body = el("div");
@@ -837,10 +872,12 @@ async function gridScreen(main, cur) {
       } else if (r >= 2 && c >= 4) {
         const row = rows[r - 2];
         if (!row || !cols[c - 4]) return;
+        // 数でない数量はその場で弾く（入れずに元の値のまま）
+        if (text !== "" && !isNumber(text)) return alert(`数量は数で入力してください（${row.part} × ${cols[c - 4]}「${text}」）`);
         row.cells[c - 4] = text;
         row.problems = {};
       } else return;
-      cur.dirty = true;
+      saver.schedule();
     },
     changed() {
       lookup([...cols, ...rows.map((r) => r.part)]).then((got) => got && grid.render()).catch(fail);
@@ -863,7 +900,8 @@ async function gridScreen(main, cur) {
   };
   const grid = new Grid(body, model);
 
-  const save = async () => {
+  // 保存済みの値と違うセルだけを送る。打っている途中の値は読み直さず、印（要確認・置換の行）だけ受け取る
+  const saver = autosaver(cur, async () => {
     const now = new Map();
     const rowOf = new Map();
     rows.forEach((row, i) => {
@@ -871,37 +909,43 @@ async function gridScreen(main, cur) {
       cols.forEach((code, j) => {
         if (!code) return;
         const value = row.cells[j] ?? "";
-        if (value !== "" && !isNumber(value)) throw new Error(`数量は数で入力してください（${row.part} × ${code}「${value}」）`);
         if (value !== "") now.set(key(code, row.part), value);
         rowOf.set(key(code, row.part), i);
       });
     });
     const cells = [];
-    let touchesReplace = false;
     for (const k of new Set([...original.keys(), ...now.keys()])) {
       if (same(original.get(k), now.get(k))) continue;
       const [product, part] = k.split("\t");
-      if (original.has(k) && fromReplace.has(part)) touchesReplace = true;
       cells.push({ product, part, value: now.get(k) ?? null, row: rowOf.get(k) ?? 0 });
     }
-    if (touchesReplace && !confirm("置換から入った行を書き換えます。よろしいですか？")) return;
-    await api("PUT", "/api/v2/grid", { number: S.number, plan },
+    const d = await api("PUT", "/api/v2/grid", { number: S.number, plan },
       { columns: cols.filter(Boolean), rows: rows.map((r) => r.part).filter(Boolean), cells });
-    await load();
-    saved(`案${plan} のグリッドを保存しました`);
+    for (const c of cells) {
+      if (c.value === null) original.delete(key(c.product, c.part));
+      else original.set(key(c.product, c.part), c.value);
+    }
+    const byPart = new Map(d.rows.map((r) => [r.part, r]));
+    for (const row of rows) {
+      const got = byPart.get(row.part);
+      row.problems = got ? got.problems || {} : {};
+      row.locked = got ? got.locked || {} : {};
+      row.origin = got ? got.origin : null;
+    }
     grid.render();
-  };
-  const run = el("button", { class: "btn pri", disabled: ro, onclick: () => save().catch(fail) }, "保存");
+  }, async () => {
+    await load();
+    grid.render();
+  });
   const tabs = el("div", { class: "tabs" });
   const drawTabs = () => {
     fill(tabs,
       S.plans.map((p) => el("button", { class: p === plan ? "on" : "", onclick: () => switchPlan(p) }, `案${p}`)),
       ro ? null : el("button", {
         onclick: async () => {
-          if (!confirmLeave(cur)) return;
+          await leave(cur);
           try {
             const p = await addPlan();
-            cur.dirty = false;
             await switchPlan(p);
             done(`案${p} を追加しました`);
           } catch (e) {
@@ -911,7 +955,8 @@ async function gridScreen(main, cur) {
       }, "＋"));
   };
   const switchPlan = async (p) => {
-    if (p === plan || !confirmLeave(cur)) return drawTabs();
+    if (p === plan) return drawTabs();
+    await leave(cur);
     plan = S.plan = p;
     drawTabs();
     await load().catch(fail);
@@ -931,7 +976,7 @@ async function gridScreen(main, cur) {
     while (cols.length && !cols[cols.length - 1]) cols.pop();
     for (const row of rows) row.cells.length = Math.min(row.cells.length, cols.length);
     cols.push(...fresh);
-    cur.dirty = true;
+    saver.schedule();
     model.changed();
     grid.render();
     return fresh.length;
@@ -939,7 +984,6 @@ async function gridScreen(main, cur) {
   main.append(card(tabs, [
     el("button", { class: "btn", onclick: whereUsed, disabled: !S.number }, "使用先"),
     el("button", { class: "btn", onclick: conditionsDialog, disabled: !S.number }, "計算条件"),
-    run,
   ], body));
   grid.focus();
 }
@@ -958,7 +1002,7 @@ async function whereUsedDialog(code, onAdd = null) {
           const chosen = checks.filter((c) => c.checked).map((c) => c.value);
           if (!chosen.length) return alert("列に足す製品に印を付けてください");
           const n = onAdd(chosen);
-          done(n ? `${n} 製品を列に足しました（［保存］を押すまで保存されません）` : "選んだ製品はもう列にあります");
+          done(n ? `${n} 製品を列に足しました` : "選んだ製品はもう列にあります");
         };
         fill(list, el("table", { class: "list", style: "margin-top:8px" },
           el("tr", {}, onAdd ? el("th", {}, all) : null, el("th", {}, "品番"), el("th", {}, "名称")),
@@ -988,28 +1032,36 @@ async function conditionsDialog() {
     const d = await api("GET", "/api/v2/conditions", q());
     const inputs = new Map();
     const ro = !canWrite();
+    const owner = {};
+    const saver = autosaver(owner, async () => {
+      const annual = {};
+      for (const [p, input] of inputs) annual[p] = input.value.trim() || null;
+      await api("PUT", "/api/v2/conditions", { number: S.number }, { annual });
+    }, async () => {
+      const again = await api("GET", "/api/v2/conditions", q());
+      for (const r of again.rows) if (inputs.has(r.product)) inputs.get(r.product).value = r.annual ?? "";
+    });
     const box = dialog("計算条件", el("table", { class: "list" },
       el("tr", {}, el("th", {}, "対象品番"), el("th", {}, "年間台数（部品表）"), el("th", {}, "年間台数")),
       d.rows.map((r) => {
         const input = el("input", { class: "in", value: r.annual ?? "", readonly: ro, style: "min-width:90px;width:100px;text-align:right" });
+        let kept = input.value;
+        // 数でない台数はその場で弾く（元の値に戻す）。通った値はその場で一時保存
+        input.addEventListener("change", () => {
+          const text = input.value.trim();
+          if (text !== "" && !isNumber(text)) {
+            alert(`年間台数は数で入力してください（${r.product}「${text}」）`);
+            input.value = kept;
+            return;
+          }
+          kept = input.value;
+          saver.schedule();
+        });
         inputs.set(r.product, input);
         return el("tr", {}, el("td", {}, r.product), el("td", { class: "r" }, fmt(r.bom_annual)), el("td", {}, input));
       })), [
       el("span", { class: "sp" }),
-      el("button", {
-        class: "btn pri", disabled: ro, onclick: async () => {
-          const annual = {};
-          for (const [p, input] of inputs) annual[p] = input.value.trim() || null;
-          try {
-            await api("PUT", "/api/v2/conditions", { number: S.number }, { annual });
-            box.close();
-            saved("計算条件（年間台数）を保存しました");
-          } catch (e) {
-            fail(e);
-          }
-        },
-      }, "保存"),
-      el("button", { class: "btn", onclick: () => box.close() }, "閉じる"),
+      el("button", { class: "btn", onclick: async () => { await saver.flush(); box.close(); } }, "閉じる"),
     ]);
   } catch (e) {
     fail(e);
@@ -1030,7 +1082,6 @@ async function rewriteScreen(main, cur) {
       rows = d.rows.map((r) => ({ ...r, balloon: r.balloon ?? "", fresh: r.before_part === null }));
     }
     await lookup(rows.map((r) => r.part));
-    cur.dirty = false;
   };
   await load();
   const body = el("div");
@@ -1066,8 +1117,10 @@ async function rewriteScreen(main, cur) {
       const row = rows[r];
       const field = { 1: "parent", 2: "balloon", 3: "part", 5: "quantity" }[c];
       if ((c === 1 || c === 2) && !row.fresh) return;
+      // 数でない数量はその場で弾く（入れずに元の値のまま）
+      if (c === 5 && text !== "" && !isNumber(text)) return alert(`数量は数で入力してください（${row.part || "品番なし"}「${text}」）`);
       row[field] = text;
-      cur.dirty = true;
+      saver.schedule();
     },
     changed() {
       lookup(rows.map((r) => r.part)).then((got) => got && grid.render()).catch(fail);
@@ -1077,39 +1130,28 @@ async function rewriteScreen(main, cur) {
   const productSelect = el("select", { class: "in", style: "min-width:90px" }, S.targets.map((p) => el("option", { value: p }, p)));
   productSelect.value = product;
   productSelect.addEventListener("change", async () => {
-    if (!confirmLeave(cur)) {
-      productSelect.value = product;
-      return;
-    }
+    await leave(cur);
     product = productSelect.value;
     await load().catch(fail);
     grid.render();
   });
-  const select = planSelect(plan, async (value, sel) => {
-    if (!confirmLeave(cur)) {
-      sel.value = plan;
-      return;
-    }
+  const select = planSelect(plan, async (value) => {
+    await leave(cur);
     plan = S.plan = value;
     await load().catch(fail);
     grid.render();
   });
-  const run = el("button", { class: "btn pri", disabled: ro || !product }, "保存");
-  run.addEventListener("click", async () => {
-    try {
-      const send = rows.filter((r) => r.part).map((r) => {
-        if (!r.parent) throw new Error(`親を入力してください（${r.part}）`);
-        return { parent: r.parent, balloon: r.balloon, part: r.part, quantity: r.quantity };
-      });
-      await api("PUT", "/api/v2/rewrite", { number: S.number, plan }, { product, rows: send });
-      await load();
-      saved(`案${plan} の ${product} の書き換えを保存しました`);
-      grid.render();
-    } catch (e) {
-      fail(e);
-    }
+  // 親と品番のそろった行だけを送る（親の無い行は打ちかけとして画面に残す）
+  const saver = autosaver(cur, async () => {
+    if (!product) return;
+    const send = rows.filter((r) => r.part && r.parent)
+      .map((r) => ({ parent: r.parent, balloon: r.balloon, part: r.part, quantity: r.quantity }));
+    await api("PUT", "/api/v2/rewrite", { number: S.number, plan }, { product, rows: send });
+  }, async () => {
+    await load();
+    grid.render();
   });
-  main.append(card("書き換え", [productSelect, select, run], body));
+  main.append(card("書き換え", [productSelect, select], body));
   grid.focus();
 }
 
@@ -1219,7 +1261,7 @@ async function resultScreen(main) {
   main.append(card(["結果", stamp], [
     el("button", { class: "btn", onclick: conditionsDialog }, "計算条件"),
     el("button", { class: "btn", onclick: () => download("/api/v2/export/result", q({ head }), `結果_${S.number}.xlsx`).catch(fail) }, "Excel"),
-    el("button", { class: "btn pri", onclick: compute }, "計算"),
+    el("button", { class: "btn pri", onclick: compute }, "実行"),
   ], [el("div", { class: "row" }, el("span", { class: "mini" }, "費目"), chips), table]));
 }
 

@@ -58,6 +58,8 @@ class Grid {
   }
 
   render() {
+    // 打っている途中は描き直さない（一時保存の返事で入力欄が消えないように）。確定・取り消しの時に描き直す
+    if (this.editing) return;
     const rows = [];
     const nr = this.model.nRows();
     const nc = this.model.nCols();
@@ -164,7 +166,7 @@ class Grid {
     td.append(input);
     this.editing = { r, c, input };
     input.addEventListener("keydown", (e) => this.onEditKey(e));
-    // 後回しにすると、打ったまま押した［保存］・×が書き換えより先に動き、打った物が落ちる
+    // 後回しにすると、打ったまま押したボタン・×が書き換えより先に動き、打った物が落ちる
     input.addEventListener("blur", () => this.commit());
     input.focus();
     input.setSelectionRange(input.value.length, input.value.length);

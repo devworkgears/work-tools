@@ -343,6 +343,18 @@ class StudyApiFlow(unittest.TestCase):
         self.assertLess(response.status, 300, response.body.decode("utf-8"))
         return response.json()
 
+    def test_create_with_targets_sets_them_in_one_call(self) -> None:
+        # 新規作成は対象品番を選んでから作る（作った時点で対象品番が入っている）
+        made = self.ok("POST", "/api/v2/studies", body={"title": "差し替え", "products": [P1, P2], "main_product": P2})
+        self.assertEqual(made["targets"], [P1, P2])
+        number = made["header"]["number"]
+        self.assertEqual(self.ok("GET", "/api/v2/targets", f"number={number}")["main_product"], P2)
+
+    def test_create_with_a_bad_target_makes_no_study(self) -> None:
+        raw = json.dumps({"products": [P1, 1.5]}).encode("utf-8")  # 小数の品番は元の表記が分からないので受けない
+        self.assertGreaterEqual(self.api.handle("POST", "/api/v2/studies", "", raw).status, 400)
+        self.assertEqual(self.ok("GET", "/api/v2/studies")["studies"], [])
+
     def test_flow_with_samples(self) -> None:
         imported = self.ok("POST", "/api/v2/bom/import", body={"sample": True})
         self.assertEqual(sorted(imported["tables"]), ["bom_line", "cost", "item", "volume"])
