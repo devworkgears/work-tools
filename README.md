@@ -8,7 +8,6 @@ All data here is public or dummy data.
 
 | Folder | What it does | Language |
 |---|---|---|
-| [curve-chart](curve-chart/) | Operating-range chart from Excel, in the browser | JavaScript |
 | [bom-cost](bom-cost/) | Bill-of-materials cost roll-up | Python |
 
 ## License
