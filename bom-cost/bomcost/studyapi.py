@@ -410,14 +410,15 @@ class StudyApi:
                 groups[o] = dict(replace_groups(ws.bom, ws.targets, o))
             # count＝この行が効く製品の数（風船番号の無い全部の行は、元品番を置き換えられる製品の数）
             members = groups[o].get(b, []) if b is not None else sorted({p for ps in groups[o].values() for p in ps})
-            rows.append({"old": o, "new": n, "balloon": b, "count": len(members), "overridden": marks[(o, n, b)]})
+            rows.append({"old": o, "new": n, "balloon": b, "count": len(members), "products": members,
+                         "overridden": marks[(o, n, b)]})
         return self._json({"rows": rows})
 
     def replace_groups(self, params: dict[str, str]) -> "Response":
-        """元品番を置き換えられる箇所の、風船番号ごとのまとまり（風船番号・製品の数）。保存しない。"""
+        """元品番を置き換えられる箇所の、風船番号ごとのまとまり（風船番号・使う製品とその数）。保存しない。"""
         ws = self._ws(params)
         code = input_code(params.get("code", ""), name="元品番")
-        return self._json({"code": code, "groups": [{"balloon": b, "count": len(ps)}
+        return self._json({"code": code, "groups": [{"balloon": b, "count": len(ps), "products": ps}
                                                     for b, ps in replace_groups(ws.bom, ws.targets, code)]})
 
     def put_replace(self, params: dict[str, str], body: dict[str, Any]) -> "Response":

@@ -374,7 +374,8 @@ class StudyApiFlow(unittest.TestCase):
         q = f"number={number}"
         both = self.ok("GET", "/api/v2/parts", q + f"&products={P1},{P2}")
         self.assertEqual(both["of"], 2)
-        self.assertEqual(both["parts"][0]["used"], 2)  # 2製品で共通の部品が先
+        codes = [p["code"] for p in both["parts"]]
+        self.assertEqual(codes, sorted(codes))  # 品番の順
         self.assertEqual(next(p["used"] for p in both["parts"] if p["code"] == OLD), 2)
         # 対象品番に無い製品は数えない
         self.assertEqual(self.ok("GET", "/api/v2/parts", q + f"&products={P1},ZZ9999-001")["of"], 1)
@@ -396,7 +397,11 @@ class StudyApiFlow(unittest.TestCase):
         self.assertTrue(looked[P1]["registered"])
         self.assertFalse(looked["ZZ9999-001"]["registered"])
         rows = self.ok("PUT", "/api/v2/replace", q + "&plan=A", {"rows": [{"old": OLD, "new": NEW}]})["rows"]
-        self.assertEqual(rows, [{"old": OLD, "new": NEW, "balloon": None, "count": 2, "overridden": False}])
+        self.assertEqual(rows, [{"old": OLD, "new": NEW, "balloon": None, "count": 2, "products": [P1, P2],
+                                 "overridden": False}])
+        groups = self.ok("GET", "/api/v2/replace/groups", q + f"&code={OLD}")["groups"]
+        self.assertEqual(sorted({p for g in groups for p in g["products"]}), [P1, P2])
+        self.assertTrue(all(g["count"] == len(g["products"]) for g in groups))
         grid = self.ok("PUT", "/api/v2/grid", q + "&plan=A",
                      {"columns": [P1], "rows": ["ST0050-001"], "cells": [{"product": P1, "part": "ST0050-001",
                                                                           "value": "-1"}]})

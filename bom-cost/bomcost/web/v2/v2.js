@@ -816,12 +816,12 @@ async function replaceScreen(main, cur) {
   const plan = PLAN;
   // 1行＝元品番×風船番号のまとまり（その風船番号でその品番を使う対象品番の製品全部）。
   // balloon: null＝全部の箇所・""＝風船番号の無い箇所・undefined＝元品番を打ったばかりでまだ分けていない
-  const blank = () => ({ old: "", new: "", balloon: undefined, count: null, overridden: false, mark: false });
+  const blank = () => ({ old: "", new: "", balloon: undefined, count: null, products: [], overridden: false, mark: false });
   let rows = [];
   const keyOf = (r) => `${r.old}\t${r.new}\t${r.balloon ?? "*"}`;
   const load = async () => {
     const d = S.number ? await api("GET", "/api/v2/replace", q({ plan })) : { rows: [] };
-    rows = d.rows.map((r) => ({ ...blank(), old: r.old, new: r.new, balloon: r.balloon, count: r.count, overridden: r.overridden }));
+    rows = d.rows.map((r) => ({ ...blank(), old: r.old, new: r.new, balloon: r.balloon, count: r.count, products: r.products, overridden: r.overridden }));
     await lookup(rows.flatMap((r) => [r.old, r.new]));
   };
   await load();
@@ -834,7 +834,7 @@ async function replaceScreen(main, cur) {
       return [];
     }
     return groups.filter((g) => !rows.some((r) => r !== row && r.old === row.old && r.balloon === g.balloon))
-      .map((g) => ({ ...blank(), old: row.old, new: row.new, balloon: g.balloon, count: g.count }));
+      .map((g) => ({ ...blank(), old: row.old, new: row.new, balloon: g.balloon, count: g.count, products: g.products }));
   };
   const splitTyped = async () => {
     let got = false;
@@ -849,6 +849,17 @@ async function replaceScreen(main, cur) {
   const markAll = () => {
     const all = !(rows.length && rows.every((r) => r.mark));
     for (const r of rows) r.mark = all;
+  };
+  const usersDialog = async (row) => {
+    try {
+      await lookup(row.products);
+      const box = dialog(`使う製品 ${row.old}（風船 ${balloonText(row.balloon)}）`,
+        el("table", { class: "list" }, el("tr", {}, el("th", {}, "品番"), el("th", {}, "名称")),
+          row.products.map((code) => el("tr", {}, el("td", {}, code), el("td", {}, nameCell(code).text)))),
+        [el("span", { class: "sp" }), el("button", { class: "btn", onclick: () => box.close() }, "閉じる")]);
+    } catch (e) {
+      fail(e);
+    }
   };
   const balloonText = (b) => (b === undefined ? "" : b === null ? "全部" : b === "" ? "なし" : b);
   const body = el("div");
@@ -867,7 +878,10 @@ async function replaceScreen(main, cur) {
       if (c === 2) return { text: row ? row.old : "", editable: !ro && (!row || row.balloon === undefined) };
       if (c === 3) return nameCell(row && row.old);
       if (c === 4) return { text: row ? balloonText(row.balloon) : "", cls: "c" };
-      if (c === 5) return { text: row && row.count !== null ? String(row.count) : "", cls: "r" };
+      if (c === 5) {
+        if (!row || row.count === null) return { text: "", cls: "r" };
+        return { text: String(row.count), cls: row.products.length ? "r link" : "r", title: row.products.length ? "押すと製品の一覧" : null };
+      }
       if (c === 6) return { text: row ? row.new : "", editable: !ro };
       if (c === 7) return nameCell(row && row.new);
       return row && row.overridden ? { text: "※", cls: "mark", title: "一部の製品は個別に変更あり" } : { text: "", cls: "mark" };
@@ -884,9 +898,13 @@ async function replaceScreen(main, cur) {
       row.overridden = false;
       saver.schedule();
     },
-    // 左端は行削除の印
+    // 左端は行削除の印。使う製品の数は押すと製品の一覧
     action(r, c) {
       const row = rows[r];
+      if (row && c === 5 && row.products.length) {
+        usersDialog(row);
+        return false;
+      }
       if (!row || ro || c !== 0) return false;
       row.mark = !row.mark;
       return true;
@@ -905,7 +923,10 @@ async function replaceScreen(main, cur) {
     for (const r of rows) {
       const x = got.get(keyOf(r));
       r.overridden = x ? x.overridden : false;
-      if (x) r.count = x.count;
+      if (x) {
+        r.count = x.count;
+        r.products = x.products;
+      }
     }
     grid.render();
   }, async () => {
