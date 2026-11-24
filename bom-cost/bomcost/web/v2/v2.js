@@ -148,7 +148,9 @@ function chooser({ chosen, single = false, onProducts = null, onAdd = null, ro =
   const checked = new Set(chosen.filter((c) => S.targets.includes(c)));
   const left = el("div", { class: "pane" });
   const mid = onAdd ? el("div", { class: "pane" }) : null;
-  const filter = el("input", { class: "in", style: "width:100%;box-sizing:border-box", placeholder: "品番・名称で絞り込み" });
+  // 絞り込みは品番と名称の2つの欄（③ の品番検索と同じ並び）。両方に入れた時は両方に当たる部品だけ
+  const codeBox = el("input", { class: "in", style: "width:100%;box-sizing:border-box;min-width:0" });
+  const nameBox = el("input", { class: "in", style: "width:100%;box-sizing:border-box;min-width:0" });
   let parts = [];
   let of = 0;
   const partChecks = new Map();
@@ -195,13 +197,14 @@ function chooser({ chosen, single = false, onProducts = null, onAdd = null, ro =
       onAdd(codes);
       for (const box of partChecks.values()) box.checked = false;
     });
-    fill(mid, el("div", { class: "t" }, "部品", midNote), el("div", { class: "row" }, filter), midTable,
+    fill(mid, el("div", { class: "t" }, "部品", midNote), el("div", { class: "row" }, el("label", { class: "f", style: "flex:1;min-width:0" }, "品番", codeBox), el("label", { class: "f", style: "flex:1;min-width:0" }, "名称", nameBox)), midTable,
       el("div", { class: "row" }, el("span", { class: "sp" }), add));
   }
   const drawMid = () => {
     if (!mid) return;
-    const word = filter.value.trim().toLowerCase();
-    const shown = parts.filter((p) => !word || p.code.toLowerCase().includes(word) || (p.name || "").toLowerCase().includes(word));
+    const code = codeBox.value.trim().toLowerCase();
+    const name = nameBox.value.trim().toLowerCase();
+    const shown = parts.filter((p) => (!code || p.code.toLowerCase().includes(code)) && (!name || (p.name || "").toLowerCase().includes(name)));
     midNote.textContent = note ?? `印の ${of} 製品の部品`;
     fill(midTable, el("table", { class: "list" }, el("tr", {}, el("th", {}, ""), el("th", {}, "品番"), el("th", { class: "r", title: "印を付けた製品のうち、使う製品の数" }, "使う"), el("th", {}, "名称")),
       shown.map((p) => {
@@ -220,7 +223,8 @@ function chooser({ chosen, single = false, onProducts = null, onAdd = null, ro =
     drawLeft();
     loadParts().catch(fail);
   };
-  filter.addEventListener("input", drawMid);
+  codeBox.addEventListener("input", drawMid);
+  nameBox.addEventListener("input", drawMid);
   const ready = (async () => {
     await lookup(S.targets);
     drawLeft();
