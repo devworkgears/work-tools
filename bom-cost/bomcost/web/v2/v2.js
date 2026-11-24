@@ -1,4 +1,4 @@
-// 設計検討の画面。② から ③〜⑧ を開き、閉じると ② へ戻る。入れた値はその場で一時保存する（⑦の［実行］は点検と計算だけで、書かない）。
+// 設計検討の画面。② から ③ はその場で、④〜⑧ は別の窓で開く（② は開いたまま）。入れた値はその場で一時保存する（⑦の［実行］は点検と計算だけで、書かない）。
 "use strict";
 
 const NUM = { 2: "②", 3: "③", 4: "④", 5: "⑤", 6: "⑥", 7: "⑦", 8: "⑧" };
@@ -14,6 +14,14 @@ const S = {
 };
 const items = new Map(); // 品番 → 右の列の値（/api/v2/lookup）
 let current = null; // 開いている画面 { key, saver }
+
+// 別の窓: ② から ④〜⑧ を開く。窓の URL に画面・検討番号・版・処理を載せる
+const NAMES = { 4: "置換", 5: "グリッド画面", 6: "変更一覧", 7: "結果", 8: "書き換え" };
+const PARAMS = new URLSearchParams(location.search);
+const POPUP = PARAMS.has("screen");
+// 窓どうしの知らせ。saved＝その検討を一時保存した（ほかの窓は戻った時に読み直す）・switch＝② が別の検討・版に替えた（別の窓は閉じる）
+const channel = "BroadcastChannel" in window ? new BroadcastChannel("bomcost-v2") : null;
+let stale = false;
 
 // 道具 ------------------------------------------------------------------
 
@@ -268,7 +276,10 @@ function autosaver(owner, save, reload) {
   let chain = Promise.resolve();
   const run = () => {
     timer = null;
-    chain = chain.then(save).then(() => done("一時保存しました")).catch(async (e) => {
+    chain = chain.then(save).then(() => {
+      done("一時保存しました");
+      tell("saved");
+    }).catch(async (e) => {
       fail(e);
       try {
         await reload();
@@ -296,6 +307,51 @@ function autosaver(owner, save, reload) {
   return saver;
 }
 
+// 別の窓 --------------------------------------------------------------
+
+function tell(type) {
+  if (channel) channel.postMessage({ type, number: S.number, version: S.version });
+}
+
+// 同じ名前の窓が同じ検討の同じ画面を出していれば前に出すだけ（読み直すと打ちかけが消えるため）
+function openWindow(key) {
+  const url = location.pathname + query({ screen: key, number: S.number, version: S.version ?? "", mode: S.mode });
+  const w = window.open("", `bomcost-${key}`, "popup,width=1280,height=820");
+  if (!w) return false;
+  let same = false;
+  try {
+    same = w.location.pathname + w.location.search === url;
+  } catch (_) {
+    // 読めない窓は開き直す
+  }
+  if (!same) w.location.href = url;
+  w.focus();
+  return true;
+}
+
+if (channel) channel.onmessage = (e) => {
+  const m = e.data || {};
+  if (m.type === "switch" && POPUP && (m.number !== S.number || m.version !== S.version)) {
+    leave().finally(() => window.close());
+  } else if (m.type === "saved" && S.number && m.number === S.number && !stale) {
+    stale = true;
+    done("ほかの窓で一時保存がありました（この窓に戻ると読み直します）");
+  }
+};
+
+// ほかの窓で保存があった時は、この窓に戻った時に読み直す。打ちかけ・送りかけがある間と ⑦（［実行］で計算し直す）は描き直さない
+window.addEventListener("focus", async () => {
+  if (!stale || !current || !S.number) return;
+  if ((Grid.active && Grid.active.editing) || (current.saver && current.saver.pending)) return;
+  stale = false;
+  try {
+    await loadStudy(S.number, S.version, false);
+    if (current.key !== 7) openScreen(current.key);
+  } catch (e) {
+    fail(e);
+  }
+});
+
 // 画面の枠 --------------------------------------------------------------
 
 function card(title, tools, body) {
@@ -322,7 +378,8 @@ async function openScreen(key) {
 
 async function closeScreen() {
   await leave();
-  openHub();
+  if (POPUP) window.close();
+  else openHub();
 }
 
 async function openHub() {
@@ -343,7 +400,10 @@ async function loadStudy(number, version, render = true) {
 }
 
 function applyStudy(data) {
-  if (S.number !== data.header.number || S.version !== data.version) items.clear();
+  if (S.number !== data.header.number || S.version !== data.version) {
+    items.clear();
+    if (!POPUP && S.number) tell("switch");
+  }
   S.number = data.header.number;
   S.header = data.header;
   S.version = data.version;
@@ -406,7 +466,12 @@ async function hubScreen(main, cur) {
   const needStudy = !S.number;
   const big = (key, label, extra) => el("button", {
     class: "btn big", disabled: key !== 3 && needStudy,
-    onclick: async () => { await leave(cur); openScreen(key); },
+    onclick: async () => {
+      // ④〜⑧ は別の窓（窓を開くのはクリックのすぐ後でないと止められるので、保存を送るより先）。開けなければこの窓で開く
+      if (NAMES[key] && S.number && openWindow(key)) return leave(cur);
+      await leave(cur);
+      openScreen(key);
+    },
   }, label, extra);
   const release = el("button", { class: "btn big", style: "margin-left:24px;align-self:center", disabled: !canWrite() }, "版数取得");
   release.addEventListener("click", async () => {
@@ -448,6 +513,10 @@ async function hubScreen(main, cur) {
 async function setMode(mode) {
   await leave();
   if (mode === "new") {
+    if (S.number) {
+      S.number = "";
+      tell("switch");
+    }
     Object.assign(S, { number: "", version: null, header: null, versions: [], targets: [], problems: 0,
       draft: { header: {}, targets: [], main: null } });
     items.clear();
@@ -1426,7 +1495,21 @@ const SCREENS = {
   8: rewriteScreen,
 };
 
+// 別の窓は URL の検討を読んでその画面を開く
+async function openFromUrl() {
+  const key = Number(PARAMS.get("screen"));
+  if (!NAMES[key]) return done("開く画面が違います");
+  S.mode = ["edit", "view"].includes(PARAMS.get("mode")) ? PARAMS.get("mode") : "edit";
+  try {
+    await loadStudy(PARAMS.get("number") || "", PARAMS.get("version") || null, false);
+  } catch (e) {
+    return done(`読込に失敗しました（${e && e.message ? e.message : e}）`);
+  }
+  document.title = `${NUM[key]} ${label(NAMES[key])} ${S.number}`;
+  openScreen(key);
+}
+
 // 語の読み替えを受け取ってから最初の画面を描く（受け取れなくても元の語で開く）
 api("GET", "/api/v2/labels")
   .then((d) => Object.assign(LABELS, d.labels), fail)
-  .finally(() => openScreen(2));
+  .finally(() => (POPUP ? openFromUrl() : openScreen(2)));
