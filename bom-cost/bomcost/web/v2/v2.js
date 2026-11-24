@@ -1,7 +1,7 @@
-// 設計検討の画面。② から ③ はその場で、④〜⑨ は別の窓で開く（② は開いたまま）。入れた値はその場で一時保存する（⑦の［実行］は点検と計算だけで、書かない）。
+// 設計検討の画面。② から ③ はその場で、④〜⑩ は別の窓で開く（② は開いたまま）。入れた値はその場で一時保存する（⑦の［実行］は点検と計算だけで、書かない）。
 "use strict";
 
-const NUM = { 2: "②", 3: "③", 4: "④", 5: "⑤", 6: "⑥", 7: "⑦", 8: "⑧", 9: "⑨" };
+const NUM = { 2: "②", 3: "③", 4: "④", 5: "⑤", 6: "⑥", 7: "⑦", 8: "⑧", 9: "⑨", 10: "⑩" };
 const S = {
   mode: "edit", // new・edit・view
   number: "",
@@ -15,8 +15,8 @@ const S = {
 const items = new Map(); // 品番 → 右の列の値（/api/v2/lookup）
 let current = null; // 開いている画面 { key, saver }
 
-// 別の窓: ② から ④〜⑨ を開く。窓の URL に画面・検討番号・版・処理を載せる
-const NAMES = { 4: "置換", 5: "グリッド画面", 6: "変更一覧", 7: "結果", 8: "書き換え", 9: "仮品番" };
+// 別の窓: ② から ④〜⑩ を開く。窓の URL に画面・検討番号・版・処理を載せる
+const NAMES = { 4: "置換", 5: "グリッド画面", 6: "変更一覧", 7: "結果", 8: "書き換え", 9: "仮品番", 10: "製品の費目" };
 const PARAMS = new URLSearchParams(location.search);
 const POPUP = PARAMS.has("screen");
 // 窓どうしの知らせ。saved＝その検討を一時保存した（ほかの窓は戻った時に読み直す）・switch＝② が別の検討・版に替えた（別の窓は閉じる）
@@ -506,7 +506,7 @@ async function hubScreen(main, cur) {
         run))),
     el("div", { class: "groups" },
       el("fieldset", { class: "grp" }, big(3, "対象品番")),
-      el("fieldset", { class: "grp" }, big(4, "置換"), big(5, "グリッド画面"), big(8, "書き換え"), big(9, "仮品番")),
+      el("fieldset", { class: "grp" }, big(4, "置換"), big(5, "グリッド画面"), big(8, "書き換え"), big(9, "仮品番"), big(10, "製品の費目")),
       el("fieldset", { class: "grp" }, big(6, "変更一覧", S.problems ? [" ", el("span", { class: "pill warn" }, S.problems)] : null), big(7, "結果")),
       release),
   );
@@ -1430,18 +1430,34 @@ async function changesScreen(main) {
 
 // ⑦ 結果 -----------------------------------------------------------------
 
+// 費目は式の並び（サーバの HEADS と同じ名前）。最初は全部を並べる
+const RESULT_HEADS = [["all", "全部"], ["material", "材料費小計"], ["processing", "社内加工費"], ["amortization", "償却費"],
+  ["adjustment", "調整費"], ["material_total", "材料費合計"], ["indirect", "間接費"], ["direct", "直接費"], ["total", "製造原価"]];
+
+function signed(v) {
+  if (v === null || v === undefined) return "—";
+  const n = Number(v);
+  return (n < 0 ? "−" : n > 0 ? "+" : "") + fmt(String(Math.abs(n)));
+}
+
+function tone(v) {
+  const n = Number(v);
+  return v === null || v === undefined ? "" : n < 0 ? " minus" : n > 0 ? " plus" : "";
+}
+
 async function resultScreen(main) {
-  let head = "total";
+  let head = "all";
   let data = null;
+  const plan = PLAN;
   const stamp = el("span", { class: "mini", style: "font-weight:400" });
-  const table = el("div");
+  const table = el("div", { style: "overflow:auto" });
   const chips = el("div", { class: "chips" });
-  const drawChips = () => fill(chips, [["total", "合計"], ["material", "材料"], ["processing", "加工"], ["amortization", "型費"]].map(([k, label]) =>
+  const drawChips = () => fill(chips, RESULT_HEADS.map(([k, label]) =>
     el("button", { class: "chip" + (head === k ? " on" : ""), onclick: () => { head = k; drawChips(); if (data) compute(); } }, label)));
-  const draw = () => {
-    if (!data) return table.replaceChildren();
+  // 1つの費目: 行＝対象品番、列＝今と案
+  const drawOne = () => {
     const plans = data.plans;
-    table.replaceChildren(el("table", { class: "res" },
+    return el("table", { class: "res" },
       el("tr", {}, el("th", {}, "対象品番"), el("th", { class: "r" }, "年間台数"), el("th", { class: "r" }, "今"),
         plans.map((p) => el("th", { class: "r" }, `案${p}`))),
       data.rows.map((r) => el("tr", {},
@@ -1450,25 +1466,38 @@ async function resultScreen(main) {
         el("td", { class: "r" + (r.now_incomplete ? " inc" : ""), title: r.now_incomplete ? "不完全" : null }, fmt(r.now)),
         plans.map((p) => el("td", { class: "r" + (r.incomplete[p] ? " inc" : ""), title: r.incomplete[p] ? "不完全" : null }, fmt(r.plans[p]))))),
       el("tr", {}, el("th", {}, "年間の影響"), el("th", {}), el("th", {}),
-        plans.map((p) => {
-          const v = data.impact[p];
-          const n = Number(v);
-          return el("th", {
-            class: "r" + (n < 0 ? " minus" : n > 0 ? " plus" : "") + (data.impact_incomplete[p] ? " inc" : ""),
-            title: data.impact_incomplete[p] ? "不完全" : null,
-          }, man(v));
-        })),
+        plans.map((p) => el("th", { class: "r" + tone(data.impact[p]) + (data.impact_incomplete[p] ? " inc" : ""),
+          title: data.impact_incomplete[p] ? "不完全" : null }, man(data.impact[p])))),
       // 年間の影響 ÷ 年間台数の合計（1台あたりの増減）
       el("tr", {}, el("th", {}, "台数の加重平均"), el("th", {}), el("th", { class: "mini" }, "1台あたり"),
-        plans.map((p) => {
-          const v = data.weighted[p];
-          const n = Number(v);
-          return el("th", {
-            class: "r" + (v === null ? "" : n < 0 ? " minus" : n > 0 ? " plus" : "") + (data.impact_incomplete[p] ? " inc" : ""),
-            title: data.impact_incomplete[p] ? "不完全" : null,
-          }, v === null ? "—" : (n < 0 ? "−" : n > 0 ? "+" : "") + fmt(String(Math.abs(n))));
-        }))));
+        plans.map((p) => el("th", { class: "r" + tone(data.weighted[p]) + (data.impact_incomplete[p] ? " inc" : ""),
+          title: data.impact_incomplete[p] ? "不完全" : null }, signed(data.weighted[p])))));
   };
+  // 費目全部: 行＝対象品番、列＝費目。セルは案の値と、その下に今との差（今の値は押さえると出る）
+  const drawAll = () => {
+    const heads = data.heads;
+    const rows = heads.length ? heads[0].rows : [];
+    return el("table", { class: "res" },
+      el("tr", {}, el("th", {}, "対象品番"), el("th", { class: "r" }, "年間台数"), heads.map((h) => el("th", { class: "r" }, h.label))),
+      rows.map((r0, i) => el("tr", {},
+        el("td", {}, r0.product),
+        el("td", { class: "r" }, fmt(r0.annual)),
+        heads.map((h) => {
+          const r = h.rows[i];
+          const after = r.plans[plan];
+          const diff = after === null || r.now === null ? null : Number(after) - Number(r.now);
+          const inc = r.incomplete[plan] || r.now_incomplete;
+          return el("td", { class: "r" + (inc ? " inc" : ""), title: `今 ${fmt(r.now) || "—"}${inc ? "・不完全" : ""}` },
+            fmt(after), el("div", { class: "d" + tone(diff) }, diff === null ? "" : signed(String(diff))));
+        }))),
+      el("tr", {}, el("th", {}, "年間の影響"), el("th", {}),
+        heads.map((h) => el("th", { class: "r" + tone(h.impact[plan]) + (h.impact_incomplete[plan] ? " inc" : ""),
+          title: h.impact_incomplete[plan] ? "不完全" : null }, man(h.impact[plan])))),
+      el("tr", {}, el("th", {}, "台数の加重平均"), el("th", { class: "mini" }, "1台あたり"),
+        heads.map((h) => el("th", { class: "r" + tone(h.weighted[plan]) + (h.impact_incomplete[plan] ? " inc" : ""),
+          title: h.impact_incomplete[plan] ? "不完全" : null }, signed(h.weighted[plan])))));
+  };
+  const draw = () => fill(table, data ? (data.head === "all" ? drawAll() : drawOne()) : null);
   const compute = async () => {
     try {
       data = await api("GET", "/api/v2/calc", q({ head }));
@@ -1485,6 +1514,63 @@ async function resultScreen(main) {
     el("button", { class: "btn", onclick: () => download("/api/v2/export/result", q({ head }), `結果_${S.number}.xlsx`).catch(fail) }, "Excel"),
     el("button", { class: "btn pri", onclick: compute }, "実行"),
   ], [el("div", { class: "row" }, el("span", { class: "mini" }, "費目"), chips), table]));
+}
+
+// ⑩ 製品の費目 -----------------------------------------------------------
+// 対象品番ごとに、製品自身の費目（社内加工費・償却費・直接費）を書き換える。空は台帳の値のまま
+
+async function ownScreen(main, cur) {
+  const ro = !canWrite();
+  const plan = PLAN;
+  let heads = [];
+  let rows = [];
+  const load = async () => {
+    const d = await api("GET", "/api/v2/own", q({ plan }));
+    heads = d.heads;
+    rows = d.rows.map((r) => ({ product: r.product, name: r.name,
+      now: Object.fromEntries(heads.map((h) => [h.key, r.heads[h.key].now])),
+      after: Object.fromEntries(heads.map((h) => [h.key, r.heads[h.key].after ?? ""])) }));
+  };
+  await load();
+  const body = el("div");
+  // 列: # | 対象品番 | 名称 | 費目ごとに 今（台帳・読むだけ）と 変更後（打つ）
+  const model = {
+    head: () => ["", "対象品番", "名称", ...heads.flatMap((h) => [{ text: `${h.label} 今`, cls: "r" }, { text: `${h.label} 変更後`, cls: "r" }])],
+    nRows: () => rows.length,
+    nCols: () => 3 + heads.length * 2,
+    cell(r, c) {
+      const row = rows[r];
+      if (c === 0) return { text: String(r + 1), cls: "n" };
+      if (c === 1) return { text: row.product };
+      if (c === 2) return { text: row.name ?? "未登録", cls: row.name === null ? "bad" : "auto" };
+      const h = heads[Math.floor((c - 3) / 2)];
+      if ((c - 3) % 2 === 0) return { text: fmt(row.now[h.key]), cls: "r auto" };
+      const v = row.after[h.key];
+      return { text: v, editable: !ro, cls: "r" + (v !== "" && !same(v, row.now[h.key]) ? " own" : "") };
+    },
+    set(r, c, text) {
+      if (c < 3 || (c - 3) % 2 === 0) return;
+      const h = heads[Math.floor((c - 3) / 2)];
+      // 数でない値はその場で弾く（入れずに元の値のまま）
+      if (text !== "" && !isNumber(text)) return alert(`${h.label}は数で入力してください（${rows[r].product}「${text}」）`);
+      rows[r].after[h.key] = text;
+      saver.schedule();
+    },
+  };
+  const grid = new Grid(body, model);
+  const saver = autosaver(cur, async () => {
+    await api("PUT", "/api/v2/own", { number: S.number, plan },
+      { rows: rows.flatMap((r) => heads.filter((h) => r.after[h.key] !== "").map((h) => ({ product: r.product, head: h.key, value: r.after[h.key] }))) });
+  }, async () => {
+    await load();
+    grid.render();
+  });
+  main.append(card("製品の費目", [], [
+    el("div", { class: "row" }, el("span", { class: "mini" }, "空の欄は台帳の値で計算します")),
+    body,
+  ]));
+  grid.render();
+  grid.focus();
 }
 
 // ⑨ 仮品番 -------------------------------------------------------------
@@ -1600,6 +1686,7 @@ const SCREENS = {
   7: resultScreen,
   8: rewriteScreen,
   9: tempScreen,
+  10: ownScreen,
 };
 
 // 別の窓は URL の検討を読んでその画面を開く

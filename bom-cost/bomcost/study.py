@@ -13,7 +13,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, Iterable, Mapping, Sequence
 
-from .formula import breakdown, registered_own
+from .formula import COMPARE_HEADS, Breakdown, Head, breakdown, registered_own
 from .model import BomLine, CostHead, CostRow, Item, Version, Volume
 from .normalize import to_code, to_decimal, to_optional_code
 from .rollup import CostCalculator
@@ -103,6 +103,14 @@ CREATE TABLE IF NOT EXISTS v2_temp_item (
     material TEXT,
     PRIMARY KEY (study_id, position)
 );
+CREATE TABLE IF NOT EXISTS v2_own (
+    study_id INTEGER NOT NULL REFERENCES v2_study(study_id) ON DELETE CASCADE,
+    plan TEXT NOT NULL,
+    product TEXT NOT NULL,
+    head TEXT NOT NULL,
+    value TEXT NOT NULL,
+    PRIMARY KEY (study_id, plan, product, head)
+);
 CREATE TABLE IF NOT EXISTS v2_release (
     study_id INTEGER NOT NULL REFERENCES v2_study(study_id) ON DELETE CASCADE,
     version INTEGER NOT NULL,
@@ -179,8 +187,14 @@ def input_amount(value: Any, *, name: str = "数量") -> Decimal:
             raise ValueError(f"{name}の桁が多すぎます（{value}）")
     return amount
 
-HEADS: dict[str, CostHead] = {"total": CostHead.MANUFACTURING, "material": CostHead.MATERIAL,
-                               "processing": CostHead.PROCESSING, "amortization": CostHead.AMORTIZATION}
+# ⑦ の費目（式の並び）。画面と API はこの名前で指す
+HEADS: dict[str, Head] = {
+    "material": Head.MATERIAL, "processing": Head.PROCESSING, "amortization": Head.AMORTIZATION,
+    "adjustment": Head.ADJUSTMENT, "material_total": Head.MATERIAL_TOTAL, "indirect": Head.INDIRECT,
+    "direct": Head.DIRECT, "total": Head.MANUFACTURING,
+}
+# ⑩ で製品ごとに書き換える費目（製品自身の値。部品の置き換えでは変わらない）
+OWN_HEADS: dict[str, Head] = {"processing": Head.PROCESSING, "amortization": Head.AMORTIZATION, "direct": Head.DIRECT}
 
 Place = tuple[str, str, str | None, str]  # 製品・親・風船番号・品番
 
@@ -245,6 +259,8 @@ class Workspace:
     bom: Version
     attributes: Attributes = field(default_factory=dict)
     temps: list[TempRow] = field(default_factory=list)
+    # 案 → (製品, 費目の名前 OWN_HEADS) → 書き換えた値
+    owns: dict[str, dict[tuple[str, str], Decimal]] = field(default_factory=dict)
     # temps のうち部品表に混ぜた品番（品目の台帳に同じ品番がある仮品番は、台帳の方を使うので混ぜない）
     temp_merged: set[str] = field(default_factory=set)
 
@@ -430,9 +446,25 @@ def problem_count(ws: Workspace) -> int:
     return sum(1 for c in check_changes(ws) if c.problems)
 
 
-def calculate(ws: Workspace, head: CostHead = CostHead.MANUFACTURING) -> dict[str, Any]:
-    """対象品番ごとの今と案ごとの原価・年間の影響・台数の加重平均。DB は読むだけ（呼び手が渡した Workspace だけを見る）。
+def calculate(ws: Workspace, head: Head | CostHead = Head.MANUFACTURING) -> dict[str, Any]:
+    """1つの費目の、対象品番ごとの今と案ごとの原価・年間の影響・台数の加重平均。"""
+    head = Head[head.name]
+    return calculate_heads(ws, (head,))[head]
 
+
+def own_values(ws: Workspace, plan: str, product: str, own: Any) -> Any:
+    """製品自身の値に、案で書き換えた費目を当てる。"""
+    for key, head in OWN_HEADS.items():
+        value = ws.owns.get(plan, {}).get((product, key))
+        if value is not None:
+            own = own.with_value(head, value)
+    return own
+
+
+def calculate_heads(ws: Workspace, heads: Sequence[Head] = COMPARE_HEADS) -> dict[Head, dict[str, Any]]:
+    """費目ごとに、対象品番ごとの今と案ごとの原価・年間の影響・台数の加重平均。DB は読むだけ（渡した Workspace だけを見る）。
+
+    案の値＝（今の材料費小計＋部品の増減）と、製品自身の値（⑩で書き換えた費目はその値）から式で出す。
     台数の加重平均＝年間の影響 ÷ 年間の影響に入れた製品の年間台数の合計（1台あたりの増減）。台数の合計が 0 なら None。
     """
     bom = ws.bom
@@ -442,10 +474,18 @@ def calculate(ws: Workspace, head: CostHead = CostHead.MANUFACTURING) -> dict[st
     # 計算から外した変更がある製品・案は、値に不完全の印を付ける
     dropped = {(c.change.plan, c.change.product) for c in all_checked if not c.counted}
     plans = ws.plan_ids()
-    rows = []
-    impact: dict[str, Decimal] = {p: Decimal(0) for p in plans}
-    impact_incomplete: dict[str, bool] = {p: False for p in plans}
-    counted: dict[str, Decimal] = {p: Decimal(0) for p in plans}
+    results: dict[Head, dict[str, Any]] = {
+        h: {"head": h, "plans": plans, "rows": [], "impact": {p: Decimal(0) for p in plans},
+            "impact_incomplete": {p: False for p in plans}, "counted": {p: Decimal(0) for p in plans}}
+        for h in heads}
+
+    def pick(b: Breakdown | None, head: Head) -> tuple[Decimal | None, bool]:
+        if b is None:
+            return None, True
+        if head is Head.MATERIAL:
+            return b.value(head), False
+        return b.value(head), b.is_incomplete(head)
+
     for product in ws.targets:
         own = registered_own(bom, product)
         try:
@@ -455,29 +495,12 @@ def calculate(ws: Workspace, head: CostHead = CostHead.MANUFACTURING) -> dict[st
         now_material = None if material_result is None else material_result.total
         # 組立品の未登録は子から足し上げて出るので、不完全は子の無い品目の未登録だけ
         now_missing = material_result is None or any(not bom.children(m) for m in material_result.missing)
-
-        def value(material: Decimal | None) -> tuple[Decimal | None, bool]:
-            if material is None:
-                return None, True
-            if head is CostHead.MATERIAL:
-                return material, False
-            b = breakdown(material, own)
-            return b.value(head), b.is_incomplete(head)
-
-        now, now_flag = value(now_material)
+        now_b = None if now_material is None else breakdown(now_material, own)
         annual = ws.conditions.get(product)
         if annual is None and bom.volume(product) is not None:
             annual = bom.volume(product).annual
         usage = product_usage(bom, product)
-        row: dict[str, Any] = {
-            "product": product,
-            "name": bom.items[product].name if product in bom.items else None,
-            "annual": annual,
-            "now": now,
-            "now_incomplete": now_missing or now_flag,
-            "plans": {},
-            "incomplete": {},
-        }
+        after_b: dict[str, tuple[Breakdown | None, bool]] = {}
         for plan in plans:
             delta = Decimal(0)
             missing = False
@@ -489,19 +512,53 @@ def calculate(ws: Workspace, head: CostHead = CostHead.MANUFACTURING) -> dict[st
                     missing = True
                     continue
                 delta += c.change.delta * usage.get(c.change.parent, Decimal(0)) * unit
-            after, flag = value(None if now_material is None else now_material + delta)
-            row["plans"][plan] = after
-            row["incomplete"][plan] = now_missing or flag or missing or (plan, product) in dropped
-            if after is None or now is None or annual is None:
-                impact_incomplete[plan] = True
-            else:
-                impact[plan] += (after - now) * annual
-                counted[plan] += annual
-                impact_incomplete[plan] |= row["incomplete"][plan]
-        rows.append(row)
-    weighted = {p: impact[p] / counted[p] if counted[p] else None for p in plans}
-    return {"head": head, "plans": plans, "rows": rows, "impact": impact, "impact_incomplete": impact_incomplete,
-            "weighted": weighted}
+            b = None if now_material is None else breakdown(now_material + delta, own_values(ws, plan, product, own))
+            after_b[plan] = (b, missing)
+        for head in heads:
+            res = results[head]
+            now, now_flag = pick(now_b, head)
+            row: dict[str, Any] = {
+                "product": product,
+                "name": bom.items[product].name if product in bom.items else None,
+                "annual": annual,
+                "now": now,
+                "now_incomplete": now_missing or now_flag,
+                "plans": {},
+                "incomplete": {},
+            }
+            for plan in plans:
+                b, missing = after_b[plan]
+                after, flag = pick(b, head)
+                row["plans"][plan] = after
+                row["incomplete"][plan] = now_missing or flag or missing or (plan, product) in dropped
+                if after is None or now is None or annual is None:
+                    res["impact_incomplete"][plan] = True
+                else:
+                    res["impact"][plan] += (after - now) * annual
+                    res["counted"][plan] += annual
+                    res["impact_incomplete"][plan] |= row["incomplete"][plan]
+            res["rows"].append(row)
+    for res in results.values():
+        counted = res.pop("counted")
+        res["weighted"] = {p: res["impact"][p] / counted[p] if counted[p] else None for p in plans}
+    return results
+
+
+def own_rows(ws: Workspace, plan: str) -> list[dict[str, Any]]:
+    """⑩ の行: 対象品番ごとの名称と、書き換える費目の今の値（台帳）と書き換えた値。"""
+    rows = []
+    for product in ws.targets:
+        own = registered_own(ws.bom, product)
+        values = {}
+        for key, head in OWN_HEADS.items():
+            now = own.value(head)
+            # 社内加工費は台帳に無ければ 0 で計算する（未登録の印を付けない）ので、今の値は台帳の値のまま見せる
+            if head is Head.PROCESSING:
+                now = ws.bom.cost_value(product, CostHead.PROCESSING)
+            values[key] = {"now": now, "after": ws.owns.get(plan, {}).get((product, key))}
+        rows.append({"product": product, "name": ws.bom.items[product].name if product in ws.bom.items else None,
+                     "heads": values})
+    return rows
 
 
 # 保存 -----------------------------------------------------------------------
@@ -662,12 +719,15 @@ class StudyStore:
                         "WHERE study_id = ? ORDER BY seq", (sid,))]
         conditions = {p: Decimal(a) for p, a in q("SELECT product, annual FROM v2_condition WHERE study_id = ?",
                                                   (sid,))}
+        owns: dict[str, dict[tuple[str, str], Decimal]] = {}
+        for plan, product, head, value in q("SELECT plan, product, head, value FROM v2_own WHERE study_id = ?", (sid,)):
+            owns.setdefault(plan, {})[(product, head)] = Decimal(value)
         temps: list[TempRow] = [(c, nm, _dec(m)) for c, nm, m in q(
             "SELECT code, name, material FROM v2_temp_item WHERE study_id = ? ORDER BY position", (sid,))]
         bom = self.load_bom()
         merged = merge_temps(bom, temps)
         return Workspace(n, None, header, targets, main, plans or [PlanInfo("A")], replaces, changes, conditions,
-                         bom, self.load_attributes(), temps, merged)
+                         bom, self.load_attributes(), temps=temps, temp_merged=merged, owns=owns)
 
     def add_plan(self, number: str) -> str:
         """空の案を次の名前（A〜Z の空き）で足し、その名前を返す。"""
@@ -865,6 +925,28 @@ class StudyStore:
                     self._put(sid, plan, place, delta, REWRITE)
             self._touch(sid)
 
+    # ⑩ 製品の費目 -----------------------------------------------------------
+
+    def save_owns(self, number: str, plan: str, rows: Sequence[Mapping[str, Any]]) -> None:
+        """案の製品の費目の書き換え（product・head・value）を入れ替える。値が空の行は書き換えなし（台帳の値）。"""
+        sid = self.study_id(number)
+        values: dict[tuple[str, str], Decimal] = {}
+        for r in rows:
+            head = str(r.get("head") or "")
+            if head not in OWN_HEADS:
+                raise ValueError(f"書き換える費目の指定が違います（{head}）")
+            value = r.get("value")
+            if value is None or str(value).strip() == "":
+                continue
+            product = input_code(r.get("product"), name="対象品番")
+            values[(product, head)] = input_amount(value, name=OWN_HEADS[head].value)
+        with self._conn:
+            self._ensure_plan(sid, plan)
+            self._conn.execute("DELETE FROM v2_own WHERE study_id = ? AND plan = ?", (sid, plan))
+            self._conn.executemany("INSERT INTO v2_own VALUES (?, ?, ?, ?, ?)",
+                                   [(sid, plan, p, h, str(v)) for (p, h), v in values.items()])
+            self._touch(sid)
+
     # ⑨ 仮品番 ---------------------------------------------------------------
 
     def save_temps(self, number: str, rows: Sequence[Mapping[str, Any]]) -> None:
@@ -945,6 +1027,7 @@ def _snapshot(ws: Workspace) -> dict[str, Any]:
         # 仮品番は bom の写しにも入る（変更に出る品番は写す）。画面で見せるために元の行も残す
         "temps": [[c, nm, _txt(m)] for c, nm, m in ws.temps],
         "temp_merged": sorted(ws.temp_merged),
+        "owns": {plan: [[p, h, str(v)] for (p, h), v in values.items()] for plan, values in ws.owns.items()},
         "bom": {
             "items": [[i.code, i.name, i.kind, i.specification, *(ws.attribute(i.code, n) for n, _ in ATTRIBUTES)]
                       for i in bom.items.values() if i.code in codes],
@@ -984,6 +1067,7 @@ def _from_snapshot(data: dict[str, Any], version: int) -> Workspace:
         attributes=attributes,
         temps=[(c, nm, _dec(m)) for c, nm, m in data.get("temps", [])],
         temp_merged=set(data.get("temp_merged", [])),
+        owns={plan: {(p, h): Decimal(v) for p, h, v in rows} for plan, rows in data.get("owns", {}).items()},
     )
 
 

@@ -26,6 +26,7 @@ from .rollup import CostCalculator
 from .study import (
     ATTRIBUTES,
     HEADS,
+    OWN_HEADS,
     NO_PLACE,
     OTHER_PART,
     Attributes,
@@ -34,6 +35,8 @@ from .study import (
     Workspace,
     check_changes,
     calculate,
+    calculate_heads,
+    own_rows,
     grid_locked,
     input_code,
     input_optional_code,
@@ -222,6 +225,8 @@ class StudyApi:
             ("GET", r"/api/v2/rewrite", self.rewrite),
             ("PUT", r"/api/v2/rewrite", self.put_rewrite),
             ("GET", r"/api/v2/changes", self.changes),
+            ("GET", r"/api/v2/own", self.own),
+            ("PUT", r"/api/v2/own", self.put_own),
             ("GET", r"/api/v2/temp-items", self.temp_items),
             ("PUT", r"/api/v2/temp-items", self.put_temp_items),
             ("GET", r"/api/v2/conditions", self.conditions),
@@ -567,6 +572,20 @@ class StudyApi:
                 "after": _s(c.after),
                 "delta": _s(ch.delta), "added": c.added, "problems": list(c.problems), "source": ch.source,
             })
+        # ⑩ で書き換えた製品の費目（品番の欄に費目の名前・親と風船は無し）
+        for r in own_rows(ws, plan):
+            if product and r["product"] != product:
+                continue
+            for key, v in r["heads"].items():
+                if v["after"] is None:
+                    continue
+                before = v["now"] if v["now"] is not None else (Decimal(0) if key == "processing" else None)
+                rows.append({
+                    "product": r["product"], "parent": "", "balloon": None, "part": OWN_HEADS[key].value,
+                    "name": "製品の費目", "before": _s(v["now"]), "after": _s(v["after"]),
+                    "delta": None if before is None else _s(v["after"] - before), "added": False, "problems": [],
+                    "source": "own",
+                })
         order = {p: i for i, p in enumerate(ws.targets)}
         rows.sort(key=lambda r: (order.get(r["product"], len(order)), r["product"], r["parent"],
                                  r["balloon"] or "", r["part"]))
@@ -574,6 +593,21 @@ class StudyApi:
 
     def changes(self, params: dict[str, str]) -> "Response":
         return self._json({"rows": self._change_rows(params)})
+
+    # ⑩ 製品の費目 -----------------------------------------------------------
+
+    def own(self, params: dict[str, str]) -> "Response":
+        """対象品番ごとの、書き換える費目（加工費・型費・直接費）の台帳の値と書き換えた値。"""
+        ws = self._ws(params)
+        return self._json({
+            "heads": [{"key": k, "label": h.value} for k, h in OWN_HEADS.items()],
+            "rows": [{**r, "heads": {k: {"now": _s(v["now"]), "after": _s(v["after"])} for k, v in r["heads"].items()}}
+                     for r in own_rows(ws, self._plan(params))],
+        })
+
+    def put_own(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
+        self.store.save_owns(_number(params), self._plan(params), _objects(body, "rows"))
+        return self.own({"number": _number(params), "plan": self._plan(params)})
 
     # ⑨ 仮品番 ---------------------------------------------------------------
 
@@ -607,14 +641,9 @@ class StudyApi:
         self.store.save_conditions(_number(params), annual)
         return self.conditions({"number": _number(params)})
 
-    def _calc(self, params: dict[str, str]) -> dict[str, Any]:
-        head = HEADS.get(params.get("head", "total"))
-        if head is None:
-            raise ValueError(f"費目の指定が違います（{params.get('head')}）")
-        result = calculate(self._ws(params), head)
+    @staticmethod
+    def _head_json(result: dict[str, Any]) -> dict[str, Any]:
         return {
-            "computed_at": datetime.now().replace(microsecond=0).isoformat(),
-            "head": params.get("head", "total"),
             "plans": result["plans"],
             "rows": [{**r, "annual": _s(r["annual"]), "now": _s(r["now"]),
                       "plans": {k: _s(v) for k, v in r["plans"].items()}} for r in result["rows"]],
@@ -622,6 +651,20 @@ class StudyApi:
             "impact_incomplete": result["impact_incomplete"],
             "weighted": {k: _s(v) for k, v in result["weighted"].items()},
         }
+
+    def _calc(self, params: dict[str, str]) -> dict[str, Any]:
+        """head は費目の名前（HEADS）か all（8費目を heads に並べて返す）。"""
+        key = params.get("head", "total")
+        now = datetime.now().replace(microsecond=0).isoformat()
+        if key == "all":
+            ws = self._ws(params)
+            results = calculate_heads(ws)
+            return {"computed_at": now, "head": "all", "plans": ws.plan_ids(),
+                    "heads": [{"key": k, "label": h.value, **self._head_json(results[h])} for k, h in HEADS.items()]}
+        head = HEADS.get(key)
+        if head is None:
+            raise ValueError(f"費目の指定が違います（{key}）")
+        return {"computed_at": now, "head": key, **self._head_json(calculate(self._ws(params), head))}
 
     def calc(self, params: dict[str, str]) -> "Response":
         return self._json(self._calc(params))
@@ -680,6 +723,16 @@ class StudyApi:
     def export_result(self, params: dict[str, str]) -> "Response":
         data = self._calc(params)
         plans = data["plans"]
+        if data["head"] == "all":
+            # 1行＝対象品番×費目（費目の並びは式の順）。最後に費目ごとの年間の影響と台数の加重平均
+            rows = [[r["product"], h["label"], r["annual"], r["now"], *(r["plans"][p] for p in plans)]
+                    for i in range(len(data["heads"][0]["rows"]) if data["heads"] else 0)
+                    for h in data["heads"] for r in [h["rows"][i]]]
+            rows += [["年間の影響", h["label"], None, None, *(h["impact"][p] for p in plans)] for h in data["heads"]]
+            rows += [["台数の加重平均（1台あたり）", h["label"], None, None, *(h["weighted"][p] for p in plans)]
+                     for h in data["heads"]]
+            return self._xlsx("結果", ["対象品番", "費目", "年間台数", "今", *(f"案{p}" for p in plans)], rows,
+                              set(range(2, 4 + len(plans))))
         rows = [[r["product"], r["annual"], r["now"], *(r["plans"][p] for p in plans)] for r in data["rows"]]
         rows.append(["年間の影響", None, None, *(data["impact"][p] for p in plans)])
         rows.append(["台数の加重平均（1台あたり）", None, None, *(data["weighted"][p] for p in plans)])

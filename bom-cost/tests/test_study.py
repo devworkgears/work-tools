@@ -1,6 +1,7 @@
 """設計検討（/v2/）: 3つの入力が1つの変更の集まりに書くこと・後勝ち・上書きの印・読み直しの確認・計算・版。データは架空。"""
 
 import base64
+import io
 import json
 import sqlite3
 import unittest
@@ -9,6 +10,7 @@ from decimal import Decimal
 
 from bomcost.api import Api
 from bomcost.app import static_response
+from bomcost.importer import load_openpyxl
 from bomcost.model import BomLine, CostHead, CostRow, Item, Version, Volume
 from bomcost.store import Store
 from bomcost.study import (
@@ -400,6 +402,48 @@ class StudyApiFlow(unittest.TestCase):
         # 同じ品番の2行は受けない
         raw = json.dumps({"rows": [{"code": tmp}, {"code": tmp}]}).encode("utf-8")
         self.assertGreaterEqual(self.api.handle("PUT", "/api/v2/temp-items", q, raw).status, 400)
+
+    def test_own_heads_rewrite_the_product_values_in_the_plan(self) -> None:
+        self.ok("POST", "/api/v2/bom/import", body={"sample": True})
+        number = self.ok("POST", "/api/v2/studies", body={"products": [P1, P2]})["header"]["number"]
+        q = f"number={number}"
+        before = self.ok("GET", "/api/v2/calc", q + "&head=all")
+        self.assertEqual([h["key"] for h in before["heads"]],
+                         ["material", "processing", "amortization", "adjustment", "material_total", "indirect",
+                          "direct", "total"])
+        own = self.ok("GET", "/api/v2/own", q + "&plan=A")
+        now = own["rows"][0]["heads"]["processing"]["now"]
+        self.assertEqual(own["rows"][0]["product"], P1)
+        got = self.ok("PUT", "/api/v2/own", q + "&plan=A", {"rows": [
+            {"product": P1, "head": "processing", "value": "1000"}, {"product": P1, "head": "direct", "value": ""}]})
+        self.assertEqual(got["rows"][0]["heads"]["processing"], {"now": now, "after": "1000"})
+        self.assertIsNone(got["rows"][0]["heads"]["direct"]["after"])  # 空は書き換えなし
+        after = self.ok("GET", "/api/v2/calc", q + "&head=all")
+        heads = {h["key"]: h for h in after["heads"]}
+        p1 = heads["processing"]["rows"][0]
+        self.assertEqual((p1["now"], p1["plans"]["A"]), (now, "1000"))
+        self.assertEqual(heads["processing"]["rows"][1]["plans"]["A"], heads["processing"]["rows"][1]["now"])
+        # 加工費の差は調整費・間接費を通って製造原価に効く。費目全部の値は1つの費目で出した値と同じ
+        total = Decimal(heads["total"]["rows"][0]["plans"]["A"]) - Decimal(heads["total"]["rows"][0]["now"])
+        self.assertEqual(total, (Decimal(1000) - Decimal(now)) * Decimal("1.03") * Decimal("1.11"))
+        single = self.ok("GET", "/api/v2/calc", q + "&head=total")
+        self.assertEqual((single["rows"], single["impact"]), (heads["total"]["rows"], heads["total"]["impact"]))
+        book = load_openpyxl().load_workbook(io.BytesIO(self.api.handle("GET", "/api/v2/export/result",
+                                                                        q + "&head=all", b"").body)).active
+        self.assertEqual([c.value for c in book[1]], ["対象品番", "費目", "年間台数", "今", "案A"])
+        self.assertEqual(book.max_row, 1 + 2 * 8 + 8 * 2)  # 2製品×8費目＋年間の影響と加重平均×8費目
+        # 変更一覧にも出る
+        changed = [r for r in self.ok("GET", "/api/v2/changes", q + "&plan=A")["rows"] if r["source"] == "own"]
+        self.assertEqual([(r["product"], r["before"], r["after"]) for r in changed], [(P1, now, "1000")])
+        # 版数取得で固まる
+        version = self.ok("POST", "/api/v2/release", q, {})["version"]
+        self.ok("PUT", "/api/v2/own", q + "&plan=A", {"rows": []})
+        fixed = self.ok("GET", "/api/v2/own", f"{q}&plan=A&version={version}")
+        self.assertEqual(fixed["rows"][0]["heads"]["processing"]["after"], "1000")
+        # 書き換えられない費目・数でない値は受けない
+        for row in ({"product": P1, "head": "material", "value": "1"}, {"product": P1, "head": "direct", "value": "x"}):
+            raw = json.dumps({"rows": [row]}).encode("utf-8")
+            self.assertGreaterEqual(self.api.handle("PUT", "/api/v2/own", q + "&plan=A", raw).status, 400)
 
     def test_parts_of_chosen_targets_are_in_part_number_order(self) -> None:
         self.ok("POST", "/api/v2/bom/import", body={"sample": True})
