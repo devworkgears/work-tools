@@ -160,7 +160,7 @@ class GrPlaces(FixCase):
 class Inputs(FixCase):
     def test_full_width_codes_and_numbers_are_folded(self) -> None:
         self.open(SIMPLE, ["X"])
-        self.store.save_grid(self.number, "A", ["Ｘ"], ["ＯＬＤ"], [{"product": "Ｘ", "part": "ＯＬＤ", "value": "－１"}])
+        self.store.save_grid(self.number, "A", ["Ｘ"], ["ＯＬＤ"], [{"product": "Ｘ", "part": "ＯＬＤ", "value": "１"}])
         self.store.save_replaces(self.number, "B", [("Ｓ", "ＮＥＷ")])
         self.assertEqual(self.changes(), {("X", "X", "1", "OLD"): ("-1", GRID)})
         self.assertIn(("X", "X", "2", "NEW"), {c.place for c in self.store.workspace(self.number).plan_changes("B")})

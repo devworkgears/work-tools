@@ -37,11 +37,13 @@ from .study import (
     calculate,
     calculate_heads,
     own_rows,
+    after_parts,
     grid_balloon,
     grid_locked,
     input_code,
     input_optional_code,
     nfkc,
+    occurrences,
     pair_key,
     parts_of,
     problem_count,
@@ -226,6 +228,9 @@ class StudyApi:
             ("GET", r"/api/v2/targets", self.targets),
             ("PUT", r"/api/v2/targets", self.put_targets),
             ("PUT", r"/api/v2/main-product", self.put_main),
+            ("GET", r"/api/v2/after-parts", self.after_parts),
+            ("POST", r"/api/v2/replace/apply", self.apply_replace),
+            ("POST", r"/api/v2/replace/revert", self.revert_replace),
             ("GET", r"/api/v2/replace", self.replace),
             ("GET", r"/api/v2/replace/groups", self.replace_groups),
             ("PUT", r"/api/v2/replace", self.put_replace),
@@ -472,10 +477,27 @@ class StudyApi:
         self.store.save_replaces(_number(params), self._plan(params), pairs)
         return self.replace({"number": _number(params), "plan": self._plan(params)})
 
+    # ⑪ 置換（変えた後の構成の部品を並べ、品番を打ち替えると全製品で置き換える） -------------------
+
+    def after_parts(self, params: dict[str, str]) -> "Response":
+        ws = self._ws(params)
+        items = ws.bom.items
+        return self._json({"parts": [
+            {"code": code, "name": items[code].name if code in items else None, "used": len(users), "products": users,
+             "was": was} for code, users, was in after_parts(ws, self._plan(params))]})
+
+    def apply_replace(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
+        self.store.apply_replace(_number(params), self._plan(params), body.get("old"), body.get("new"))
+        return self.after_parts({"number": _number(params), "plan": self._plan(params)})
+
+    def revert_replace(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
+        self.store.revert_replace(_number(params), self._plan(params), body.get("part"))
+        return self.after_parts({"number": _number(params), "plan": self._plan(params)})
+
     # ⑤ グリッド画面 ---------------------------------------------------------------
 
     def grid(self, params: dict[str, str]) -> "Response":
-        """列＝親品番（打った物＋変更のある製品）・行＝品番・セル＝その製品でのその品番の増減の計。
+        """列＝親品番（打った物＋変更のある製品）・行＝品番・セル＝その製品でのその品番の変えた後の数量（無い所は出さない）。
 
         balloons は行ごとに、その製品でのその品番の風船番号（風船の行に出す）。main_product は並びの基準。
         """
@@ -491,11 +513,18 @@ class StudyApi:
             if c.part not in rows:
                 rows.append(c.part)
         replace_index = {pair_key(o, n, b): i + 1 for i, (o, n, b) in enumerate(ws.replaces.get(plan, []))}
+        now: dict[str, dict[str, Decimal]] = {}
         cells: dict[str, dict[str, Decimal]] = {}
         origin: dict[str, int | None] = {}
         problem: dict[str, dict[str, bool]] = {}
         locked = {r: {p: True for p in columns if grid_locked(ws, plan, p, r)} for r in rows}
         checked = {c.change.place: c for c in check_changes(ws, changes)}
+        for r in rows:
+            for p in columns:
+                found = occurrences(ws.bom, p, r)
+                if found:
+                    now.setdefault(r, {})[p] = sum((line.quantity for line in found), Decimal(0))
+                    cells.setdefault(r, {})[p] = now[r][p]
         for c in changes:
             cells.setdefault(c.part, {})
             cells[c.part][c.product] = cells[c.part].get(c.product, Decimal(0)) + c.delta
@@ -507,6 +536,7 @@ class StudyApi:
             "columns": columns,
             "rows": [{"part": r, "origin": origin.get(r),
                       "cells": {p: _s(v) for p, v in cells.get(r, {}).items()},
+                      "now": {p: _s(v) for p, v in now.get(r, {}).items()},
                       "problems": problem.get(r, {}), "locked": locked[r],
                       "balloons": _balloons(ws, plan, columns, r)} for r in rows],
             "targets": ws.targets,
