@@ -422,7 +422,7 @@ class StudyApi:
 
     def put_replace(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
         pairs = []
-        seen: dict[str, int] = {}
+        seen: dict[tuple[str, str | None], int] = {}
         for i, r in enumerate(_objects(body, "rows"), start=1):
             old, new = (nfkc(str(r.get(k) or "")).strip() for k in ("old", "new"))
             if not old and not new:
