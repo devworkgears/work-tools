@@ -1637,10 +1637,6 @@ function exportStudy() {
 
 // ⑦ 結果 -----------------------------------------------------------------
 
-// 費目は式の並び（サーバの HEADS と同じ名前）。最初は全部を並べる
-const RESULT_HEADS = [["all", "全部"], ["material", "材料費小計"], ["processing", "加工費"], ["amortization", "償却費"],
-  ["adjustment", "諸経費"], ["material_total", "材料費合計"], ["indirect", "間接費"], ["direct", "直接費"], ["total", "製造原価"]];
-
 function signed(v) {
   if (v === null || v === undefined) return "—";
   const n = Number(v);
@@ -1652,62 +1648,83 @@ function tone(v) {
   return v === null || v === undefined ? "" : n < 0 ? " minus" : n > 0 ? " plus" : "";
 }
 
+// 今に対する差の割合。小さい差が 0.0% に見えないよう、1% 未満は小数2桁
+function percent(diff, now) {
+  if (diff === null || diff === undefined || now === null || now === undefined || Number(now) === 0) return "";
+  const v = (Number(diff) / Number(now)) * 100;
+  if (v === 0) return "0%";
+  return `${v < 0 ? "−" : "+"}${Math.abs(v).toFixed(Math.abs(v) < 1 ? 2 : 1)}%`;
+}
+
+// 上に「変更ごとの影響」（製造原価への効き方）、下に製品ごとの費目全部（今・変更後・差）
 async function resultScreen(main) {
-  let head = "all";
   let data = null;
   const plan = PLAN;
   const stamp = el("span", { class: "mini", style: "font-weight:400" });
-  const table = el("div", { style: "overflow:auto" });
-  const chips = el("div", { class: "chips" });
-  const drawChips = () => fill(chips, RESULT_HEADS.map(([k, label]) =>
-    el("button", { class: "chip" + (head === k ? " on" : ""), onclick: () => { head = k; drawChips(); if (data) compute(); } }, label)));
-  // 1つの費目: 行＝対象品番、列＝今と案
-  const drawOne = () => {
-    const plans = data.plans;
-    return el("table", { class: "res" },
-      el("tr", {}, el("th", {}, "対象品番"), el("th", { class: "r" }, "年間台数"), el("th", { class: "r" }, "今"),
-        plans.map((p) => el("th", { class: "r" }, `案${p}`))),
-      data.rows.map((r) => el("tr", {},
-        el("td", {}, r.product),
-        el("td", { class: "r" }, fmt(r.annual)),
-        el("td", { class: "r" + (r.now_incomplete ? " inc" : ""), title: r.now_incomplete ? "不完全" : null }, fmt(r.now)),
-        plans.map((p) => el("td", { class: "r" + (r.incomplete[p] ? " inc" : ""), title: r.incomplete[p] ? "不完全" : null }, fmt(r.plans[p]))))),
-      el("tr", {}, el("th", {}, "年間の影響"), el("th", {}), el("th", {}),
-        plans.map((p) => el("th", { class: "r" + tone(data.impact[p]) + (data.impact_incomplete[p] ? " inc" : ""),
-          title: data.impact_incomplete[p] ? "不完全" : null }, man(data.impact[p])))),
-      // 年間の影響 ÷ 年間台数の合計（1台あたりの増減）
-      el("tr", {}, el("th", {}, "台数の加重平均"), el("th", {}), el("th", { class: "mini" }, "1台あたり"),
-        plans.map((p) => el("th", { class: "r" + tone(data.weighted[p]) + (data.impact_incomplete[p] ? " inc" : ""),
-          title: data.impact_incomplete[p] ? "不完全" : null }, signed(data.weighted[p])))));
+  const body = el("div");
+  const incomplete = (on) => (on ? { class: "inc", title: "不完全" } : {});
+  const productsDialog = (e) => {
+    const box = dialog(`${e.kind} ${[e.old, e.new, e.head && label(e.head)].filter(Boolean).join(" → ")}`,
+      el("table", { class: "list" }, el("tr", {}, ["製品", "名称"].map((x) => el("th", {}, x)), ["1台あたりの差", "年間台数", "年間の影響"].map((x) => el("th", { class: "r" }, x))),
+        e.products.map((p) => el("tr", {}, el("td", {}, p.product), el("td", {}, p.name ?? "未登録"), el("td", { class: "r" }, signed(p.unit)),
+          el("td", { class: "r" }, fmt(p.annual) || "—"), el("td", { class: "r" }, p.impact === null ? "—" : man(p.impact))))),
+      [el("span", { class: "sp" }), el("button", { class: "btn", onclick: () => box.close() }, "閉じる")]);
   };
-  // 費目全部: 行＝対象品番、列＝費目。セルは案の値と、その下に今との差（今の値は押さえると出る）
-  const drawAll = () => {
+  // した事ごとの効き方。足すと下の表の製造原価の年間の影響になる
+  const drawEffects = () => {
+    const total = data.heads.find((h) => h.key === "total");
+    const base = total.base[plan];
+    const unit = (e) => (e.unit_min === null ? "—" : Number(e.unit_min) === Number(e.unit_max) ? signed(e.unit_min) : `${signed(e.unit_min)} 〜 ${signed(e.unit_max)}`);
+    const name = (code, text) => (code && text === null ? "未登録" : text ?? "");
+    const cell = (e, text, v) => el("td", { class: "r" + tone(v) + (e.incomplete ? " inc" : ""), title: e.incomplete ? "不完全" : null }, text);
+    if (!data.effects.length) return el("div", { class: "mini" }, "変更がありません");
+    return el("table", { class: "res" },
+      el("tr", {}, ["変更", "元品番", "名称", "新品番", "名称"].map((x) => el("th", {}, x)),
+        ["製品", "1台あたりの差", "年間の影響", "現行比"].map((x) => el("th", { class: "r" }, x)), el("th", {}, "要確認")),
+      data.effects.map((e) => el("tr", {},
+        el("td", {}, e.kind), el("td", {}, e.old ?? ""), el("td", {}, name(e.old, e.old_name)), el("td", {}, e.new ?? ""),
+        el("td", {}, e.head ?? name(e.new, e.new_name)),
+        el("td", { class: "r", title: "押すと製品ごとの差", style: "cursor:pointer;text-decoration:underline dotted", onclick: () => productsDialog(e) }, String(e.products.length)),
+        cell(e, unit(e), e.unit_max), cell(e, e.impact === null ? "—" : man(e.impact), e.impact), cell(e, percent(e.impact, base) || "—", e.impact),
+        el("td", {}, e.problems.join("・")))),
+      el("tr", {}, el("th", {}, "合計"), el("th", { colspan: "5" }, ""),
+        el("th", { class: "r" + tone(total.weighted[plan]), title: "台数の加重平均" }, signed(total.weighted[plan])),
+        el("th", { class: "r" + tone(total.impact[plan]) + (total.impact_incomplete[plan] ? " inc" : ""), title: total.impact_incomplete[plan] ? "不完全" : null }, man(total.impact[plan])),
+        el("th", { class: "r" + tone(total.impact[plan]) }, percent(total.impact[plan], base) || "—"), el("th", {})));
+  };
+  // 費目全部: 製品ごとに 今・変更後・差 の3行、列＝費目
+  const drawProducts = () => {
     const heads = data.heads;
     const rows = heads.length ? heads[0].rows : [];
+    const diffOf = (r) => (r.plans[plan] === null || r.now === null ? null : String(Number(r.plans[plan]) - Number(r.now)));
+    const line = (title, cells) => [el("td", { class: "mini" + (title === "差" ? "" : " low") }, title), cells];
     return el("table", { class: "res" },
-      el("tr", {}, el("th", {}, "対象品番"), el("th", { class: "r" }, "年間台数"), heads.map((h) => el("th", { class: "r" }, h.label))),
-      rows.map((r0, i) => el("tr", {},
-        el("td", {}, r0.product),
-        el("td", { class: "r" }, fmt(r0.annual)),
-        heads.map((h) => {
-          const r = h.rows[i];
-          const after = r.plans[plan];
-          const diff = after === null || r.now === null ? null : Number(after) - Number(r.now);
-          const inc = r.incomplete[plan] || r.now_incomplete;
-          return el("td", { class: "r" + (inc ? " inc" : ""), title: `今 ${fmt(r.now) || "—"}${inc ? "・不完全" : ""}` },
-            fmt(after), el("div", { class: "d" + tone(diff) }, diff === null ? "" : signed(String(diff))));
+      el("tr", {}, el("th", {}, "対象品番"), el("th", {}, "名称"), el("th", { class: "r" }, "年間台数"), el("th", {}), heads.map((h) => el("th", { class: "r" }, h.label))),
+      rows.flatMap((r0, i) => [
+        el("tr", {}, el("td", { rowspan: "3" }, r0.product), el("td", { rowspan: "3" }, r0.name ?? "未登録"), el("td", { class: "r", rowspan: "3" }, fmt(r0.annual)),
+          line("今", heads.map((h) => el("td", { ...incomplete(h.rows[i].now_incomplete), class: "r low" + (h.rows[i].now_incomplete ? " inc" : "") }, fmt(h.rows[i].now))))),
+        el("tr", {}, line("変更後", heads.map((h) => el("td", { ...incomplete(h.rows[i].incomplete[plan]), class: "r low" + (h.rows[i].incomplete[plan] ? " inc" : "") }, fmt(h.rows[i].plans[plan]))))),
+        el("tr", {}, line("差", heads.map((h) => {
+          const diff = diffOf(h.rows[i]);
+          const rate = diff === null || Number(diff) === 0 ? "" : percent(diff, h.rows[i].now);
+          const inc = h.rows[i].incomplete[plan];
+          return el("td", { class: "r" + tone(diff) + (inc ? " inc" : ""), title: inc ? "不完全" : null }, diff === null ? "—" : signed(diff), rate ? `（${rate}）` : "");
         }))),
-      el("tr", {}, el("th", {}, "年間の影響"), el("th", {}),
-        heads.map((h) => el("th", { class: "r" + tone(h.impact[plan]) + (h.impact_incomplete[plan] ? " inc" : ""),
-          title: h.impact_incomplete[plan] ? "不完全" : null }, man(h.impact[plan])))),
-      el("tr", {}, el("th", {}, "台数の加重平均"), el("th", { class: "mini" }, "1台あたり"),
-        heads.map((h) => el("th", { class: "r" + tone(h.weighted[plan]) + (h.impact_incomplete[plan] ? " inc" : ""),
-          title: h.impact_incomplete[plan] ? "不完全" : null }, signed(h.weighted[plan])))));
+      ]),
+      el("tr", {}, el("th", { colspan: "3" }, "年間の影響"), el("th", {}),
+        heads.map((h) => el("th", { class: "r" + tone(h.impact[plan]) + (h.impact_incomplete[plan] ? " inc" : ""), title: h.impact_incomplete[plan] ? "不完全" : null },
+          man(h.impact[plan]), Number(h.impact[plan]) ? `（${percent(h.impact[plan], h.base[plan])}）` : ""))),
+      el("tr", {}, el("th", { colspan: "3" }, "台数の加重平均"), el("th", { class: "mini" }, "1台あたり"),
+        heads.map((h) => el("th", { class: "r" + tone(h.weighted[plan]) + (h.impact_incomplete[plan] ? " inc" : ""), title: h.impact_incomplete[plan] ? "不完全" : null }, signed(h.weighted[plan])))));
   };
-  const draw = () => fill(table, data ? (data.head === "all" ? drawAll() : drawOne()) : null);
+  const draw = () => fill(body, data ? [
+    el("h3", {}, "変更ごとの影響", el("span", { class: "mini", style: "font-weight:400;margin-left:8px" }, "製造原価")),
+    el("div", { style: "overflow:auto" }, drawEffects()),
+    el("h3", {}, "製品ごとの費目"),
+    el("div", { style: "overflow:auto" }, drawProducts())] : null);
   const compute = async () => {
     try {
-      data = await api("GET", "/api/v2/calc", q({ head }));
+      data = await api("GET", "/api/v2/calc", q({ head: "all", plan }));
       stamp.textContent = `計算日時 ${data.computed_at.replace("T", " ").slice(0, 16).replaceAll("-", "/")}　${label("諸経費")} ${data.rates.adjustment}%・${label("間接費")} ${data.rates.indirect}%`;
       draw();
       done("計算しました");
@@ -1715,12 +1732,11 @@ async function resultScreen(main) {
       fail(e);
     }
   };
-  drawChips();
   main.append(card(["結果", stamp], [
     el("button", { class: "btn", onclick: conditionsDialog }, "計算条件"),
     el("button", { class: "btn", onclick: () => exportStudy().catch(fail) }, "Excel"),
     el("button", { class: "btn pri", onclick: compute }, "実行"),
-  ], [el("div", { class: "row" }, el("span", { class: "mini" }, "費目"), chips), table]));
+  ], body));
 }
 
 // ⑩ 製品の費目 -----------------------------------------------------------

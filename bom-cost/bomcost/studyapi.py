@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Callable, Mapping
 from urllib.parse import quote
 
 from . import settings
-from .formula import breakdown, registered_own
+from .formula import Head, breakdown, registered_own
 from .importer import (
     TABLE_FIELDS,
     ColumnMap,
@@ -44,6 +44,7 @@ from .study import (
     own_rows,
     after_parts,
     after_places,
+    annual_of,
     deep_parts,
     direct_lines,
     grid_balloon,
@@ -51,6 +52,7 @@ from .study import (
     input_code,
     input_optional_code,
     inside_lines,
+    material_effects,
     nfkc,
     occurrences,
     pair_key,
@@ -759,16 +761,22 @@ class StudyApi:
             "impact": {k: _s(v) for k, v in result["impact"].items()},
             "impact_incomplete": result["impact_incomplete"],
             "weighted": {k: _s(v) for k, v in result["weighted"].items()},
+            "base": {k: _s(v) for k, v in result["base"].items()},
         }
 
     def _calc(self, params: dict[str, str]) -> dict[str, Any]:
-        """head は費目の名前（HEADS）か all（8費目を heads に並べて返す）。"""
+        """head は費目の名前（HEADS）か all（8費目を heads に並べ、変更ごとの影響 effects も返す）。"""
         key = params.get("head", "total")
         now = datetime.now().replace(microsecond=0).isoformat()
         if key == "all":
             ws = self._ws(params)
             results = calculate_heads(ws)
+            plan = self._plan(params)
             return {"computed_at": now, "head": "all", "plans": ws.plan_ids(), "rates": _rates_json(ws),
+                    "effects": [{**e, "unit_min": _s(e["unit_min"]), "unit_max": _s(e["unit_max"]), "impact": _s(e["impact"]),
+                                 "products": [{**p, "unit": _s(p["unit"]), "annual": _s(p["annual"]), "impact": _s(p["impact"])}
+                                              for p in e["products"]]}
+                                for e in change_effects(ws, plan, self._change_rows({**params, "product": ""}))],
                     "heads": [{"key": k, "label": h.value, **self._head_json(results[h])} for k, h in HEADS.items()]}
         head = HEADS.get(key)
         if head is None:
@@ -821,7 +829,7 @@ class StudyApi:
                 diff = None if now is None or after is None else after - now
                 flag = bool(r["now_incomplete"] or r["incomplete"].get(plan))
                 incomplete |= flag
-                money.append([r["product"], r["name"], head.value, now, after, diff, r["annual"],
+                money.append([r["product"], r["name"], head.value, now, after, diff, _percent(diff, now), r["annual"],
                               None if diff is None or r["annual"] is None else diff * r["annual"], "不完全" if flag else ""])
         order = {p: i for i, p in enumerate(ws.targets)}
         money.sort(key=lambda r: order[r[0]])  # 対象品番の順（同じ品番の中は費目の順のまま）
@@ -832,8 +840,16 @@ class StudyApi:
                 ["出力日時", datetime.now().replace(microsecond=0).isoformat(sep=" ")],
                 ["対象品番の数", len(ws.targets)], ["不完全", "あり" if incomplete else "なし"],
                 *([f"年間の影響（{h.value}）", results[h]["impact"].get(plan)] for h in HEADS.values()),
+                *([f"年間の影響の現行比％（{h.value}）", _percent(results[h]["impact"].get(plan), results[h]["base"].get(plan))]
+                  for h in HEADS.values()),
                 *([f"台数の加重平均（1台あたり・{h.value}）", results[h]["weighted"].get(plan)] for h in HEADS.values()),
                 *([f"説明: {name}", text] for name, text in SHEET_NOTES)]),
+            ("変更ごとの影響", ["変更", "元品番", "元の名称", "新品番", "新の名称", "製品の数", "1台あたりの差（最小）", "1台あたりの差（最大）",
+                         "年間の影響", "現行比（％）", "不完全", "要確認"],
+             [[e["kind"], e["old"], e["old_name"], e["new"], settings.word(e["head"]) if e["head"] else e["new_name"],
+               len(e["products"]), e["unit_min"], e["unit_max"], e["impact"],
+               _percent(e["impact"], results[Head.MANUFACTURING]["base"].get(plan)), "不完全" if e["incomplete"] else "",
+               "・".join(e["problems"])] for e in change_effects(ws, plan, changes)]),
             ("構成の変更", ["変更", "元品番", "元の名称", "新品番", "新の名称", "数量", "製品の数", "製品", "要確認"],
              [[s["kind"], s["old"], s["old_name"], s["new"], s["new_name"], s["quantity"], len(s["products"]),
                "・".join(s["products"]), "・".join(s["problems"])] for s in summarize_changes(changes)]),
@@ -842,7 +858,7 @@ class StudyApi:
                r["old"], r["old_name"], r["new"], r["new_name"], _num(r["before"]), _num(r["after"]), r["parent"],
                r["balloon"], "・".join(r["problems"])]
               for r in changes_by_product(summarize_changes(changes), ws.targets)]),
-            ("金額", ["対象品番", "名称", "費目", "今", "変更後", "差", "年間台数", "年間の影響", "不完全"], money),
+            ("金額", ["対象品番", "名称", "費目", "今", "変更後", "差", "差（％）", "年間台数", "年間の影響", "不完全"], money),
             ("計算条件", ["種類", "対象", "項目", "値", "備考"], self._condition_rows(ws, plan)),
         ]
         inner = [[t.code, t.name, t.base, s["kind"], s["old"], s["old_name"], s["new"], s["new_name"], d["balloon"],
@@ -850,7 +866,7 @@ class StudyApi:
                  for t in ws.temps if t.base is not None and t.code in ws.temp_merged
                  for s in temp_changes(ws, t) for d in s["details"]]
         if inner:
-            sheets.insert(3, ("仮品番の中", ["仮品番", "名称", "流用元", "変更", "元品番", "元の名称", "新品番", "新の名称", "風船",
+            sheets.insert(4, ("仮品番の中", ["仮品番", "名称", "流用元", "変更", "元品番", "元の名称", "新品番", "新の名称", "風船",
                                           "変更前", "変更後"], inner))
         return self._xlsx(f"検討_{ws.number}", sheets)
 
@@ -896,6 +912,8 @@ class StudyApi:
 
 # Excel の各シートの列の意味（渡した先が列を取り違えないように、まとめのシートに書く）
 SHEET_NOTES = (
+    ("変更ごとの影響", "した事ごとに、製造原価への効き方。差は1台あたりで製品ごとに違えば最小と最大、年間の影響＝差×年間台数の合計。"
+                  "現行比は対象品番の今の製造原価×年間台数の合計に対する割合。足すとまとめの年間の影響（製造原価）になる"),
     ("構成の変更", "した事ごとに1行。置き換え＝同じ製品・親・風船番号で元品番が 0 になり新品番が増えた物。数量は1箇所あたり"),
     ("構成の明細", "1行＝製品×した事×箇所（親・風船）。変更の無い対象品番も「変更なし」で出す。数量は親1単位あたりで、"
                    "置き換えは変更前＝元品番の数量・変更後＝新品番の数量"),
@@ -903,6 +921,11 @@ SHEET_NOTES = (
     ("不完全", "未登録の原価や計算に入らない変更があり、金額が足りない行"),
     ("単位", "金額は取り込んだ原価の表と同じ単位、数量は部品表と同じ単位"),
 )
+
+
+def _percent(diff: Decimal | None, now: Decimal | None) -> Decimal | None:
+    """今に対する差の割合（％・小数2桁）。今が無いか 0 なら None。"""
+    return None if diff is None or not now else (diff / now * 100).quantize(Decimal("0.01"))
 
 
 def _num(text: str | None) -> Decimal | None:
@@ -956,6 +979,56 @@ def summarize_changes(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             texts.setdefault(d["quantity"], set()).add(d["product"])
         g["quantity"] = next(iter(texts)) if len(texts) == 1 else "・".join(f"{t}（{len(p)}製品）" for t, p in texts.items())
     return list(groups.values())
+
+
+def change_effects(ws: Workspace, plan: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """した事（構成の変更のまとめと、⑩ の費目ごと）ごとの、製造原価への効き方（年間の影響の大きい順）。
+
+    式は材料費小計・加工費・償却費・直接費の足し算に率を掛けた物なので、した事ごとに分けて足すと全体の差になる。
+    products は製品ごとの1台あたりの差。計算に入らない・単価や年間台数の分からない分は足さず、incomplete の印を付ける
+    （未登録の品番への置き換えは、⑦ の計算と同じく元品番の引きだけが効いた値になる）。
+    """
+    rates = ws.use_rates()
+    material = material_effects(ws, plan)
+    out: list[dict[str, Any]] = []
+
+    def add(head: str | None, group: dict[str, Any], units: dict[str, Decimal | None], unknown: bool = False) -> None:
+        products = []
+        for product, unit in units.items():
+            annual = annual_of(ws, product)
+            products.append({"product": product, "name": ws.bom.items[product].name if product in ws.bom.items else None,
+                             "unit": unit, "annual": annual,
+                             "impact": None if unit is None or annual is None else unit * annual})
+        known = [p["unit"] for p in products if p["unit"] is not None]
+        impacts = [p["impact"] for p in products if p["impact"] is not None]
+        out.append({**{k: group.get(k) for k in ("kind", "old", "old_name", "new", "new_name")}, "head": head,
+                    "problems": group.get("problems", []), "products": products,
+                    "unit_min": min(known, default=None), "unit_max": max(known, default=None),
+                    "impact": sum(impacts, Decimal(0)) if impacts else None, "incomplete": unknown or len(impacts) < len(products)})
+
+    for g in summarize_changes(rows):
+        parts = [g["old"], g["new"]] if g["kind"] == "置き換え" else [g["old"] or g["new"]]
+        units: dict[str, Decimal | None] = {}
+        unknown = False
+        for d in g["details"]:
+            for part in parts:
+                value = material[(d["product"], d["parent"], d["balloon"], part)]
+                before = units.setdefault(d["product"], None)
+                if value is None:
+                    unknown = True
+                else:
+                    units[d["product"]] = (before or Decimal(0)) + value * rates.factor
+        add(None, g, units, unknown)
+    for key, head in OWN_HEADS.items():
+        units = {}
+        for r in own_rows(ws, plan):
+            v = r["heads"][key]
+            if v["after"] is not None:
+                diff = v["after"] - (v["now"] or Decimal(0))
+                units[r["product"]] = diff if head is Head.DIRECT else diff * rates.factor
+        if units:
+            add(head.value, {"kind": "製品の費目"}, units)
+    return sorted(out, key=lambda e: (e["impact"] is None, -abs(e["impact"] or 0), -abs(e["unit_max"] or 0)))
 
 
 def temp_changes(ws: Workspace, temp: Temp) -> list[dict[str, Any]]:

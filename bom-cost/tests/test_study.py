@@ -517,7 +517,8 @@ class StudyApiFlow(unittest.TestCase):
         self.assertEqual(book["金額"].max_row, 1 + 2 * 8)  # 2製品×8費目
         money = [r for r in book["金額"].iter_rows(min_row=2, values_only=True) if r[0] == P1 and r[2] == "製造原価"][0]
         self.assertAlmostEqual(money[5], float(total))
-        self.assertAlmostEqual(money[7], float(total) * money[6])
+        self.assertAlmostEqual(money[6], round(float(total) / money[3] * 100, 2))
+        self.assertAlmostEqual(money[8], float(total) * money[7])
         self.assertIn(("製品の費目", P1, "加工費", 1000, f"台帳の値 {now}"),
                       list(book["計算条件"].iter_rows(values_only=True)))
         # 変更一覧にも出る
@@ -604,7 +605,7 @@ class StudyApiFlow(unittest.TestCase):
         excel = self.api.handle("GET", "/api/v2/export/study", q)
         self.assertEqual(excel.status, 200)
         book = load_openpyxl().load_workbook(io.BytesIO(excel.body))
-        self.assertEqual(book.sheetnames, ["まとめ", "構成の変更", "構成の明細", "金額", "計算条件"])
+        self.assertEqual(book.sheetnames, ["まとめ", "変更ごとの影響", "構成の変更", "構成の明細", "金額", "計算条件"])
         # 構成の変更は、した事ごとに1行（2製品の置き換えが1行）・明細は箇所ごと
         self.assertIn(("置き換え", OLD, NEW, 2), [(r[0], r[1], r[3], r[6]) for r in
                                               book["構成の変更"].iter_rows(min_row=2, values_only=True)])

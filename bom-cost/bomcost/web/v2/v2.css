@@ -109,6 +109,7 @@ table.res .r { text-align: right; font-variant-numeric: tabular-nums; }
 table.res td.inc, table.res th.inc { background: var(--warn-bg); }
 table.res .minus { color: var(--sel-ink); font-weight: 700; }
 table.res .plus { color: var(--warn); font-weight: 700; }
+table.res td.low { border-bottom-color: transparent; padding-bottom: 0; }
 table.res .d { font-size: 11px; font-weight: 400; color: var(--sub); }
 table.res .d.minus { color: var(--sel-ink); font-weight: 700; }
 table.res .d.plus { color: var(--warn); font-weight: 700; }

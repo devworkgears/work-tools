@@ -630,10 +630,38 @@ def own_values(ws: Workspace, plan: str, product: str, own: OwnValues) -> OwnVal
     return own
 
 
+def annual_of(ws: Workspace, product: str) -> Decimal | None:
+    """製品の年間台数。検討で入れた値、無ければ部品表の値。"""
+    given = ws.conditions.get(product)
+    volume = ws.bom.volume(product)
+    return given if given is not None else None if volume is None else volume.annual
+
+
+def material_effects(ws: Workspace, plan: str) -> dict[Place, Decimal | None]:
+    """案の変更1つずつの、製品1台あたりの材料費小計の増減。計算に入らない変更と、単価の分からない変更は None。"""
+    calc = CostCalculator(ws.bom, CostHead.MATERIAL)
+    usages: dict[str, dict[str, Decimal]] = {}
+    out: dict[Place, Decimal | None] = {}
+    for c in check_changes(ws, ws.plan_changes(plan)):
+        ch = c.change
+        unit = None
+        if c.counted:
+            try:
+                if calc.item_cost(ch.product) is not None:  # 今の値が出ない製品は、変えた後の値も出ない
+                    unit = calc.item_cost(ch.part)
+            except ValueError:
+                pass
+        if ch.product not in usages:
+            usages[ch.product] = product_usage(ws.bom, ch.product)
+        out[ch.place] = None if unit is None else ch.delta * usages[ch.product].get(ch.parent, Decimal(0)) * unit
+    return out
+
+
 def calculate_heads(ws: Workspace, heads: Sequence[Head] = COMPARE_HEADS) -> dict[Head, dict[str, Any]]:
     """費目ごとに、対象品番ごとの今と案ごとの原価・年間の影響・台数の加重平均。DB は読むだけ（渡した Workspace だけを見る）。
 
     案の値＝（今の材料費小計＋部品の増減）と、製品自身の値（⑩で書き換えた費目はその値）から式で出す。
+    base＝年間の影響に入れた製品の、今の値×年間台数の合計（現行比の元）。
     台数の加重平均＝年間の影響 ÷ 年間の影響に入れた製品の年間台数の合計（1台あたりの増減）。台数の合計が 0 なら None。
     """
     bom = ws.bom
@@ -646,7 +674,8 @@ def calculate_heads(ws: Workspace, heads: Sequence[Head] = COMPARE_HEADS) -> dic
     plans = ws.plan_ids()
     results: dict[Head, dict[str, Any]] = {
         h: {"head": h, "plans": plans, "rows": [], "impact": {p: Decimal(0) for p in plans},
-            "impact_incomplete": {p: False for p in plans}, "counted": {p: Decimal(0) for p in plans}}
+            "impact_incomplete": {p: False for p in plans}, "counted": {p: Decimal(0) for p in plans},
+            "base": {p: Decimal(0) for p in plans}}
         for h in heads}
 
     def pick(b: Breakdown | None, head: Head) -> tuple[Decimal | None, bool]:
@@ -666,9 +695,7 @@ def calculate_heads(ws: Workspace, heads: Sequence[Head] = COMPARE_HEADS) -> dic
         # 組立品の未登録は子から足し上げて出るので、不完全は子の無い品目の未登録だけ
         now_missing = material_result is None or any(not bom.children(m) for m in material_result.missing)
         now_b = None if now_material is None else breakdown(now_material, own, rates=rates)
-        annual = ws.conditions.get(product)
-        if annual is None and bom.volume(product) is not None:
-            annual = bom.volume(product).annual
+        annual = annual_of(ws, product)
         usage = product_usage(bom, product)
         after_b: dict[str, tuple[Breakdown | None, bool]] = {}
         for plan in plans:
@@ -707,6 +734,7 @@ def calculate_heads(ws: Workspace, heads: Sequence[Head] = COMPARE_HEADS) -> dic
                 else:
                     res["impact"][plan] += (after - now) * annual
                     res["counted"][plan] += annual
+                    res["base"][plan] += now * annual
                     res["impact_incomplete"][plan] |= row["incomplete"][plan]
             res["rows"].append(row)
     for res in results.values():

@@ -11,6 +11,7 @@ from bomcost.api import Api
 from bomcost.importer import load_openpyxl
 from bomcost.model import BomLine, CostHead, CostRow, Item, Version
 from bomcost.store import Store
+from bomcost.studyapi import StudyApi, change_effects
 from bomcost.study import DEEP, GRID, REPLACE, StudyStore, after_parts, after_places, calculate, check_changes, deep_parts
 
 ALL = ("item", "bom_line", "cost", "volume")
@@ -279,6 +280,8 @@ class LevelApi(unittest.TestCase):
                                                                       {"balloon": "12", "part": "V", "quantity": "1"}]})
         rows = list(book()["仮品番の中"].iter_rows(min_row=2, values_only=True))
         self.assertEqual(rows, [("T1", "組立改", "U", "置き換え", "K", "K の名称", "N", "N の名称", "11", 2, 2)])
+        effects = list(book()["変更ごとの影響"].iter_rows(values_only=True))
+        self.assertEqual((effects[0][:6], len(effects)), (("変更", "元品番", "元の名称", "新品番", "新の名称", "製品の数"), 1))
         self.assertIn(("仮品番", "T1", "組立改", 29, "流用元 U から計算"), list(book()["計算条件"].iter_rows(values_only=True)))
 
     def test_after_parts_tells_places_and_deeper_parts(self) -> None:
@@ -296,6 +299,65 @@ class LevelApi(unittest.TestCase):
         self.assertEqual([r["part"] for r in self.ok("GET", "/api/v2/grid")["rows"]], [])
         self.assertEqual(self.ok("GET", "/api/v2/changes")["deep"], 1)
         self.assertEqual(self.ok("POST", "/api/v2/changes/drop-deep", {})["rows"], [])
+
+
+class Effects(LevelCase):
+    """変更ごとの影響: 足すと全体の差になる・分からない分は足さずに印を付ける。率は見本（10%・20%）。"""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.store.save_conditions(self.number, {"P1": "100", "P2": "10"})
+        self.store.save_targets(self.number, ["P1", "P2"])
+
+    def effects(self, version: int | None = None) -> list[dict]:
+        ws = self.ws(version)
+        return change_effects(ws, "A", StudyApiRows.rows(ws))
+
+    def test_sum_is_the_total_difference_of_every_product(self) -> None:
+        self.store.apply_replace(self.number, "A", "K", "N")
+        self.store.save_grid(self.number, "A", ["P1"], ["S"], [{"product": "P1", "part": "S", "value": "2"}])
+        self.store.save_owns(self.number, "A", [{"product": "P1", "head": "processing", "value": "4"},
+                                                {"product": "P2", "head": "direct", "value": "50"}])
+        got = self.effects()
+        result = calculate(self.ws())
+        self.assertEqual(sum(e["impact"] for e in got), result["impact"]["A"])
+        for row in result["rows"]:
+            parts = [p["unit"] for e in got for p in e["products"] if p["product"] == row["product"]]
+            self.assertEqual(sum(parts), row["plans"]["A"] - row["now"])
+        self.assertEqual([abs(e["impact"]) for e in got], sorted((abs(e["impact"]) for e in got), reverse=True))
+        swap = next(e for e in got if e["kind"] == "置き換え")
+        # K 10 → N 7 を P1 は1個・P2 は4個。×1.1×1.2
+        self.assertEqual((swap["unit_min"], swap["unit_max"], swap["impact"]), (D("-15.84"), D("-3.96"), D("-554.40")))
+        self.assertEqual({e["head"] for e in got if e["kind"] == "製品の費目"}, {"加工費", "直接費"})
+        self.assertEqual(result["base"]["A"], sum(r["now"] * r["annual"] for r in result["rows"]))
+        version = self.store.take_release(self.number)
+        self.store.save_owns(self.number, "A", [])
+        self.assertEqual(self.effects(version), got)
+
+    def test_unknown_price_annual_and_left_out_changes_are_marked(self) -> None:
+        self.store.save_conditions(self.number, {"P1": "100"})  # P2 は年間台数が無い
+        self.store.apply_replace(self.number, "A", "K", "N")
+        self.store.apply_places(self.number, "A", [{"product": "P1", "balloon": "3", "old": "S", "new": "ZZ"}])
+        self.deep_change()
+        got = {(e["kind"], e["old"], e["new"], tuple(e["problems"])): e for e in self.effects()}
+        swap = got[("置き換え", "K", "N", ())]
+        self.assertEqual((swap["impact"], swap["incomplete"]), (D("-396.00"), True))
+        unknown = got[("置き換え", "S", "ZZ", ("未登録",))]
+        # 計算と同じく、元の S 30 の引きだけが効く（足すと全体の差になる）
+        self.assertEqual((unknown["unit_max"], unknown["incomplete"]), (D("-39.60"), True))
+        self.assertEqual(sum(e["impact"] for e in self.effects() if e["impact"] is not None), calculate(self.ws())["impact"]["A"])
+        self.assertIsNone(got[("置き換え", "K", "N", (DEEP,))]["impact"])
+        self.assertEqual(len(self.effects()), 3)
+
+
+class StudyApiRows:
+    """API の変更の行を、ソケット無しで作る。"""
+
+    @staticmethod
+    def rows(ws) -> list[dict]:
+        api = StudyApi.__new__(StudyApi)
+        api._ws = lambda params: ws
+        return api._change_rows({"plan": "A"})
 
 
 if __name__ == "__main__":
