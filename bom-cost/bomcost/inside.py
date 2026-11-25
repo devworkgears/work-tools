@@ -232,11 +232,11 @@ class Rebuild:
         return self._contents[key]
 
     def ref(self, top: Top, path: Path) -> Ref:
-        """その箇所の組立品の、変えた後の品番。流用元と同じ中身に戻れば流用元・新しい品番が要れば Node。"""
+        """その箇所の組立品の、変えた後の品番。流用元と同じ中身に戻れば流用元（材料費を打った仮品番は除く）・新しい品番が要れば Node。"""
         after = self.content(top, path)
-        base = self.base(path[-1])
-        if base != path[-1] and self.at[top] and after == self.lines(base):
-            return base
+        temp = temp_of(self.ws, path[-1])
+        if temp is not None and temp.base is not None and temp.material is None and self.at[top] and after == self.lines(temp.base):
+            return temp.base
         if after == self.lines(path[-1]) or self.in_place(path[-1]):
             return path[-1]
         return Node(path[-1], frozenset(after.items()))
@@ -306,9 +306,9 @@ class Rebuild:
         return list(dict.fromkeys(texts))
 
     def _same_temp(self, node: Node) -> str | None:
-        """流用元も中身も同じ仮品番がもうあれば、その品番。"""
+        """流用元も中身も同じ仮品番（材料費を打った物は除く）がもうあれば、その品番。"""
         for t in self.ws.temps:
-            if t.base == self.base(node.code) and t.code in self.ws.temp_merged and t.code != node.code \
+            if t.material is None and t.base == self.base(node.code) and t.code in self.ws.temp_merged and t.code != node.code \
                     and frozenset(self.lines(t.code).items()) == node.lines and t.code not in self.fixed:
                 return t.code
         return None

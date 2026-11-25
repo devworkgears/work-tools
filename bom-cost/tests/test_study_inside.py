@@ -133,6 +133,14 @@ class ReplaceInside(InsideCase):
         self.assertEqual(self.tops(), {"P1": ["U-K1"], "P2": ["U"], "P3": ["U-K1"]})
         self.assertEqual(self.inside("V-K1"), {("21", "N"): D(3)})
 
+    def test_a_temp_with_a_typed_price_is_not_dropped_by_an_undo(self) -> None:
+        self.apply({"path": ["U"], "old": "K", "new": "N"})
+        with self.conn:
+            self.conn.execute("UPDATE v2_temp_item SET material = '99'")
+        self.apply({"path": ["U-K1"], "old": "N", "new": "K"})
+        self.assertEqual(self.tops(), {"P1": ["U-K1"], "P2": ["U-K1"], "P3": ["U-K1"]})
+        self.assertEqual(self.ws().temps[0].lines, ())
+
     def test_same_balloon_with_two_assemblies_is_handled_by_part(self) -> None:
         self.store.add_part(self.number, "A", "V", "1", ["P1"])  # 風船番号の無い V と U
         self.apply({"path": ["V"], "old": "B", "new": "N"})
