@@ -85,7 +85,7 @@ def _version(params: dict[str, str]) -> int | None:
 
 
 def _balloon_order(balloon: str | None) -> tuple[int, int, str]:
-    """風船番号の並べ方: 数字は数の順、ほかは文字の順、空欄は最後。"""
+    """風船番号の並べ方: 数字は数の順、ほかは文字の順、空欄は最後（空欄どうしは、呼ぶ側で品番の順にする）。"""
     if balloon is None:
         return (2, 0, "")
     if balloon.isascii() and balloon.isdigit():
@@ -94,7 +94,7 @@ def _balloon_order(balloon: str | None) -> tuple[int, int, str]:
 
 
 def _slot_rows(now: dict[SlotKey, Decimal], deltas: dict[SlotKey, Decimal]) -> list[dict[str, Any]]:
-    """直下の行に増減を当てた行（風船の順）。0 になった行と同じ風船に足した品番があれば、置き換えとして元の行に出す。"""
+    """直下の行に増減を当てた行（風船の順・風船番号の無い行は最後に品番の順）。0 になった行と同じ風船に足した品番があれば、置き換えとして元の行に出す。"""
     rows: list[dict[str, Any]] = []
     added = {k: d for k, d in deltas.items() if k not in now}
     for (balloon, part), qty in now.items():
@@ -106,7 +106,8 @@ def _slot_rows(now: dict[SlotKey, Decimal], deltas: dict[SlotKey, Decimal]) -> l
     for (balloon, part), delta in added.items():
         rows.append({"balloon": balloon, "part": part, "quantity": _s(delta), "before_part": None, "before_quantity": None,
                      "changed": True})
-    return [r for _, r in sorted(enumerate(rows), key=lambda x: (_balloon_order(x[1]["balloon"]), x[0]))]
+    return [r for _, r in sorted(enumerate(rows), key=lambda x: (_balloon_order(x[1]["balloon"]),
+            (x[1]["before_part"] or x[1]["part"]) if x[1]["balloon"] is None else "", x[0]))]
 
 
 def _list(body: dict[str, Any], key: str) -> list[Any]:
@@ -1100,12 +1101,15 @@ def temp_changes(ws: Workspace, temp: Temp) -> list[dict[str, Any]]:
 
 
 def changes_by_product(summary: list[dict[str, Any]], targets: list[str]) -> list[dict[str, Any]]:
-    """した事のまとめを製品ごとに並べ直す（対象品番の順・変更の無い対象品番は「変更なし」・対象品番の外の製品は後ろ）。"""
+    """した事のまとめを製品ごとに並べ直す（対象品番の順・製品の中は風船番号の順で、無い行は最後に品番の順・
+    変更の無い対象品番は「変更なし」・対象品番の外の製品は後ろ）。"""
     names = ("kind", "old", "old_name", "new", "new_name", "problems")
     found: dict[str, list[dict[str, Any]]] = {}
     for s in summary:
         for d in s["details"]:
             found.setdefault(d["product"], []).append({**{k: s[k] for k in names}, **d})
+    for rows in found.values():
+        rows.sort(key=lambda r: (_balloon_order(r["balloon"]), r["old"] or r["new"]))
     none = {"kind": "変更なし", "old": None, "old_name": None, "new": None, "new_name": None, "problems": [],
             "parent": None, "balloon": None, "before": None, "after": None, "quantity": ""}
     products = [*targets, *(p for p in found if p not in targets)]

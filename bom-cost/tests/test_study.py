@@ -39,7 +39,7 @@ from bomcost.study import (
     where_used,
     Workspace,
 )
-from bomcost.studyapi import changes_by_product, summarize_changes
+from bomcost.studyapi import _slot_rows, changes_by_product, summarize_changes
 
 ALL = ("item", "bom_line", "cost", "volume")
 # 設計検討の見本（samples_v2）の品番
@@ -392,6 +392,15 @@ class Summary(unittest.TestCase):
             ("P1", "数量", "S", None, "2 → 3"), ("P2", "変更なし", None, None, ""),
             ("P3", "置き換え", "OLD", "NEW", "2"), ("P3", "数量", "S", None, "2 → 4"),
             ("Q9", "削除", "Y", None, "1 → 0")])  # 対象品番の外の製品は後ろ
+
+    def test_places_without_a_balloon_come_last_in_part_order(self) -> None:
+        rows = [self.row("P1", "Z", "1", "2", "1", None), self.row("P1", "A", "1", "2", "1", None),
+                self.row("P1", "X", "1", "2", "1", "10"), self.row("P1", "Y", "1", "2", "1", "9")]
+        got = changes_by_product(summarize_changes(rows), ["P1"])
+        self.assertEqual([(r["balloon"], r["old"]) for r in got], [("9", "Y"), ("10", "X"), (None, "A"), (None, "Z")])
+        lines = {(None, "Z"): Decimal(1), (None, "A"): Decimal(1), ("10", "X"): Decimal(1), ("9", "Y"): Decimal(1)}
+        got = _slot_rows(lines, {(None, "Z"): Decimal(1), (None, "B"): Decimal(1)})
+        self.assertEqual([(r["balloon"], r["part"]) for r in got], [("9", "Y"), ("10", "X"), (None, "A"), (None, "B"), (None, "Z")])
 
     def test_ambiguous_or_lost_places_are_not_paired(self) -> None:
         two = [self.row("P1", "A", "1", "0", "-1"), self.row("P1", "B", "1", "0", "-1"), self.row("P1", "C", "0", "2", "2")]

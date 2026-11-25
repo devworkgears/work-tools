@@ -540,7 +540,7 @@ async function hubScreen(main, cur) {
     el("div", { class: "groups" },
       // 左から使う順。まん中（青）が打つ画面、右が見る画面
       el("fieldset", { class: "grp" }, big(3, "対象品番"), big(9, "仮品番")), arrow(),
-      el("fieldset", { class: "grp edit" }, big(11, "部品変更"), big(8, "構成変更"), big(10, "費目変更")), arrow(),
+      el("fieldset", { class: "grp edit" }, big(8, "構成変更"), big(11, "部品変更"), big(10, "費目変更")), arrow(),
       el("fieldset", { class: "grp" }, big(5, "構成一覧"), big(6, "変更一覧", S.problems ? [" ", el("span", { class: "pill warn" }, S.problems)] : null), big(7, "結果"))),
   );
 }
@@ -776,7 +776,7 @@ function conflictTable(conflicts) {
     el("div", { class: "msg" }, `同じ箇所の数量が、行によって違います: ${conflicts.length} 箇所（先頭の行の数量で取り込みます）`),
     el("div", { style: "max-height:240px;overflow:auto;margin:4px 0 8px" }, el("table", { class: "list" },
       el("tr", {}, ["親品番", "風船番号", "子品番", "取り込む数量", "ほかの数量"].map((t) => el("th", {}, t))),
-      conflicts.slice(0, MAX_CONFLICTS).map((c) => el("tr", {}, el("td", {}, raw(c.parent)), el("td", {}, raw(c.balloon ?? "—")), el("td", {}, raw(c.child)),
+      conflicts.slice(0, MAX_CONFLICTS).map((c) => el("tr", {}, el("td", {}, raw(c.parent)), el("td", {}, raw(c.balloon ?? NO_BALLOON)), el("td", {}, raw(c.child)),
         el("td", { class: "r" }, fmt(c.quantities[0])), el("td", { class: "r" }, c.quantities.slice(1).map(fmt).join("・")))))),
     conflicts.length > MAX_CONFLICTS ? el("div", { class: "mini" }, `先頭の ${MAX_CONFLICTS} 箇所を出しています`) : null);
 }
@@ -1130,7 +1130,7 @@ async function searchReplaceScreen(main, cur) {
     ...(grain === "part" ? [[{ text: "材料費", cls: "r" }, (g) => (many(g) ? text("") : price(g.now))]] : [
       ["親品番", (g) => text(g.parent || "（製品）")], ["親名称", (g) => (g.parent ? nameCell(g.parent) : text(""))], ["さらに上", (g) => ({ text: g.upper, cls: "auto" })]]),
     ...(grain === "product" ? [["製品品番", (g) => text(productCell(g))], ["製品名称", (g) => nameCell(productCell(g))],
-      [{ text: "風船", cls: "c" }, (g) => ({ text: (only(g) ? only(g).balloon : line(g).balloon) ?? "—", cls: "c" })],
+      [{ text: "風船", cls: "c" }, (g) => ({ text: (only(g) ? only(g).balloon : line(g).balloon) ?? NO_BALLOON, cls: "c" })],
       [{ text: "数量", cls: "r" }, (g) => ({ text: fmt(only(g) ? only(g).before : line(g).quantity), cls: "r" })]]
       : [[{ text: "製品", cls: "r" }, (g) => ({ text: String(g.products.size), cls: "r link", title: "押すと製品の一覧" })]]),
     [{ text: "部品品番", cls: "after split" }, afterCell, "code"],
@@ -1277,6 +1277,8 @@ async function searchReplaceScreen(main, cur) {
 
 const MAX_STRUCTURE_ROWS = 1000;
 
+const NO_BALLOON = "なし"; // 風船番号の無い箇所の見せ方
+
 function balloonOrder(a, b) {
   return (a === null) - (b === null) || (a ?? "").localeCompare(b ?? "", "ja", { numeric: true });
 }
@@ -1323,7 +1325,11 @@ async function structureView(key, redraw) {
     // 行 { balloon, first, part, now, cells: 親 → 箇所 }。compare なら現行の品番も行の組に入れ、balloons が偽なら風船番号をまとめる
     rows({ compare = false, balloons = true, sort = null } = {}) {
       const lead = child ? parents : [...new Set([...(data.main_product ? [data.main_product] : []), ...parents])];
-      const order = sort || ((a, b) => (balloons ? balloonOrder(a.balloon, b.balloon) || a.rank - b.rank : a.rank - b.rank || balloonOrder(a.first, b.first)) || a.part.localeCompare(b.part));
+      // 風船番号の順。風船番号の無い行は最後に、現行の品番の順（打ち替えても動かないように）
+      const code = (r) => r.now ?? r.part;
+      const byCode = (a, b) => code(a).localeCompare(code(b), "ja", { numeric: true });
+      const order = sort || ((a, b) => (!balloons ? a.rank - b.rank || balloonOrder(a.first, b.first) || byCode(a, b)
+        : balloonOrder(a.balloon, b.balloon) || (a.balloon === null ? byCode(a, b) : a.rank - b.rank) || a.part.localeCompare(b.part)));
       const add = (s, p) => (p ? { ...s, before: s.before === null ? p.before : String(Number(p.before ?? 0) + Number(s.before)), quantity: String(Number(p.quantity) + Number(s.quantity)), problem: s.problem || p.problem } : s);
       const found = new Map();
       for (const p of me.columns()) {
@@ -1429,7 +1435,7 @@ async function listScreen(main) {
   const afterOf = (r) => (r.part === r.now ? null : r.part);
   const gone = (r) => [...r.cells.values()].every((s) => Number(s.quantity) === 0);
   const left = () => [
-    ...(balloons ? [[{ text: "風船", cls: "c" }, (r) => ({ text: r.balloon ?? "—", cls: "c q" })]] : []),
+    ...(balloons ? [[{ text: "風船", cls: "c" }, (r) => ({ text: r.balloon ?? NO_BALLOON, cls: "c q" })]] : []),
     ["品番", (r) => ({ text: r.now ?? "" })], ["名称", (r) => me.nameCell(r.now)], ["仕様", (r) => me.spec(r.now)], ["状態", (r) => me.state(r.now)]];
   const right = [
     [{ text: "品番", cls: "after split" }, (r) => ({ text: afterOf(r) ?? "", cls: "split" + (afterOf(r) ? " own" : "") })],
@@ -1563,7 +1569,7 @@ async function rewriteScreen(main, cur) {
       const row = rows[r];
       if (c === 0) return { text: String(r + 1), cls: "n" };
       const part = row ? row.part : "";
-      if (c === 1) return { text: row ? (row.draft ? row.balloon : row.balloon ?? "—") : "", editable: !ro && (!row || !!row.draft), cls: "c q" };
+      if (c === 1) return { text: row ? (row.draft ? row.balloon : row.balloon ?? NO_BALLOON) : "", editable: !ro && (!row || !!row.draft), cls: "c q" };
       if (c === 2) {
         const own = row && (row.draft ? part : [...row.cells.values()].some((s) => s.now !== s.part));
         return { text: part, editable: !ro, cls: own ? "own" : "" };
@@ -1592,7 +1598,7 @@ async function rewriteScreen(main, cur) {
       const parent = parents()[c - left];
       if (c >= left && text !== "" && !(isNumber(text) && Number(text) >= 0)) return alert(`数量は0以上の数で入力してください（${row.part || "品番なし"}「${text}」）`);
       if (row.draft) {
-        if (c === 1) row.balloon = text;
+        if (c === 1) row.balloon = text === NO_BALLOON ? "" : text;
         else if (c === 2) row.part = text;
         else if (text === "") row.amounts.delete(parent);
         else row.amounts.set(parent, text);
@@ -1808,12 +1814,12 @@ async function conditionsDialog() {
 // ⑥ 変更一覧 -------------------------------------------------------------
 
 // 構成の変更を、左に現行・右に変更後で見る（左が空＝追加・右が空＝削除）。組立品の中の変更は、レベルを付けて下に続ける。
-// 部品から（同じ変更は1行・製品の数を押すと製品ごとの箇所）か、製品から（製品×変更ごとに1行）で見る。
+// 製品から（製品×変更ごとに1行・風船番号の順）か、部品から（同じ変更は1行・製品の数を押すと製品ごとの箇所）で見る。
 // 金額の変更（⑩ 製品の費目の書き換え）は下に分けて出す
 async function changesScreen(main) {
   const plan = PLAN;
   let product = "";
-  let view = "part"; // part＝部品から・product＝製品から
+  let view = "product"; // product＝製品から・part＝部品から
   let data = { summary: [], by_product: [] };
   let rows = []; // 出している行 { level, now: {code, name, quantity} か null, after, products, balloon, problems, product, details }
   let temps = {}; // 流用した仮品番 → { base, name, changes }
@@ -1872,7 +1878,7 @@ async function changesScreen(main) {
     const box = dialog([row.now && row.now.code, row.after && row.after.code].filter(Boolean).join(" → "),
       el("table", { class: "list" }, el("tr", {}, ["製品", "名称", "親", "風船", "現行", "変更後"].map((t) => el("th", {}, t))),
         row.details.map((d) => el("tr", {}, el("td", {}, d.product), el("td", {}, nameCell(d.product).text), el("td", {}, d.parent),
-          el("td", {}, d.balloon ?? "—"), el("td", { class: "r" }, d.before === null ? "—" : fmt(d.before)), el("td", { class: "r" }, fmt(d.after))))),
+          el("td", {}, d.balloon ?? NO_BALLOON), el("td", { class: "r" }, d.before === null ? "—" : fmt(d.before)), el("td", { class: "r" }, fmt(d.after))))),
       [el("span", { class: "sp" }), el("button", { class: "btn", onclick: () => box.close() }, "閉じる")]);
   };
   const dropDeep = async () => {
@@ -1897,7 +1903,7 @@ async function changesScreen(main) {
       [sort.head("製品", (x) => x.product), (x, first) => ({ text: first ? x.product : "" })],
       ["名称", (x, first) => (first ? nameCell(x.product) : { text: "" })]] : []),
     ["レベル", (x) => ({ text: ".".repeat(x.level - 1) + x.level })],
-    ...(view === "product" ? [[{ text: "風船", cls: "c" }, (x) => ({ text: x.balloon ?? "—", cls: "c" })]] : []),
+    ...(view === "product" ? [[{ text: "風船", cls: "c" }, (x) => ({ text: x.balloon ?? NO_BALLOON, cls: "c" })]] : []),
     [{ ...sort.head("品番", code("now"), false, "now"), cls: "split" }, (x) => ({ text: code("now")(x), cls: "split" })],
     ["名称", (x) => named(x.now)],
     [{ text: "数量", cls: "r" }, (x) => ({ text: count(x.now), cls: "r" })],
@@ -1927,7 +1933,7 @@ async function changesScreen(main) {
   await load();
   const grid = new Grid(body, model);
   const views = el("div", { class: "chips" });
-  const drawViews = () => fill(views, [["part", "部品から"], ["product", "製品から"]].map(([k, text]) =>
+  const drawViews = () => fill(views, [["product", "製品から"], ["part", "部品から"]].map(([k, text]) =>
     el("button", { class: "chip" + (view === k ? " on" : ""), onclick: () => {
       view = k;
       sort.reset();
