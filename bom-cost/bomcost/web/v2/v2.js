@@ -808,6 +808,19 @@ function countsTable(counts) {
     el("tr", {}, keys.map((k) => el("td", { class: "r" }, counts[k]))));
 }
 
+// 同じ箇所（親・風船番号・子）の数量が行によって違う物。先頭の行の数量で取り込む
+const MAX_CONFLICTS = 100;
+function conflictTable(conflicts) {
+  if (!conflicts.length) return null;
+  return el("div", {},
+    el("div", { class: "msg" }, `同じ箇所の数量が、行によって違います: ${conflicts.length} 箇所（先頭の行の数量で取り込みます）`),
+    el("div", { style: "max-height:240px;overflow:auto;margin:4px 0 8px" }, el("table", { class: "list" },
+      el("tr", {}, ["親品番", "風船番号", "子品番", "取り込む数量", "ほかの数量"].map((t) => el("th", {}, t))),
+      conflicts.slice(0, MAX_CONFLICTS).map((c) => el("tr", {}, el("td", {}, raw(c.parent)), el("td", {}, raw(c.balloon ?? "—")), el("td", {}, raw(c.child)),
+        el("td", { class: "r" }, fmt(c.quantities[0])), el("td", { class: "r" }, c.quantities.slice(1).map(fmt).join("・")))))),
+    conflicts.length > MAX_CONFLICTS ? el("div", { class: "mini" }, `先頭の ${MAX_CONFLICTS} 箇所を出しています`) : null);
+}
+
 // ファイルを選ぶ → シートと表を選ぶ → 列の対応を確かめる → 一覧に加える → 確認 → 決定
 async function importDialog(after) {
   const file = el("input", { type: "file", accept: ".csv,.xlsx,.xlsm" });
@@ -883,14 +896,14 @@ async function importDialog(after) {
     if (f.size > MAX_FILE_BYTES) throw new Error(`${f.name} が大きすぎます（上限 16 MB）`);
     const [content, data] = await work("ファイルを読み込んでいます", async () => {
       const text = preview?.file === f ? preview.content : toBase64(await f.arrayBuffer());
-      return [text, await api("POST", "/api/import/preview", {}, { filename: f.name, content: text, sheet: sheetName })];
+      return [text, await api("POST", "/api/v2/bom/preview", {}, { filename: f.name, content: text, sheet: sheetName })];
     });
     preview = { file: f, content, data };
     sheetLabel.hidden = !data.sheets.length;
     setOptions(sheet, data.sheets.map((s) => [s, s]), data.sheet);
     // 保存した対応づけが無い時は、見出しの当たりがいちばん強い表を仮に選ぶ
     setOptions(kind, data.tables.map((t) => [t.id, `${t.label}${t.saved ? "（保存した対応づけあり）" : ""}`]),
-      data.suggested || data.guessed || data.tables[0].id);
+      data.suggested || data.tables[0].id);
     drawMapping();
   };
 
@@ -906,6 +919,7 @@ async function importDialog(after) {
       fill(check,
         el("div", { class: "mini" }, "取り込みの確認（読んだ件数。この表の中身を入れ替えます）"),
         countsTable(r.counts),
+        conflictTable(r.conflicts),
         warningBox(r.warnings),
         el("div", { class: "row" },
           el("button", { class: "btn pri", onclick: decide }, "決定"),

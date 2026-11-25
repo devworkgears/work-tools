@@ -15,6 +15,7 @@ from bomcost.app import main, static_response
 from bomcost.demo import DEMO_SETTINGS, build_demo
 from bomcost.formula import Head, OwnValues, breakdown
 from bomcost.model import base_code, mbom_to_ebom
+from bomcost.study import StudyStore
 
 D = Decimal
 
@@ -161,12 +162,16 @@ class SettingsApi(SettingsCase):
         full = self.counts()
         self.assertGreater(full, 0)
         self.store.save_column_map(ColumnMap("volume", ("a", "b"), {"product": "a", "annual": "b"}))
+        study = StudyStore(self.store.connection)
+        study.save_columns(("a", "b"), "volume", {"product": "a", "annual": "b"})
         self.assertFalse(self.save())  # 同じ中身の保存では消さない
         self.assertEqual(self.counts(), full)
         self.assertIsNotNone(self.store.find_column_map(("a", "b")))
+        self.assertIsNotNone(study.find_columns(("a", "b"), "volume"))
         self.assertTrue(self.save(labels={"系列": "型式"}))
         self.assertEqual(self.counts(), 0)
         self.assertIsNone(self.store.find_column_map(("a", "b")))
+        self.assertIsNone(study.find_columns(("a", "b"), "volume"))
 
     def test_studies_and_versions_survive_the_drop(self) -> None:
         self.call("POST", "/api/v2/bom/import", {"sample": True})

@@ -43,7 +43,7 @@ TABLE_FIELDS: dict[str, tuple[FieldSpec, ...]] = {
         FieldSpec("level", "レベル", False),
         FieldSpec("child", "子品番", True),
         FieldSpec("quantity", "数量", True, ("員数", "個数")),
-        FieldSpec("balloon", "風船番号", False),
+        FieldSpec("balloon", "風船番号", False, ("風船", "バルーン番号", "バルーンNo", "バルーン", "符号", "照合番号")),
     ),
     "cost": (
         FieldSpec("mbom_code", "原価の品番", True),
@@ -67,21 +67,22 @@ def _fold_header(text: str) -> str:
     return "".join(unicodedata.normalize("NFKC", text).casefold().split())
 
 
-def guess_columns(table: str, headers: Iterable[Any]) -> tuple[dict[str, str], int]:
+def guess_columns(table: str, headers: Iterable[Any], fields: Sequence[FieldSpec] | None = None) -> tuple[dict[str, str], int]:
     """項目ごとに当たりそうな見出しと、当たりの強さの計（表の種類を選ぶ目安）。
 
     見出しが項目の名前（読み替えた語も）か別名と同じ（_fold_header で比べる）なら強く当て（2）、無ければ名前を含む・名前に含まれる見出しを弱く当てる（1）。
-    1つの見出しは1つの項目にだけ当てる。
+    1つの見出しは1つの項目にだけ当てる。fields を渡すと、その項目だけに当てる。
     """
     present = [h for h in normalize_headers(headers) if h]
     folded = {h: _fold_header(h) for h in present}
     columns: dict[str, str] = {}
     score = 0
     used: set[str] = set()
-    fields = TABLE_FIELDS[table]
+    if fields is None:
+        fields = TABLE_FIELDS[table]
     for f in fields:
-        names = {_fold_header(x) for x in (settings.word(f.label), f.label, *f.aliases)}
-        hit = next((h for h in present if h not in used and folded[h] in names), None)
+        names = [_fold_header(x) for x in (settings.word(f.label), f.label, *f.aliases)]
+        hit = next((h for name in names for h in present if h not in used and folded[h] == name), None)
         if hit is not None:
             columns[f.name] = hit
             used.add(hit)

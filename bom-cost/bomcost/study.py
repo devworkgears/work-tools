@@ -47,6 +47,12 @@ CREATE TABLE IF NOT EXISTS v2_volume (
     annual TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS v2_bom_settings (settings TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS v2_column_map (
+    headers TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    columns TEXT NOT NULL,
+    PRIMARY KEY (headers, kind)
+);
 CREATE TABLE IF NOT EXISTS v2_study (
     study_id INTEGER PRIMARY KEY,
     number TEXT NOT NULL UNIQUE,
@@ -916,6 +922,17 @@ class StudyStore:
                 c.executemany("INSERT INTO v2_volume VALUES (?, ?)",
                               [(v.product, str(v.annual)) for v in version.volumes.values()])
 
+    def save_columns(self, headers: Sequence[str], kind: str, columns: Mapping[str, str]) -> None:
+        """取り込みの列の対応（項目 → 見出し）を、見出しの並びと表の種類ごとに残す。"""
+        with self._conn:
+            self._conn.execute("INSERT OR REPLACE INTO v2_column_map VALUES (?, ?, ?)",
+                               (json.dumps(list(headers), ensure_ascii=False), kind, json.dumps(dict(columns), ensure_ascii=False)))
+
+    def find_columns(self, headers: Sequence[str], kind: str) -> dict[str, str] | None:
+        row = self._conn.execute("SELECT columns FROM v2_column_map WHERE headers = ? AND kind = ?",
+                                 (json.dumps(list(headers), ensure_ascii=False), kind)).fetchone()
+        return None if row is None else json.loads(row[0])
+
     def drop_old_bom(self) -> bool:
         """前に見た設定と今の設定が違えば、取り込んだ部品表を消す（前の設定で読んだ値が残らないように）。違えば True。
 
@@ -927,7 +944,7 @@ class StudyStore:
             return False
         with self._conn:
             if row is not None:
-                for table in ("v2_item", "v2_line", "v2_cost", "v2_volume", "v2_bom_settings"):
+                for table in ("v2_item", "v2_line", "v2_cost", "v2_volume", "v2_bom_settings", "v2_column_map"):
                     self._conn.execute(f"DELETE FROM {table}")
             self._conn.execute("INSERT INTO v2_bom_settings VALUES (?)", (now,))
         return row is not None

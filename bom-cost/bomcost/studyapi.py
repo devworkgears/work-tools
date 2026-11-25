@@ -1,10 +1,11 @@
 """設計検討（/v2/）の API。検討は検討番号（number）と版（version: 空なら仮）で指す。"""
 
-import unicodedata
+from collections import Counter
+from dataclasses import replace
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Mapping, NamedTuple
 from urllib.parse import quote
 
 from . import settings
@@ -12,7 +13,7 @@ from .formula import Head, breakdown, registered_own
 from .importer import (
     TABLE_FIELDS,
     ColumnMap,
-    MissingColumnsError,
+    FieldSpec,
     Table,
     VersionImport,
     guess_columns,
@@ -21,7 +22,7 @@ from .importer import (
     read_csv,
 )
 from .model import CostHead, Version
-from .normalize import to_code
+from .normalize import to_code, to_optional_code
 from .rollup import CostCalculator
 from .study import (
     ADD,
@@ -140,24 +141,58 @@ def _text(body: dict[str, Any], key: str) -> str:
     return "" if value is None else str(value).strip()
 
 
-def table_kind(table: Table) -> ColumnMap:
+# 取り込みの画面で選ぶ項目（計算か画面で使う物だけ）。系列・タイプ・図面は品目の属性
+BOM_FIELDS: dict[str, tuple[FieldSpec, ...]] = {
+    "item": (*(f for f in TABLE_FIELDS["item"] if f.name in ("code", "name", "specification", "lifecycle")),
+             *(FieldSpec(name, label, False) for name, label in ATTRIBUTES)),
+    # 風船番号の列を使わないと、同じ部品の2か所が1行に畳まれて数量が減る（空欄の行はあってよい）
+    "bom_line": tuple(replace(f, required=True) if f.name == "balloon" else f
+                      for f in TABLE_FIELDS["bom_line"] if f.name != "level"),
+    "cost": tuple(f for f in TABLE_FIELDS["cost"] if f.name in ("mbom_code", "material", "direct", "amortization", "processing")),
+    "volume": TABLE_FIELDS["volume"],
+}
+TABLE_NAMES = {"item": "品目", "bom_line": "構成", "cost": "原価", "volume": "年間台数"}
+
+
+class BomMap(NamedTuple):
+    """取り込む表の種類と列の対応（項目の name → 見出し）。"""
+
+    kind: str
+    columns: dict[str, str]
+
+
+def _missing(kind: str, columns: Mapping[str, str]) -> list[str]:
+    return [f.label for f in BOM_FIELDS[kind] if f.required and f.name not in columns]
+
+
+def table_kind(table: Table) -> BomMap:
     """見出しから表の種類（品目・構成・原価・年間台数）を当て、列の対応を作る。"""
-    best: tuple[int, str, dict[str, str]] | None = None
-    for kind in TABLE_FIELDS:
-        columns, score = guess_columns(kind, table.headers)
-        try:
-            ColumnMap(kind, table.headers, columns)
-        except MissingColumnsError:
-            continue
-        if best is None or score > best[0]:
-            best = (score, kind, columns)
-    if best is None:
+    found: list[tuple[int, BomMap]] = []
+    for kind, fields in BOM_FIELDS.items():
+        columns, score = guess_columns(kind, table.headers, fields)
+        if not _missing(kind, columns):
+            found.append((score, BomMap(kind, columns)))
+    if not found:
         raise ValueError(f"見出しから表の種類を判別できません（{table.name}）")
-    return ColumnMap(best[1], table.headers, best[2])
+    return max(found, key=lambda x: x[0])[1]
 
 
-def _fold(text: str) -> str:
-    return "".join(unicodedata.normalize("NFKC", text).casefold().split())
+def chosen_columns(f: Mapping[str, Any], table: Table) -> BomMap:
+    """画面で選んだ表の種類と列の対応。"""
+    kind, columns = f.get("table"), f.get("columns")
+    if kind not in BOM_FIELDS or not isinstance(columns, dict):
+        raise ValueError(f"{table.name} の表の種類と列の対応づけを選んでください")
+    chosen = {str(k): str(v).strip() for k, v in columns.items() if v not in (None, "")}
+    unknown = set(chosen) - {x.name for x in BOM_FIELDS[kind]}
+    if unknown:
+        raise ValueError(f"{TABLE_NAMES[kind]}に無い項目です: {'・'.join(sorted(unknown))}")
+    for header in chosen.values():
+        if header not in table.headers:
+            raise ValueError(f"列「{header}」は {table.name} の見出しにありません")
+    missing = _missing(kind, chosen)
+    if missing:
+        raise ValueError(f"{table.name}: {TABLE_NAMES[kind]}の必須の列が対応づいていません: {'・'.join(missing)}")
+    return BomMap(kind, chosen)
 
 
 def _rates_json(ws: Workspace) -> dict[str, str]:
@@ -166,17 +201,10 @@ def _rates_json(ws: Workspace) -> dict[str, str]:
     return {k: format((v * 100).normalize(), "f") for k, v in (("adjustment", rates.adjustment), ("indirect", rates.indirect))}
 
 
-def item_attributes(table: Table, column_map: ColumnMap, labels: Mapping[str, str] | None = None) -> Attributes:
-    """部品マスタの任意の列（系列・タイプ・図面）を品番ごとに。無い列は空文字。
-
-    labels に読み替えがある見出しは、読み替えた語の列を先に探し、無ければ元の語の列を使う。
-    """
-    headers = [_fold(h) for h in table.headers]
-    code_at = table.headers.index(column_map.columns["code"])
-    at: dict[str, int | None] = {}
-    for name, label in ATTRIBUTES:
-        wanted = [_fold(x) for x in ((labels or {}).get(label), label) if x]
-        at[name] = next((headers.index(w) for w in wanted if w in headers), None)
+def item_attributes(table: Table, columns: Mapping[str, str]) -> Attributes:
+    """品目の属性（系列・タイプ・図面）を品番ごとに。対応の無い項目は空文字。"""
+    at = {name: table.headers.index(columns[name]) if name in columns else None for name, _ in ATTRIBUTES}
+    code_at = table.headers.index(columns["code"])
     result: Attributes = {}
     for row in table.rows:
         cell = row[code_at] if code_at < len(row) else None
@@ -191,23 +219,49 @@ def item_attributes(table: Table, column_map: ColumnMap, labels: Mapping[str, st
     return result
 
 
-def import_tables(tables: list[Table], labels: Mapping[str, str] | None = None,
-                  maps: list[ColumnMap | None] | None = None) -> tuple[Version, list[str], list[str], Attributes]:
-    """表を取り込んだ版・入った表の種類・警告の文・品目の属性。
+def _blank_balloon_repeats(table: Table, column_map: ColumnMap) -> list[tuple[str, str]]:
+    """風船番号が空で、2行以上ある親と子（1行に畳まれる）。"""
+    count: Counter[tuple[str, str]] = Counter()
+    for _, r in column_map.records(table):
+        try:
+            if to_optional_code(r.get("balloon")) is None:
+                count[(to_code(r["parent"]), to_code(r["child"]))] += 1
+        except (TypeError, ValueError):
+            continue
+    return [pair for pair, n in count.items() if n > 1 and pair[0] != pair[1]]
 
-    maps は表ごとの列の対応（tables と同じ並び）。無い表は見出しから表の種類を当てる。
-    """
+
+class BomRead(NamedTuple):
+    """取り込む表を読んだ物: 版・入った表の種類・警告の文・品目の属性。"""
+
+    version: Version
+    kinds: list[str]
+    warnings: list[str]
+    attributes: Attributes
+
+
+def import_tables(tables: list[Table], maps: list[BomMap | None] | None = None) -> BomRead:
+    """maps は表ごとの列の対応（tables と同じ並び）。無い表は見出しから表の種類を当てる。"""
     work = VersionImport(Version("v2", datetime.now().replace(microsecond=0)))
     kinds: list[str] = []
+    notes: list[str] = []
     attributes: Attributes = {}
+    names = {name for name, _ in ATTRIBUTES}
     for i, table in enumerate(tables):
-        column_map = (maps[i] if maps else None) or table_kind(table)
+        kind, columns = (maps[i] if maps else None) or table_kind(table)
+        column_map = ColumnMap(kind, table.headers, {k: v for k, v in columns.items() if k not in names})
         work.add_table(table, column_map)
-        kinds.append(column_map.table)
-        if column_map.table == "item":
-            attributes.update(item_attributes(table, column_map, labels))
+        kinds.append(kind)
+        if kind == "item":
+            attributes.update(item_attributes(table, columns))
+        if kind == "bom_line":
+            repeats = _blank_balloon_repeats(table, column_map)
+            if repeats:
+                some = "・".join(f"{p} の {c}" for p, c in repeats[:5])
+                notes.append(f"{table.name}: 風船番号が空で、同じ親と子の行が2行以上ある物が {len(repeats)} 組あり、"
+                             f"1行分の数量で取り込みます（{some}{' など' if len(repeats) > 5 else ''}）")
     warnings = [f"{w.file}{'' if w.row is None else f' {w.row}行'}: {w.message}" for w in work.warnings]
-    return work.version, kinds, warnings, attributes
+    return BomRead(work.version, kinds, [*notes, *warnings], attributes)
 
 
 class StudyApi:
@@ -234,6 +288,7 @@ class StudyApi:
         return [
             ("GET", r"/api/v2/labels", self.labels),
             ("GET", r"/api/v2/bom", self.bom_status),
+            ("POST", r"/api/v2/bom/preview", self.bom_preview),
             ("POST", r"/api/v2/bom/import", self.bom_import),
             ("POST", r"/api/v2/lookup", self.lookup),
             ("GET", r"/api/v2/products", self.products),
@@ -294,16 +349,33 @@ class StudyApi:
     def bom_status(self, params: dict[str, str]) -> "Response":
         return self._json({"counts": self.store.bom_counts(), "samples": SAMPLES_DIR.is_dir()})
 
+    def bom_preview(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
+        """送られたファイルの見出しと先頭の行、表ごとの項目と列の当たり（保存した対応づけがあれば saved）。"""
+        from .screens import Screens
+
+        data = Screens(self.api).import_preview(params, body).json()
+        tables = []
+        scores: dict[str, int] = {}
+        for kind, fields in BOM_FIELDS.items():
+            guess, scores[kind] = guess_columns(kind, data["headers"], fields)
+            tables.append({"id": kind, "label": TABLE_NAMES[kind], "guess": guess,
+                           "fields": [{"name": f.name, "label": f.label, "required": f.required} for f in fields],
+                           "saved": self.store.find_columns(data["headers"], kind)})
+        saved = next((t["id"] for t in tables if t["saved"] is not None), None)
+        guessed = max(scores, key=lambda k: scores[k])
+        return self._json({**{k: data[k] for k in ("filename", "sheets", "sheet", "headers", "row_count", "sample")},
+                           "tables": tables, "suggested": saved or (guessed if scores[guessed] else None)})
+
     def bom_import(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
         """files（filename・content の base64）か、sample: true で見本の CSV を取り込む。入った表だけ入れ替える。
 
         files の1件に table と columns（項目 → 見出し）があればその対応で読み、決定の時に対応を保存する。無ければ見出しから
-        表の種類を当てる。sheet は Excel のシート名。check: true は読んだ件数と警告を返すだけで、何も保存しない。
+        表の種類を当てる。sheet は Excel のシート名。check: true は読んだ件数・警告・数量の食い違いを返すだけで、何も保存しない。
         """
         from .screens import Screens
 
         tables: list[Table] = []
-        maps: list[ColumnMap | None] = []
+        maps: list[BomMap | None] = []
         if body.get("sample"):
             if not SAMPLES_DIR.is_dir():
                 raise ValueError("見本のデータがありません")
@@ -316,16 +388,18 @@ class StudyApi:
             for f in files:
                 table, _, _ = screens._read_upload(f)
                 tables.append(table)
-                maps.append(screens._column_map(f, table) if f.get("columns") is not None else None)
-        version, kinds, warnings, attributes = import_tables(tables, settings.labels(), maps)
+                maps.append(chosen_columns(f, table) if f.get("columns") is not None else None)
+        version, kinds, warnings, attributes = import_tables(tables, maps)
         if body.get("check"):
             read = {"item": len(version.items), "bom_line": len(version.lines), "cost": len(version.cost_rows),
                     "volume": len(version.volumes)}
-            return self._json({"tables": kinds, "warnings": warnings, "counts": {k: read[k] for k in dict.fromkeys(kinds)}})
+            return self._json({"tables": kinds, "warnings": warnings, "counts": {k: read[k] for k in dict.fromkeys(kinds)},
+                               "conflicts": [{"parent": c.key[0], "balloon": c.key[1], "child": c.key[2],
+                                              "quantities": [_s(x) for x in c.quantities]} for c in version.conflicts]})
         self.store.replace_bom(version, kinds, attributes)
-        for column_map in maps:
-            if column_map is not None:
-                self.api.store.save_column_map(column_map)
+        for table, chosen in zip(tables, maps):
+            if chosen is not None:
+                self.store.save_columns(table.headers, chosen.kind, chosen.columns)
         return self._json({"tables": kinds, "warnings": warnings, "counts": self.store.bom_counts()})
 
     def lookup(self, params: dict[str, str], body: dict[str, Any]) -> "Response":

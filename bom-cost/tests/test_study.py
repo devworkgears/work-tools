@@ -808,8 +808,54 @@ class StudyApiFlow(unittest.TestCase):
         self.assertEqual(done["counts"]["item"], 1)
         looked = self.ok("POST", "/api/v2/lookup", body={"codes": ["A-100"]})["items"]["A-100"]
         self.assertEqual(looked["name"], "製品A")
-        preview = self.ok("POST", "/api/import/preview", body={"filename": f["filename"], "content": f["content"]})
+        preview = self.ok("POST", "/api/v2/bom/preview", body={"filename": f["filename"], "content": f["content"]})
         self.assertEqual(preview["suggested"], "item")  # 決定で列の対応を保存し、次の同じ見出しで出る
+        self.assertEqual(preview["tables"][0]["saved"], f["columns"])
+
+    @staticmethod
+    def csv(name: str, text: str, **more: object) -> dict[str, object]:
+        return {"filename": name, "content": base64.b64encode(text.encode("utf-8")).decode(), **more}
+
+    def refused(self, *files: dict[str, object]) -> str:
+        response = self.api.handle("POST", "/api/v2/bom/import", "", json.dumps({"files": files}, ensure_ascii=False).encode("utf-8"))
+        self.assertEqual(response.status, 400)
+        return response.json()["error"]
+
+    def test_import_offers_only_the_fields_in_use(self) -> None:
+        preview = self.ok("POST", "/api/v2/bom/preview", body=self.csv("品目.csv", "品番,品名,系列\nA,a,X\n"))
+        fields = {d["id"]: [f["name"] for f in d["fields"]] for d in preview["tables"]}
+        self.assertEqual(fields, {
+            "item": ["code", "name", "specification", "lifecycle", "model", "product_spec", "drawing"],
+            "bom_line": ["parent", "child", "quantity", "balloon"],
+            "cost": ["mbom_code", "material", "direct", "amortization", "processing"],
+            "volume": ["product", "annual"]})
+        self.assertEqual(preview["suggested"], "item")
+        self.assertEqual(preview["tables"][0]["guess"], {"code": "品番", "name": "品名", "model": "系列"})
+        self.assertIn("level", self.refused(self.csv("構成.csv", "a,b,c,d,e\n", table="bom_line", columns={
+            "parent": "a", "child": "b", "quantity": "c", "balloon": "d", "level": "e"})))
+
+    def test_attribute_columns_are_chosen_on_the_screen(self) -> None:
+        self.ok("POST", "/api/v2/bom/import", body={"files": [self.csv(
+            "品目.csv", "品番,品名,かたち\nA-100,製品A,ZZ\n", table="item", columns={"code": "品番", "name": "品名", "model": "かたち"})]})
+        self.assertEqual(self.ok("POST", "/api/v2/lookup", body={"codes": ["A-100"]})["items"]["A-100"]["model"], "ZZ")
+
+    def test_structure_needs_a_balloon_column_with_blank_cells_allowed(self) -> None:
+        plain = "親品番,子品番,数量\nP,B,4\n"
+        self.refused(self.csv("構成.csv", plain))
+        self.assertIn("風船番号", self.refused(self.csv("構成.csv", plain, table="bom_line", columns={
+            "parent": "親品番", "child": "子品番", "quantity": "数量"})))
+        for header in ("風船番号", "風船", "バルーンNo", "ﾊﾞﾙｰﾝ番号", "符号", "照合番号"):
+            r = self.ok("POST", "/api/v2/bom/import", body={"files": [self.csv(
+                "構成.csv", f"親品番,{header},子品番,数量\nP,1,B,4\nP,2,B,4\nP,,C,1\n")], "check": True})
+            self.assertEqual((r["counts"], r["conflicts"], r["warnings"]), ({"bom_line": 3}, [], []), header)
+
+    def test_different_quantities_for_the_same_place_are_shown_in_the_check(self) -> None:
+        body = {"files": [self.csv("構成.csv", "親品番,風船番号,子品番,数量\nP,1,B,4\nP,1,B,2\nP,1,B,4\nP,,C,1\nP,,C,1\n")], "check": True}
+        r = self.ok("POST", "/api/v2/bom/import", body=body)
+        self.assertEqual(r["conflicts"], [{"parent": "P", "balloon": "1", "child": "B", "quantities": ["4", "2"]}])
+        # 風船番号が空の同じ親子は、展開の繰り返しか2か所かを見分けられないので知らせる
+        self.assertEqual(len(r["warnings"]), 1)
+        self.assertIn("1 組あり、1行分の数量で取り込みます（P の C）", r["warnings"][0])
 
     def test_import_with_chosen_columns_refuses_a_missing_required_column(self) -> None:
         csv = "コードX,なまえY\nA-100,製品A\n".encode("utf-8")
