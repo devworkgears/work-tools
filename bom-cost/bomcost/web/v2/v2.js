@@ -1148,15 +1148,15 @@ async function searchReplaceScreen(main, cur) {
       send("/api/v2/quantity", { rows: gone.map((x) => ({ product: x.product, balloon: x.balloon, part: x.part, quantity: "" })) }, `${where}${code} の追加を取り消しました`);
       return;
     }
-    if (!confirm(`${where}${code} に置き換えた箇所を、今の部品表（${p.was.join("・")}）に戻します。よろしいですか？`)) return;
-    send("/api/v2/replace/revert", each ? { part: code, product: p.product, balloon: p.balloon } : { part: code }, `${where}${code} に置き換えた箇所を今の部品表に戻しました`);
+    if (!confirm(`${where}${code} に置き換えた箇所を、現行（${p.was.join("・")}）に戻します。よろしいですか？`)) return;
+    send("/api/v2/replace/revert", each ? { part: code, product: p.product, balloon: p.balloon } : { part: code }, `${where}${code} に置き換えた箇所を現行に戻しました`);
   };
   const materialCell = (code) => {
     const info = items.get(code);
     return { text: info && info.material != null ? fmt(info.material) : "", cls: "r" };
   };
   const backs = (p) => !ro && (p.path ? p.was.length > 0 && p.lines.every((x) => x.was.length < 2) : p.was.length > 0 || added(p));
-  const wasCell = (p) => ({ text: added(p) ? "（追加）" : p.was.join("・"), cls: backs(p) ? "auto link" : "auto", title: backs(p) ? "押すと今の部品表に戻す" : null });
+  const wasCell = (p) => ({ text: added(p) ? "（追加）" : p.was.join("・"), cls: backs(p) ? "auto link" : "auto", title: backs(p) ? "押すと現行に戻す" : null });
   const whereCell = (p) => ({ text: whereText(p), cls: "auto" });
   const set = (r, c, value) => {
     const p = shown[r];
@@ -1207,7 +1207,7 @@ async function searchReplaceScreen(main, cur) {
         case 5: return nameCell(p.product);
         case 6: return { text: p.balloon ?? "—", cls: "c" };
         case 7: return p.path ? { text: p.quantity, cls: "r", title: "中の数量は、仮品番の中身で変える" } : { text: p.quantity, editable: !ro, cls: "r" + (added(p) || !same(p.quantity, p.before) ? " own" : ""),
-          title: p.before === null ? null : `今 ${fmt(p.before)}${ro ? "" : "（0 で消す・空で今に戻す）"}` };
+          title: p.before === null ? null : `現行 ${fmt(p.before)}${ro ? "" : "（0 で消す・空で現行に戻す）"}` };
         default: return wasCell(p);
       }
     },
@@ -1263,7 +1263,7 @@ async function searchReplaceScreen(main, cur) {
         for (const t of open) all.checked ? checked.add(t) : checked.delete(t);
         drawList();
       } });
-      fill(list, el("table", { class: "list" }, el("tr", {}, el("th", {}, all), el("th", {}, "製品"), el("th", {}, "名称"), el("th", {}, "今ある数量")),
+      fill(list, el("table", { class: "list" }, el("tr", {}, el("th", {}, all), el("th", {}, "製品"), el("th", {}, "名称"), el("th", {}, "使っている数量")),
         visible().map((t) => {
           const at = has(t);
           const box = el("input", { type: "checkbox", checked: !at && checked.has(t), disabled: !!at, onchange: () => {
@@ -1367,7 +1367,7 @@ async function listScreen(main) {
       if (!cell) return { text: "", cls: "r q" };
       return {
         text: fmt(cell.quantity), cls: "r q" + (cell.problem ? " bad" : cell.changed ? " own" : ""),
-        title: cell.changed || cell.problem ? `今 ${fmt(cell.now)}${cell.problem ? "・要確認（変更一覧）" : ""}` : null,
+        title: cell.changed || cell.problem ? `現行 ${fmt(cell.now)}${cell.problem ? "・要確認（変更一覧）" : ""}` : null,
       };
     },
     set() {},
@@ -1639,7 +1639,7 @@ async function changesScreen(main) {
   };
   const detailDialog = (row) => {
     const box = dialog(`${row.kind} ${[row.old, row.new].filter(Boolean).join(" → ")}`,
-      el("table", { class: "list" }, el("tr", {}, ["製品", "名称", "親", "風船", row.new && row.old ? `元 ${row.old}` : "変更前", row.new && row.old ? `新 ${row.new}` : "変更後"].map((t) => el("th", {}, t))),
+      el("table", { class: "list" }, el("tr", {}, ["製品", "名称", "親", "風船", row.new && row.old ? `現行 ${row.old}` : "現行", row.new && row.old ? `変更後 ${row.new}` : "変更後"].map((t) => el("th", {}, t))),
         row.details.map((d) => el("tr", {}, el("td", {}, d.product), el("td", {}, nameCell(d.product).text), el("td", {}, d.parent),
           el("td", {}, d.balloon ?? "—"), el("td", { class: "r" }, d.before === null ? "—" : fmt(d.before)), el("td", { class: "r" }, fmt(d.after))))),
       [el("span", { class: "sp" }), el("button", { class: "btn", onclick: () => box.close() }, "閉じる")]);
@@ -1823,7 +1823,7 @@ async function resultScreen(main) {
       el("tr", {}, el("th", {}, "対象品番"), el("th", {}, "名称"), el("th", { class: "r" }, "年間台数"), el("th", {}), heads.map((h) => el("th", { class: "r" }, h.label))),
       rows.flatMap((r0, i) => [
         el("tr", {}, el("td", { rowspan: "3" }, r0.product), el("td", { rowspan: "3" }, r0.name ?? "未登録"), el("td", { class: "r", rowspan: "3" }, fmt(r0.annual)),
-          line("今", heads.map((h) => el("td", { ...incomplete(h.rows[i].now_incomplete), class: "r low" + (h.rows[i].now_incomplete ? " inc" : "") }, fmt(h.rows[i].now))))),
+          line("現行", heads.map((h) => el("td", { ...incomplete(h.rows[i].now_incomplete), class: "r low" + (h.rows[i].now_incomplete ? " inc" : "") }, fmt(h.rows[i].now))))),
         el("tr", {}, line("変更後", heads.map((h) => el("td", { ...incomplete(h.rows[i].incomplete[plan]), class: "r low" + (h.rows[i].incomplete[plan] ? " inc" : "") }, fmt(h.rows[i].plans[plan]))))),
         el("tr", {}, line("差", heads.map((h) => {
           const diff = diffOf(h.rows[i]);
@@ -1879,7 +1879,7 @@ async function ownScreen(main, cur) {
   const body = el("div");
   // 列: # | 対象品番 | 名称 | 費目ごとに 今（台帳・読むだけ）と 変更後（打つ）
   const model = {
-    head: () => ["", "対象品番", "名称", ...heads.flatMap((h) => [{ text: `${h.label} 今`, cls: "r" }, { text: `${h.label} 変更後`, cls: "r" }])],
+    head: () => ["", "対象品番", "名称", ...heads.flatMap((h) => [{ text: `${h.label} 現行`, cls: "r" }, { text: `${h.label} 変更後`, cls: "r" }])],
     nRows: () => rows.length,
     nCols: () => 3 + heads.length * 2,
     cell(r, c) {
@@ -1944,11 +1944,26 @@ async function tempScreen(main, cur) {
     const all = !(rows.length && rows.every((r) => r.mark));
     for (const r of rows) r.mark = all;
   };
+  // 見出しを押すと並べ替える（もう一度押すと逆順）。空は後ろ。並べ替えるのは押した時だけで、打っている間は動かない
+  let sorted = { key: "", down: false };
+  const price = (r) => (r.material !== "" ? r.material : r.derived ?? "");
+  const sortBy = (key) => {
+    sorted = { key, down: sorted.key === key && !sorted.down };
+    const value = (r) => (key === "price" ? price(r) : r[key]);
+    rows.sort((a, b) => {
+      const [x, y] = [value(a), value(b)];
+      if (x === "" || y === "") return (x === "") - (y === "");
+      const n = key === "price" ? Number(x) - Number(y) : x.localeCompare(y, "ja", { numeric: true });
+      return sorted.down ? -n : n;
+    });
+    if (!ro) saver.schedule(); // 並びも一時保存する
+  };
+  const sortHead = (text, key) => ({ text: `${label(text)}${sorted.key === key ? (sorted.down ? " ▼" : " ▲") : ""}`, title: "押すと並べ替える", action: () => sortBy(key) });
   const body = el("div");
   const model = {
     head: () => [
       { text: rows.length && rows.every((r) => r.mark) ? "☑" : "☐", cls: "c", title: "全部の行に印", action: ro ? null : markAll },
-      "", "品番", "名称", "流用元", { text: "材料費", cls: "r" }, { text: "流用元から計算", cls: "r" }, "中", "",
+      "", sortHead("品番", "code"), sortHead("名称", "name"), sortHead("流用元", "base"), { ...sortHead("材料費", "price"), cls: "r" }, { text: "流用元から計算", cls: "r" }, "中", "",
     ],
     nRows: () => rows.length + (ro ? 0 : 1),
     grow: ro ? undefined : () => { rows.push(blank()); return true; },
