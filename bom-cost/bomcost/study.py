@@ -1,7 +1,7 @@
 """設計検討（/v2/）: 部品の差し替えを、対象の製品にまたがって案ごとに試算する。
 
 検討が持つのは「製品×親×風船番号×品番の数量の増減」（変更）だけで、部品表は計算のたびに今の物を読む。
-部品変更（品番・数量・部品を足す）と構成変更は同じ変更の集まりに書き、同じ箇所は後に書いた方が勝つ（足し算しない）。
+部品変更（品番・数量・部品追加）と構成変更は同じ変更の集まりに書き、同じ箇所は後に書いた方が勝つ（足し算しない）。
 変えられるのは製品の直下（1階層目）だけ。組立品の中を替える時は、組立品を流用した仮品番を作り、直下で置き換える。
 版確定の時だけ、そのときの検討と部品表（対象にかかる分）を写して固める。
 """
@@ -1234,7 +1234,7 @@ class StudyStore:
                 raise ValueError(f"{code} を自分の中には足せません")
             now, after = after_lines(ws, plan, product)
             if any(k[2] == code and q != 0 for k, q in after.items()):
-                raise ValueError(f"{code} は {product} にもうあります。数量は「製品ごと」で変えてください")
+                raise ValueError(f"{code} は {product} にもうあります。数量は「製品別」で変えてください")
             key = (product, None, code)
             work[(product, *key)] = amount - now.get(key, Decimal(0))
         with self._conn:

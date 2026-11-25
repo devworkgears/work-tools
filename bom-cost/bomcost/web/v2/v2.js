@@ -527,7 +527,7 @@ async function hubScreen(main, cur) {
       el("span", { class: "mini", style: "margin-left:8px" }, "検討番号"), numberInput,
       el("span", { class: "mini" }, "版"), versionSelect,
       el("button", { class: "btn", onclick: read, disabled: S.mode === "new" }, "読込"),
-      el("button", { class: "btn", onclick: studyListDialog, disabled: S.mode === "new" }, "一覧から探す"),
+      el("button", { class: "btn", onclick: studyListDialog, disabled: S.mode === "new" }, "一覧検索"),
       el("span", { class: "sp" }), bomNote,
       el("button", { class: "btn quiet", onclick: () => importDialog(() => imported().catch(fail)) }, "部品表データ取込（モック）")),
     el("div", { class: "card" },
@@ -568,7 +568,7 @@ async function setMode(mode) {
 async function studyListDialog() {
   try {
     const data = await api("GET", "/api/v2/studies");
-    const d = dialog("一覧から探す",
+    const d = dialog("一覧検索",
       el("table", { class: "list" },
         el("tr", {}, ["検討番号", "題目", "担当", "最終更新日", "版"].map((t) => el("th", {}, t))),
         data.studies.map((s) => el("tr", {
@@ -832,7 +832,7 @@ async function importDialog(after) {
       el("div", { style: "overflow:auto" }, el("table", { class: "list" },
         el("tr", {}, d.headers.map((h) => el("th", {}, raw(h || "（空）")))),
         d.sample.map((r) => el("tr", {}, r.map((c) => el("td", {}, raw(c))))))),
-      el("div", { class: "row", style: "margin:8px 0" }, el("button", { class: "btn", onclick: add }, "この内容で一覧に加える")));
+      el("div", { class: "row", style: "margin:8px 0" }, el("button", { class: "btn", onclick: add }, "一覧追加")));
   };
 
   const drawPending = () => {
@@ -883,7 +883,7 @@ async function importDialog(after) {
         warningBox(r.warnings),
         el("div", { class: "row" },
           el("button", { class: "btn pri", onclick: decide }, "決定"),
-          el("button", { class: "btn", onclick: clearCheck }, "やめる")));
+          el("button", { class: "btn", onclick: clearCheck }, "取消")));
     } catch (e) {
       fail(e);
     }
@@ -936,7 +936,7 @@ async function importDialog(after) {
 // （1回きりの操作で、決まりとしては残さない）。行の細かさは3つで、打った行に入っている箇所が全部替わる:
 // 一括＝現行の部品ごと・親品番ごと＝部品×入っている組立品ごと・製品ごと＝部品×製品×風船番号ごと（直下の行は数量も変えられる。0 は消す）。
 // 組立品の中を替えると、上の組立品に新しい品番（流用した仮品番）が自動で付き、変更後の親品番に出る（その場で打ち直せる）。
-// 「部品を足す」は、選んだ製品の直下にまとめて足す（風船番号は無し）
+// 「部品追加」は、選んだ製品の直下にまとめて足す（風船番号は無し）
 const MAX_PART_ROWS = 1000;
 
 async function searchReplaceScreen(main, cur) {
@@ -1042,7 +1042,7 @@ async function searchReplaceScreen(main, cur) {
     const products = [...g.products];
     try {
       await lookup(products);
-      const box = dialog(`使う製品 ${g.now || [...g.afters][0]}`,
+      const box = dialog(`使用製品 ${g.now || [...g.afters][0]}`,
         el("table", { class: "list" }, el("tr", {}, el("th", {}, "品番"), el("th", {}, "名称")),
           products.map((code) => el("tr", {}, el("td", {}, code), el("td", {}, nameCell(code).text)))),
         [el("span", { class: "sp" }), el("button", { class: "btn", onclick: () => box.close() }, "閉じる")]);
@@ -1136,7 +1136,7 @@ async function searchReplaceScreen(main, cur) {
     [{ text: "部品品番", cls: "after split" }, afterCell, "code"],
     [{ text: "部品名称", cls: "after" }, afterName],
     ...(grain === "part" ? [[{ text: "材料費", cls: "after r" }, (g) => (afterOf(g) ? price(afterOf(g)) : text(""))],
-      [{ text: "組立品の新しい品番", cls: "after" }, (g) => ({ text: [...g.made].slice(0, 2).join("・") + (g.made.size > 2 ? ` ほか ${g.made.size - 2}` : ""), cls: "auto", title: [...g.made].join("・") })]]
+      [{ text: "組立品の新品番", cls: "after" }, (g) => ({ text: [...g.made].slice(0, 2).join("・") + (g.made.size > 2 ? ` ほか ${g.made.size - 2}` : ""), cls: "auto", title: [...g.made].join("・") })]]
       : [...(grain === "product" ? [[{ text: "数量", cls: "after r" }, amount, "amount"]] : []), [{ text: "親品番", cls: "after" }, parentAfter, "parent"]]),
   ];
   let cols = columns();
@@ -1174,7 +1174,7 @@ async function searchReplaceScreen(main, cur) {
   const drawModes = () => {
     productFilter.hidden = grain !== "product";
     productFilter.style.display = grain === "product" ? "" : "none";
-    fill(modes, [["part", "一括"], ["parent", "親品番ごと"], ["product", "製品ごと"]].map(([k, name]) => el("button", { class: "chip" + (grain === k ? " on" : ""), onclick: async () => {
+    fill(modes, [["part", "一括"], ["parent", "親品番別"], ["product", "製品別"]].map(([k, name]) => el("button", { class: "chip" + (grain === k ? " on" : ""), onclick: async () => {
       if (Grid.active) Grid.active.commit();
       grain = k;
       groups = null;
@@ -1189,7 +1189,7 @@ async function searchReplaceScreen(main, cur) {
   };
   drawModes();
   for (const box of [codeBox, nameBox, productBox, productNameBox]) box.addEventListener("input", () => refilter().catch(fail));
-  // 部品を足す: 品番と数量を打ち、足す製品に印を付ける。もう直下にある製品には付けられない
+  // 部品追加: 品番と数量を打ち、足す製品に印を付ける。もう直下にある製品には付けられない
   const addDialog = async () => {
     try {
       await lookup(S.targets);
@@ -1216,7 +1216,7 @@ async function searchReplaceScreen(main, cur) {
         for (const t of open) all.checked ? checked.add(t) : checked.delete(t);
         drawList();
       } });
-      fill(list, el("table", { class: "list" }, el("tr", {}, el("th", {}, all), el("th", {}, "製品"), el("th", {}, "名称"), el("th", {}, "使っている数量")),
+      fill(list, el("table", { class: "list" }, el("tr", {}, el("th", {}, all), el("th", {}, "製品"), el("th", {}, "名称"), el("th", {}, "使用数量")),
         visible().map((t) => {
           const at = has(t);
           const box = el("input", { type: "checkbox", checked: !at && checked.has(t), disabled: !!at, onchange: () => {
@@ -1252,16 +1252,16 @@ async function searchReplaceScreen(main, cur) {
       }
       await refilter().catch(fail);
     };
-    const box = dialog("部品を足す", [
-      el("div", { class: "row" }, el("label", { class: "f" }, "足す品番", part), el("label", { class: "f" }, "数量", amount), name),
+    const box = dialog("部品追加", [
+      el("div", { class: "row" }, el("label", { class: "f" }, "追加品番", part), el("label", { class: "f" }, "数量", amount), name),
       el("div", { class: "row" }, el("label", { class: "f" }, "製品品番", code), el("label", { class: "f" }, "製品名称", title),
-        el("label", { class: "f" }, "使っている品番", uses), count),
+        el("label", { class: "f" }, "使用品番", uses), count),
       list,
-    ], [el("span", { class: "sp" }), el("button", { class: "btn pri", onclick: run }, "足す"), el("button", { class: "btn", onclick: () => box.close() }, "閉じる")]);
+    ], [el("span", { class: "sp" }), el("button", { class: "btn pri", onclick: run }, "追加"), el("button", { class: "btn", onclick: () => box.close() }, "閉じる")]);
     drawList();
     part.focus();
   };
-  main.append(card("部品変更", [el("button", { class: "btn", disabled: ro || !S.number, onclick: addDialog }, "部品を足す")], [
+  main.append(card("部品変更", [el("button", { class: "btn", disabled: ro || !S.number, onclick: addDialog }, "部品追加")], [
     el("div", { class: "row" }, modes, el("label", { class: "f" }, "部品品番", codeBox), el("label", { class: "f" }, "部品名称", nameBox), productFilter, note),
     body,
   ]));
@@ -1320,7 +1320,7 @@ async function structureView(key, redraw) {
       fill(drawingPick, data.drawings.map((d) => el("option", { value: d.drawing, selected: d.drawing === view.drawing }, `${d.drawing || "（なし）"}（${d.count} 製品）`)),
         data.drawings.length > 1 ? el("option", { value: "*", selected: view.drawing === "*" }, `全部（${S.targets.length} 製品）`) : null);
       fill(parentPick, el("option", { value: "" }, "全部"), parents.map((p) => el("option", { value: p, selected: p === view.parent }, `${p} ${me.name(p)}`)));
-      if (child) users.textContent = `使う製品 ${usedBy()}`;
+      if (child) users.textContent = `使用製品 ${usedBy()}`;
     },
     // 行 { balloon, first, part, now, cells: 親 → 箇所 }。compare なら現行の品番も行の組に入れ、balloons が偽なら風船番号をまとめる
     rows({ compare = false, balloons = true, sort = null } = {}) {
@@ -1343,7 +1343,7 @@ async function structureView(key, redraw) {
       }
       return [...found.values()].sort(order);
     },
-    // 絞り込みと「変えた所だけ」
+    // 絞り込みと「変更行のみ」
     shown(rows) {
       const c = norm(codeBox.value);
       const n = norm(nameBox.value);
@@ -1357,7 +1357,7 @@ async function structureView(key, redraw) {
       return { text: `${star}${code}\n${me.name(code) || "未登録"}`, cls: "vh" + (data.items[code] ? "" : " bad"), title: `${star}${code} ${me.name(code)}` };
     },
     opens: (row) => !row.draft && !!data.inside[row.part] && [...row.cells.values()].some((s) => Number(s.quantity) !== 0),
-    openCell: (row) => (row && me.opens(row) ? { text: "開く", cls: "link", title: "組立品の中（同じ風船番号の組立品を並べて開く）" } : { text: "" }),
+    openCell: (row) => (row && me.opens(row) ? { text: "開く", cls: "link", title: "同じ風船番号の組立品を並べて開く" } : { text: "" }),
     // 同じ風船番号の組立品を、まとめて開く（風船番号の無い行は、その組立品だけ）
     open(row) {
       const bases = new Set([base(row.part)]);
@@ -1408,13 +1408,13 @@ async function structureView(key, redraw) {
     me.only = !me.only;
     only.classList.toggle("on", me.only);
     redraw();
-  } }, "変えた所だけ");
+  } }, "変更行のみ");
   me.picks = [child ? null : el("label", { class: "f" }, "図面", drawingPick), el("label", { class: "f" }, child ? "組立品" : "製品", parentPick)];
   me.filters = [el("label", { class: "f" }, "品番", codeBox), el("label", { class: "f" }, "名称", nameBox)];
   me.onlyButton = only;
   me.users = child ? users : null;
   await me.load();
-  me.title = (text) => (child ? `${text}　${child.bases.slice(0, 3).join("・")}${child.bases.length > 3 ? ` ほか ${child.bases.length - 3}` : ""} の中` : text);
+  me.title = (text) => (child ? `${text}　${child.bases.slice(0, 3).join("・")}${child.bases.length > 3 ? ` ほか ${child.bases.length - 3}` : ""}` : text);
   return me;
 }
 
@@ -1441,7 +1441,7 @@ async function listScreen(main) {
     [{ text: "品番", cls: "after split" }, (r) => ({ text: afterOf(r) ?? "", cls: "split" + (afterOf(r) ? " own" : "") })],
     [{ text: "名称", cls: "after" }, (r) => (gone(r) ? { text: "削除", cls: "auto" } : me.nameCell(afterOf(r)))],
     [{ text: "仕様", cls: "after" }, (r) => me.spec(afterOf(r))], [{ text: "状態", cls: "after" }, (r) => me.state(afterOf(r))],
-    [{ text: "中", cls: "after" }, (r) => me.openCell(r)]];
+    [{ text: "下位", cls: "after" }, (r) => me.openCell(r)]];
   const columns = () => [...left(), ...right];
   const model = {
     groups: () => [{ text: "", span: 1 }, { text: "現行", span: left().length }, { text: "変更後", span: right.length, cls: "after split" },
@@ -1534,7 +1534,7 @@ async function rewriteScreen(main, cur) {
       last = place.get(k);
     }
     rows = me.shown(sorted.map((r, i) => [r, i]).sort(([a, i], [b, j]) => place.get(keyOf(a)) - place.get(keyOf(b)) || i - j).map(([r]) => r));
-    if (sorted.length < all.length) me.note.textContent += `（0 の行 ${all.length - sorted.length} を隠しています）`;
+    if (sorted.length < all.length) me.note.textContent += `（0 の行 ${all.length - sorted.length} 非表示）`;
     for (const d of drafts) {
       // 足しかけの行は、選んでいた行の後ろに出す
       let at = rows.findIndex((r) => !r.draft && keyOf(r) === d.after);
@@ -1563,7 +1563,7 @@ async function rewriteScreen(main, cur) {
   let parts = new Map(); // 行 → 品番（空は現行に戻す）
   let amounts = new Map(); // 行 → 親 → 数量（空は現行に戻す）
   const model = {
-    head: () => ["", { text: "風船", cls: "c" }, "品番", "名称", "仕様", "状態", "中", ...parents().map(me.head)],
+    head: () => ["", { text: "風船", cls: "c" }, "品番", "名称", "仕様", "状態", "下位", ...parents().map(me.head)],
     nRows: () => rows.length + (ro || !parents().length ? 0 : 1),
     nCols: () => left + parents().length,
     grow: ro ? undefined : () => {
@@ -1642,7 +1642,7 @@ async function rewriteScreen(main, cur) {
       const unit = me.child ? "組立品" : "製品";
       const text = [...found].map(([code, counts]) => (code === null ? `現行には無い（${[...counts.values()].reduce((a, b) => a + b, 0)} ${unit}）`
         : `${code} ${me.name(code)}　数量 ${[...counts].map(([n, k]) => `${n}（${k} ${unit}）`).join("・")}`)).join("　／　");
-      fill(nowLine, el("b", {}, "選んだ行の現行　"), text ? `風船 ${row.balloon ?? NO_BALLOON}　${text}` : "");
+      fill(nowLine, el("b", {}, "選択行の現行　"), text ? `風船 ${row.balloon ?? NO_BALLOON}　${text}` : "");
       rowBack.disabled = ro || !cells.some(movedSlot);
       allBack.disabled = ro || !moved;
     },
@@ -1688,15 +1688,17 @@ async function rewriteScreen(main, cur) {
     const list = movedIn(me.rows());
     if (!list.length) return;
     const where = `${me.child ? "組立品" : "製品"} ${new Set(list.map(([, parent]) => parent)).size} つ`;
-    if (confirm(`出ている${where}の ${list.length} 箇所を、全部現行に戻します（隠れている行も戻します）。よろしいですか？`)) await back(list);
+    if (confirm(`表示中の${where}の ${list.length} 箇所を、全部現行に戻します（非表示の行も戻します）。よろしいですか？`)) await back(list);
     grid.focus();
   };
   const button = (text, run) => el("button", { class: "btn", disabled: ro || !S.number, onclick: () => {
     if (Grid.active) Grid.active.commit();
     run();
   } }, text);
-  const rowBack = button("行を現行に戻す", () => backRow().catch(fail));
-  const allBack = button("全部を現行に戻す", () => backAll().catch(fail));
+  const rowBack = button("行復元", () => backRow().catch(fail));
+  const allBack = button("全復元", () => backAll().catch(fail));
+  rowBack.title = "選択行の品番と数量を現行に戻す";
+  allBack.title = "表示中の全部を現行に戻す";
   const zeroButton = el("button", { class: "chip on", onclick: () => {
     zero = !zero;
     zeroButton.classList.toggle("on", zero);
@@ -1704,11 +1706,11 @@ async function rewriteScreen(main, cur) {
     draw();
     const r = row ? rows.findIndex((x) => x.draft ? x === row : !row.draft && keyOf(x) === keyOf(row)) : -1; // 選んでいた行のまま
     if (r >= 0) grid.select(r, grid.sel.c);
-  } }, "0 を表示");
-  const spreadButton = el("button", { class: "chip", disabled: ro, title: "足しかけの行に数量を1つ打つと、出ている全部に同じ数量が入る", onclick: () => {
+  } }, "0表示");
+  const spreadButton = el("button", { class: "chip", disabled: ro, title: "追加する行に数量を1つ打つと、表示中の全部に同じ数量が入る", onclick: () => {
     spread = !spread;
     spreadButton.classList.toggle("on", spread);
-  } }, `行の追加は全部の${me.child ? "組立品" : "製品"}へ`);
+  } }, "数量一律");
   const grid = new Grid(body, model);
   const send = async (path, payload, text) => {
     const d = await work("変更しています", () => api("POST", path, { number: S.number, plan: PLAN }, payload));
@@ -1814,8 +1816,8 @@ async function rewriteScreen(main, cur) {
     const off = new Set(); // 替えない風船番号
     let every = null; // 対象品番の全部の直下（範囲で選んだ時に読む）
     const unit = me.child ? "組立品" : "製品";
-    const range = el("select", { class: "in" }, el("option", { value: "here" }, `出ている${unit}（${parents().length}）`),
-      me.child ? null : el("option", { value: "all" }, `対象品番の全部（${S.targets.length}）`));
+    const range = el("select", { class: "in" }, el("option", { value: "here" }, `表示中の${unit}（${parents().length}）`),
+      me.child ? null : el("option", { value: "all" }, `全対象品番（${S.targets.length}）`));
     const same = (a, b) => clean(a).toLowerCase() === clean(b).toLowerCase();
     const places = () => {
       const slots = range.value === "all" ? Object.entries(every) : parents().map((p) => [p, me.slots(p)]);
@@ -1830,7 +1832,7 @@ async function rewriteScreen(main, cur) {
         found.get(s.balloon).push(parent);
       }
       const shown = [...found].sort(([a], [b]) => balloonOrder(a, b));
-      fill(list, shown.length ? el("table", { class: "list" }, el("tr", {}, ["替える", "風船", "箇所", unit].map((t) => el("th", {}, t))),
+      fill(list, shown.length ? el("table", { class: "list" }, el("tr", {}, ["対象", "風船", "箇所", unit].map((t) => el("th", {}, t))),
         shown.map(([balloon, codes]) => el("tr", {},
           el("td", {}, el("input", { type: "checkbox", checked: !off.has(balloon), onchange: (e) => {
             e.target.checked ? off.delete(balloon) : off.add(balloon);
@@ -1839,7 +1841,7 @@ async function rewriteScreen(main, cur) {
           el("td", {}, balloon ?? NO_BALLOON), el("td", { class: "r" }, codes.length),
           el("td", { title: codes.join("・") }, codes.slice(0, 4).join("・") + (codes.length > 4 ? ` ほか ${codes.length - 4}` : "")))))
         : el("div", { class: "mini" }, clean(old.value) ? "今の構成にありません" : ""));
-      run.textContent = `${chosen().length} 箇所を替える`;
+      run.textContent = `置換（${chosen().length} 箇所）`;
       run.disabled = !chosen().length || !clean(next.value) || same(old.value, next.value);
     };
     const names = async () => {
@@ -1890,7 +1892,7 @@ async function rewriteScreen(main, cur) {
       grid.focus();
     };
     const box = dialog("一括置換", [
-      el("div", { class: "row" }, el("label", { class: "f" }, "元の品番", old), oldName, "→", el("label", { class: "f" }, "新しい品番", next), nextName,
+      el("div", { class: "row" }, el("label", { class: "f" }, "元品番", old), oldName, "→", el("label", { class: "f" }, "新品番", next), nextName,
         el("label", { class: "f" }, "範囲", range)),
       list,
     ], [run, el("span", { class: "sp" }), el("button", { class: "btn", onclick: () => box.close() }, "閉じる")]);
@@ -1919,7 +1921,7 @@ async function rewriteScreen(main, cur) {
   };
   // 足しかけの行がある間は、ほかの窓の保存で描き直さない（打ちかけが消えるため）
   cur.saver = { flush: async () => {}, get pending() { return drafts.some((d) => d.part || d.balloon || d.amounts.size); } };
-  main.append(card(me.title("構成変更"), [button("行を追加", addRow), button("行を削除", dropRow), button("一括置換", () => bulkDialog().catch(fail)), rowBack, allBack, button("風船番号で並べる", () => {
+  main.append(card(me.title("構成変更"), [button("行追加", addRow), button("行削除", dropRow), button("一括置換", () => bulkDialog().catch(fail)), rowBack, allBack, button("風船順", () => {
     restart();
     draw();
   })], [
@@ -2056,7 +2058,7 @@ async function changesScreen(main) {
     fill(deepBox, data.deep ? el("div", { class: "row" },
       el("span", { class: "pill warn" }, `2階層目の変更 ${data.deep} 件は計算に入りません`),
       el("span", { class: "mini" }, "組立品の中は、部品変更で替えます"),
-      ro ? null : el("button", { class: "btn", onclick: dropDeep }, "2階層目の変更を消す")) : null);
+      ro ? null : el("button", { class: "btn", onclick: dropDeep }, "2階層目の変更削除")) : null);
     const owns = data.rows.filter((r) => r.source === "own");
     await lookup([...data.by_product.map((r) => r.product), ...owns.map((r) => r.product)]);
     fill(ownBox, owns.length ? [el("h3", {}, "製品の費目の書き換え"), el("table", { class: "list" },
@@ -2124,7 +2126,7 @@ async function changesScreen(main) {
   await load();
   const grid = new Grid(body, model);
   const views = el("div", { class: "chips" });
-  const drawViews = () => fill(views, [["product", "製品から"], ["part", "部品から"]].map(([k, text]) =>
+  const drawViews = () => fill(views, [["product", "製品別"], ["part", "部品別"]].map(([k, text]) =>
     el("button", { class: "chip" + (view === k ? " on" : ""), onclick: () => {
       view = k;
       sort.reset();
@@ -2354,7 +2356,7 @@ async function tempScreen(main, cur) {
   const model = {
     head: () => [
       { text: rows.length && rows.every((r) => r.mark) ? "☑" : "☐", cls: "c", title: "全部の行に印", action: ro ? null : markAll },
-      "", sort.head("品番", (r) => r.code), sort.head("名称", (r) => r.name), sort.head("流用元", (r) => r.base), { ...sort.head("材料費", (r) => (r.material !== "" ? r.material : r.derived), true), cls: "r" }, { text: "流用元から計算", cls: "r" }, "中", "",
+      "", sort.head("品番", (r) => r.code), sort.head("名称", (r) => r.name), sort.head("流用元", (r) => r.base), { ...sort.head("材料費", (r) => (r.material !== "" ? r.material : r.derived), true), cls: "r" }, { text: "流用元から計算", cls: "r" }, "下位", "",
     ],
     nRows: () => rows.length + (ro ? 0 : 1),
     grow: ro ? undefined : () => { rows.push(blank()); return true; },
@@ -2463,7 +2465,7 @@ async function tempScreen(main, cur) {
         insideGrid.render();
       });
       // × で閉じても、打ちかけを確定して送ってから表を直す
-      const frame = dialog(`${code} の中（流用元 ${row.savedBase}）`, box, [el("span", { class: "sp" }), el("button", { class: "btn", onclick: () => close() }, "閉じる")]);
+      const frame = dialog(`${code}（流用元 ${row.savedBase}）`, box, [el("span", { class: "sp" }), el("button", { class: "btn", onclick: () => close() }, "閉じる")]);
       const close = async () => {
         insideGrid.commit();
         await keep.flush();
@@ -2486,7 +2488,7 @@ async function tempScreen(main, cur) {
       fail(e);
     }
   };
-  const addUnregistered = el("button", { class: "btn", disabled: ro }, "未登録を表に入れる");
+  const addUnregistered = el("button", { class: "btn", disabled: ro }, "未登録取込");
   addUnregistered.addEventListener("click", () => {
     if (Grid.active) Grid.active.commit();
     const fresh = unregistered.filter((code) => !rows.some((r) => r.code === code));
