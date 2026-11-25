@@ -161,7 +161,7 @@ class ApiShapes(unittest.TestCase):
 HARNESS = r"""
 const out = {};
 out.clean = [clean("ＰＲ１００１－００１"), clean(" −２ "), clean("abc")];
-// ④ と同じ形: 品番・名称（書き換えない）・品番
+// 品番の組の表: 品番・名称（書き換えない）・品番
 function model3() {
   const rows = [];
   return {
@@ -191,7 +191,7 @@ fake.editing = {};
 fake.sink.value = "x";
 Grid.prototype.takeSink.call(fake);
 out.sink = { started, left: fake.sink.value };
-// ④ と同じ形の格子で、Tab・左右は書けない「名称」を飛ばし、名称で打った文字は右の書ける列へ入る
+// 同じ形の格子で、Tab・左右は書けない「名称」を飛ばし、名称で打った文字は右の書ける列へ入る
 function navGrid(sel) {
   const g = Object.create(Grid.prototype);
   g.model = { nRows: () => 2, nCols: () => 5, cell: (r, c) => ({ editable: c === 1 || c === 3 }) };

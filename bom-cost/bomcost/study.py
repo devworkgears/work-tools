@@ -884,7 +884,7 @@ class _Places(dict[str, list[Placed]]):
 
 
 class StudyStore:
-    """設計検討の表（v2_*）。部品表もこの表に別に持ち、元の画面のグループとは混ぜない。"""
+    """設計検討の表（v2_*）。部品表もこの表に持つ。"""
 
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
