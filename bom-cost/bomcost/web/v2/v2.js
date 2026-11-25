@@ -16,7 +16,7 @@ const items = new Map(); // 品番 → 右の列の値（/api/v2/lookup）
 let current = null; // 開いている画面 { key, saver }
 
 // 別の窓: ② から ④〜⑩ を開く。窓の URL に画面・検討番号・版・処理を載せる
-const NAMES = { 5: "一覧表示", 6: "変更一覧", 7: "結果", 8: "書き換え", 9: "仮品番", 10: "製品の費目", 11: "置換" };
+const NAMES = { 5: "構成一覧", 6: "変更一覧", 7: "結果", 8: "構成変更", 9: "仮品番", 10: "費目変更", 11: "部品変更" };
 const PARAMS = new URLSearchParams(location.search);
 const POPUP = PARAMS.has("screen");
 // 窓どうしの知らせ。saved＝その検討を一時保存した（ほかの窓は戻った時に読み直す）・switch＝② が別の検討・版に替えた（別の窓は閉じる）
@@ -476,6 +476,7 @@ async function hubScreen(main, cur) {
       openScreen(key);
     },
   }, label, extra);
+  const arrow = () => el("span", { class: "arrow" }, "→");
   const release = el("button", { class: "btn big", style: "margin-left:24px;align-self:center", disabled: !canWrite() }, "版を固める");
   release.addEventListener("click", async () => {
     await leave(cur);
@@ -526,9 +527,10 @@ async function hubScreen(main, cur) {
         el("label", { class: "f" }, "最終更新日", el("input", { class: "in ro", value: updated, readonly: true, style: "min-width:100px;width:110px" })),
         run))),
     el("div", { class: "groups" },
-      el("fieldset", { class: "grp" }, big(3, "対象品番")),
-      el("fieldset", { class: "grp" }, big(11, "置換"), big(5, "一覧表示"), big(8, "書き換え"), big(9, "仮品番"), big(10, "製品の費目")),
-      el("fieldset", { class: "grp" }, big(6, "変更一覧", S.problems ? [" ", el("span", { class: "pill warn" }, S.problems)] : null), big(7, "結果")),
+      // 左から使う順。まん中（青）が打つ画面、右が見る画面
+      el("fieldset", { class: "grp" }, big(3, "対象品番"), big(9, "仮品番")), arrow(),
+      el("fieldset", { class: "grp edit" }, big(11, "部品変更"), big(8, "構成変更"), big(10, "費目変更")), arrow(),
+      el("fieldset", { class: "grp" }, big(5, "構成一覧"), big(6, "変更一覧", S.problems ? [" ", el("span", { class: "pill warn" }, S.problems)] : null), big(7, "結果")),
       release),
   );
 }
@@ -889,7 +891,7 @@ async function importDialog(after) {
   if (status.counts) showNow(status.counts);
 }
 
-// ⑪ 置換 -----------------------------------------------------------------
+// ⑪ 部品変更 -----------------------------------------------------------------
 // 対象品番の直下（1階層目）の、変えた後の部品を、品番か名称で絞って出す。品番を打ち替えると置き換える（1回きりの操作で、決まりとしては残さない）。
 // まとめる＝部品ごとに1行・使う製品の全部で替わる。製品ごと＝部品×製品×風船番号に1行・その行だけ替わり、数量も変えられる（0 は消す）。
 // 見せ方だけの違いで、変更は同じ物。「部品を足す」は、選んだ製品の直下にまとめて足す（風船番号は無し）。
@@ -1152,7 +1154,7 @@ async function searchReplaceScreen(main, cur) {
     drawList();
     part.focus();
   };
-  main.append(card("置換", [el("button", { class: "btn", disabled: ro || !S.number, onclick: addDialog }, "部品を足す")], [
+  main.append(card("部品変更", [el("button", { class: "btn", disabled: ro || !S.number, onclick: addDialog }, "部品を足す")], [
     el("div", { class: "row" }, modes, el("label", { class: "f" }, "品番", codeBox), el("label", { class: "f" }, "名称", nameBox), productFilter, note),
     body,
   ]));
@@ -1160,7 +1162,7 @@ async function searchReplaceScreen(main, cur) {
   grid.focus();
 }
 
-// ⑤ 一覧表示 ---------------------------------------------------------------
+// ⑤ 構成一覧 ---------------------------------------------------------------
 // 印の製品の、変えた後の直下の構成を1枚で見る（読むだけ）。行＝部品を全部自動で出す・列＝製品。変えたマスに色。
 // 直すのは ⑪（品番・数量・部品を足す）と ⑧（1製品の構成）
 
@@ -1251,7 +1253,7 @@ async function listScreen(main) {
     }
   } }, el("option", { value: "" }, "（なし）"), S.targets.map((code) => el("option", { value: code, selected: code === data.main_product }, code)));
   for (const box of [codeBox, nameBox]) box.addEventListener("input", draw);
-  main.append(card("一覧表示", [
+  main.append(card("構成一覧", [
     el("label", { class: "inline" }, "主対象 ", mainPick),
     el("button", { class: "btn", onclick: whereUsed, disabled: !S.number }, "使用先"),
     el("button", { class: "btn", onclick: conditionsDialog, disabled: !S.number }, "計算条件"),
@@ -1334,7 +1336,7 @@ async function conditionsDialog() {
   }
 }
 
-// ⑧ 書き換え -------------------------------------------------------------
+// ⑧ 構成変更 -------------------------------------------------------------
 
 // 1つの製品の直下（1階層目）だけを直す。組立品の中は「中を見る」で見るだけ（替える時は ⑨ で流用した仮品番を作る）
 
@@ -1423,7 +1425,7 @@ async function rewriteScreen(main, cur) {
     await load();
     grid.render();
   });
-  main.append(card("書き換え", [], el("div", { class: "chooser two" }, pick.left, el("div", { class: "work" }, body))));
+  main.append(card("構成変更", [], el("div", { class: "chooser two" }, pick.left, el("div", { class: "work" }, body))));
   grid.focus();
 }
 
@@ -1697,7 +1699,7 @@ async function resultScreen(main) {
   ], body));
 }
 
-// ⑩ 製品の費目 -----------------------------------------------------------
+// ⑩ 費目変更 -----------------------------------------------------------
 // 対象品番ごとに、製品自身の費目（加工費・償却費・直接費）を書き換える。空は台帳の値のまま
 
 async function ownScreen(main, cur) {
@@ -1746,7 +1748,7 @@ async function ownScreen(main, cur) {
     await load();
     grid.render();
   });
-  main.append(card("製品の費目", [], [
+  main.append(card("費目変更", [], [
     el("div", { class: "row" }, el("span", { class: "mini" }, "空の欄は台帳の値で計算します")),
     body,
   ]));

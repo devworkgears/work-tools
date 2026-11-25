@@ -62,7 +62,9 @@ label.f { display: flex; flex-direction: column; font-size: 11px; color: var(--s
 .card > .b { padding: 10px 12px; overflow-x: auto; }
 .no { font-size: 18px; font-weight: 700; letter-spacing: .03em; }
 .close { border: 0; background: none; font-size: 18px; line-height: 1; color: var(--sub); cursor: pointer; padding: 0 4px; }
-.groups { display: flex; flex-wrap: wrap; gap: 10px; }
+.groups { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.groups .arrow { color: var(--sub); font-size: 18px; }
+fieldset.grp.edit .btn { background: var(--soft); border-color: #b9cff5; color: #1d54b8; }
 fieldset.grp { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; display: flex; gap: 6px; margin: 0; }
 .tabs { display: flex; gap: 2px; flex-wrap: wrap; }
 .tabs button {

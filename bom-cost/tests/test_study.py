@@ -122,7 +122,7 @@ class ReplaceInput(StudyCase):
             self.store.save_replaces(self.number, "A", [("K120", "K120")])
 
     def test_row_with_a_balloon_replaces_only_that_group(self) -> None:
-        # 置換は「元品番 × 風船番号」のまとまりで選ぶ（製品ごとに選ぶのは 置換の製品ごと・書き換え）
+        # 置換は「元品番 × 風船番号」のまとまりで選ぶ（製品ごとに選ぶのは 部品変更の製品ごと・構成変更）
         self.assertEqual(replace_groups(self.store.workspace(self.number).bom, ["P1", "P2", "P3"], "K120"),
                          [("5", ["P3"]), ("12", ["P1", "P2"])])
         self.store.save_replaces(self.number, "A", [("K120", "K121", "12")])
@@ -247,7 +247,7 @@ def change_rows(ws: Workspace) -> list[dict]:
 
 
 class ListTable(StudyCase):
-    """⑤ 一覧表示。"""
+    """⑤ 構成一覧。"""
 
     def test_every_direct_part_is_listed_with_changed_cells(self) -> None:
         table = after_table(self.store.workspace(self.number), "A")

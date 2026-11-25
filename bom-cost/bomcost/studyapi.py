@@ -496,7 +496,7 @@ class StudyApi:
         self.store.save_replaces(_number(params), self._plan(params), pairs)
         return self.replace({"number": _number(params), "plan": self._plan(params)})
 
-    # ⑪ 置換（変えた後の構成の部品を並べ、品番を打ち替えると全製品で置き換える） -------------------
+    # ⑪ 部品変更（変えた後の構成の部品を並べ、品番を打ち替えると全製品で置き換える） -------------------
 
     def after_parts(self, params: dict[str, str]) -> "Response":
         ws = self._ws(params)
@@ -533,7 +533,7 @@ class StudyApi:
         self.store.add_part(_number(params), self._plan(params), body.get("part"), body.get("quantity"), _list(body, "products"))
         return self.after_parts({"number": _number(params), "plan": self._plan(params)})
 
-    # ⑤ 一覧表示 ---------------------------------------------------------------
+    # ⑤ 構成一覧 ---------------------------------------------------------------
 
     def after_list(self, params: dict[str, str]) -> "Response":
         """行＝対象品番の直下の部品・セル＝製品ごとの変えた後の数量と風船番号。読むだけ。"""
@@ -559,7 +559,7 @@ class StudyApi:
         data = self._study_json(self.store.workspace(_number(params))).json()
         return self._json({**data, "plan": plan})
 
-    # ⑧ 書き換え -------------------------------------------------------------
+    # ⑧ 構成変更 -------------------------------------------------------------
 
     def rewrite(self, params: dict[str, str]) -> "Response":
         """1製品の直下に案の変更を当てた行。置き換えた箇所は元の行の位置に新しい品番を出す。assembly は中を見られる組立品。"""
@@ -640,7 +640,7 @@ class StudyApi:
         self.store.drop_deep_changes(_number(params), self._plan(params))
         return self.changes({"number": _number(params), "plan": self._plan(params)})
 
-    # ⑩ 製品の費目 -----------------------------------------------------------
+    # ⑩ 費目変更 -----------------------------------------------------------
 
     def own(self, params: dict[str, str]) -> "Response":
         """対象品番ごとの、書き換える費目（加工費・型費・直接費）の台帳の値と書き換えた値。"""

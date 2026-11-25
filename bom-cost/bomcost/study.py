@@ -1,7 +1,7 @@
 """設計検討（/v2/）: 部品の差し替えを、対象の製品にまたがって案ごとに試算する。
 
 検討が持つのは「製品×親×風船番号×品番の数量の増減」（変更）だけで、部品表は計算のたびに今の物を読む。
-置換（品番・数量・部品を足す）と書き換えは同じ変更の集まりに書き、同じ箇所は後に書いた方が勝つ（足し算しない）。
+部品変更（品番・数量・部品を足す）と構成変更は同じ変更の集まりに書き、同じ箇所は後に書いた方が勝つ（足し算しない）。
 変えられるのは製品の直下（1階層目）だけ。組立品の中を替える時は、組立品を流用した仮品番を作り、直下で置き換える。
 版を固めるの時だけ、そのときの検討と部品表（対象にかかる分）を写して固める。
 """
@@ -1095,7 +1095,7 @@ class StudyStore:
             self._touch(sid)
 
     def save_main(self, number: str, main_product: Any) -> None:
-        """⑤一覧表示の並びの基準にする主対象を1つ選ぶ（空なら外す）。対象品番の中からだけ選べる。"""
+        """⑤構成一覧の並びの基準にする主対象を1つ選ぶ（空なら外す）。対象品番の中からだけ選べる。"""
         sid = self.study_id(number)
         main = input_optional_code(main_product, name="主対象")
         targets = [r[0] for r in self._conn.execute("SELECT product FROM v2_target WHERE study_id = ?", (sid,))]
@@ -1105,7 +1105,7 @@ class StudyStore:
             self._conn.execute("UPDATE v2_study SET main_product = ? WHERE study_id = ?", (main, sid))
             self._touch(sid)
 
-    # 置換 -------------------------------------------------------------------
+    # 部品変更 -------------------------------------------------------------------
 
     def apply_replace(self, number: str, plan: str, old: Any, new: Any) -> None:
         """変えた後の構成で、対象品番の全製品の直下の old を new に置き換える（1回きりの操作で、決まりとしては残さない）。
@@ -1186,7 +1186,7 @@ class StudyStore:
                     # 同じ箇所で2つ以上替えた時（風船番号の無い部品表など）は、数の合う相手が1つの時だけ組とみなす
                     down = [c for c in down if c.delta == -mine.delta]
                     if len(down) != 1:
-                        raise ValueError(f"{code} の置き換える前が1つに決まりません（{product}）。書き換えで直してください")
+                        raise ValueError(f"{code} の置き換える前が1つに決まりません（{product}）。構成変更で直してください")
                 gone += [mine.place, *(c.place for c in down)]
         if not gone:
             raise ValueError(f"{code} に置き換えた箇所はありません")
@@ -1298,7 +1298,7 @@ class StudyStore:
                                 self._put(sid, plan, place, delta, REPLACE, pair_key(old, new, balloon))
             self._touch(sid)
 
-    # ⑧ 書き換え -------------------------------------------------------------
+    # ⑧ 構成変更 -------------------------------------------------------------
 
     def save_rewrite(self, number: str, plan: str, product: Any, rows: Sequence[Mapping[str, Any]]) -> None:
         """1製品の書き換えた直下の構成（balloon・part・quantity）と今の部品表の差を変更にする。"""
@@ -1336,7 +1336,7 @@ class StudyStore:
                     self._put(sid, plan, place, delta, REWRITE)
             self._touch(sid)
 
-    # ⑩ 製品の費目 -----------------------------------------------------------
+    # ⑩ 費目変更 -----------------------------------------------------------
 
     def save_owns(self, number: str, plan: str, rows: Sequence[Mapping[str, Any]]) -> None:
         """案の製品の費目の書き換え（product・head・value）を入れ替える。値が空の行は書き換えなし（台帳の値）。"""
