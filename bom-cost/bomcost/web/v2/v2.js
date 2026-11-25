@@ -1350,7 +1350,7 @@ async function structureView(key, redraw) {
       const star = !child && code === data.main_product ? "★ " : "";
       return { text: `${star}${code}\n${me.name(code) || "未登録"}`, cls: "vh" + (data.items[code] ? "" : " bad"), title: `${star}${code} ${me.name(code)}` };
     },
-    opens: (row) => !row.draft && !!data.inside[row.part],
+    opens: (row) => !row.draft && !!data.inside[row.part] && [...row.cells.values()].some((s) => Number(s.quantity) !== 0),
     openCell: (row) => (row && me.opens(row) ? { text: "開く", cls: "link", title: "組立品の中（同じ風船番号の組立品を並べて開く）" } : { text: "" }),
     // 同じ風船番号の組立品を、まとめて開く（風船番号の無い行は、その組立品だけ）
     open(row) {
