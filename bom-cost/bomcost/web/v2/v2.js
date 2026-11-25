@@ -1518,6 +1518,7 @@ async function rewriteScreen(main, cur) {
   let place = new Map(); // 行の鍵 → 並びの位置（打った行が動かないように、開いた時・並べ直した時の位置を持つ）
   let zero = true; // 数量 0（消した箇所）を出すか
   let moved = false; // 現行と違う箇所があるか
+  let spread = false; // 足しかけの行に打った数量を、出ている親の全部に入れるか
   const body = el("div", { class: "listview" });
   const nowLine = el("div", { class: "nowline" }); // 選んだ行の現行
   const keyOf = (r) => JSON.stringify([r.balloon, me.base(r.part)]);
@@ -1607,7 +1608,10 @@ async function rewriteScreen(main, cur) {
         if (c === 1) row.balloon = text === NO_BALLOON ? "" : text;
         else if (c === 2) row.part = text;
         else if (text === "") row.amounts.delete(parent);
-        else row.amounts.set(parent, text);
+        else {
+          row.amounts.set(parent, text);
+          if (spread) for (const p of parents()) if (!row.amounts.has(p)) row.amounts.set(p, text);
+        }
         return;
       }
       if (c === 1) return;
@@ -1701,6 +1705,10 @@ async function rewriteScreen(main, cur) {
     const r = row ? rows.findIndex((x) => x.draft ? x === row : !row.draft && keyOf(x) === keyOf(row)) : -1; // 選んでいた行のまま
     if (r >= 0) grid.select(r, grid.sel.c);
   } }, "0 を表示");
+  const spreadButton = el("button", { class: "chip", disabled: ro, title: "足しかけの行に数量を1つ打つと、出ている全部に同じ数量が入る", onclick: () => {
+    spread = !spread;
+    spreadButton.classList.toggle("on", spread);
+  } }, `行の追加は全部の${me.child ? "組立品" : "製品"}へ`);
   const grid = new Grid(body, model);
   const send = async (path, payload, text) => {
     const d = await work("変更しています", () => api("POST", path, { number: S.number, plan: PLAN }, payload));
@@ -1715,6 +1723,16 @@ async function rewriteScreen(main, cur) {
     parts = new Map();
     amounts = new Map();
     const ready = drafts.filter((d) => d.part && d.amounts.size);
+    let kept = 0; // 全部に入れる時に、もうあるので足さない所
+    if (spread) {
+      for (const d of ready) {
+        for (const parent of [...d.amounts.keys()]) {
+          if (!me.slots(parent).some((s) => s.balloon === (d.balloon || null) && s.part === d.part && Number(s.quantity) !== 0)) continue;
+          d.amounts.delete(parent);
+          kept += 1;
+        }
+      }
+    }
     if (await lookup([...typed.map(([, v]) => v), ...drafts.map((d) => d.part)]) && drafts.length) grid.render();
     if (!typed.length && !counts.length && !ready.length) return;
     const body = { quantity: [], replace: [], add: [], inside: [] };
@@ -1767,12 +1785,13 @@ async function rewriteScreen(main, cur) {
         else body.add.push({ product: parent, balloon, part: d.part, quantity });
         count += 1;
       }
-      place.set(keyOf({ ...d, balloon }), place.has(d.after) ? place.get(d.after) + 1e-7 : Math.max(0, ...place.values()) + 1);
+      if (!place.has(keyOf({ ...d, balloon }))) place.set(keyOf({ ...d, balloon }), place.has(d.after) ? place.get(d.after) + 1e-7 : Math.max(0, ...place.values()) + 1);
     }
     body.inside.push(...edits.values());
     for (const e of body.inside) e.products = me.range();
     try {
-      if (Object.values(body).some((list) => list.length)) await send("/api/v2/structure", body, `${count} 箇所を変えました`);
+      if (Object.values(body).some((list) => list.length)) await send("/api/v2/structure", body, `${count} 箇所を変えました${kept ? `（もうある ${kept} 箇所は足していません）` : ""}`);
+      else if (kept) alert("同じ風船番号と品番が、もう全部にあります");
       for (const [code, to] of renames) await send("/api/v2/temp-rename", { code, new: to }, `${code} を ${to} にしました`);
       drafts = drafts.filter((d) => !ready.includes(d));
     } catch (e) {
@@ -1784,6 +1803,101 @@ async function rewriteScreen(main, cur) {
     draw();
   };
   const selected = () => rows[grid.sel.r];
+  // 一括置換: 今の構成（変えた後）の品番を、風船番号ごとに選んで1回だけ置き換える。決まりとしては残さない
+  const bulkDialog = async () => {
+    const at = selected();
+    const old = el("input", { class: "in", value: at && !at.draft ? at.part : "" });
+    const next = el("input", { class: "in" });
+    const oldName = el("span", { class: "mini" });
+    const nextName = el("span", { class: "mini" });
+    const list = el("div");
+    const off = new Set(); // 替えない風船番号
+    let every = null; // 対象品番の全部の直下（範囲で選んだ時に読む）
+    const unit = me.child ? "組立品" : "製品";
+    const range = el("select", { class: "in" }, el("option", { value: "here" }, `出ている${unit}（${parents().length}）`),
+      me.child ? null : el("option", { value: "all" }, `対象品番の全部（${S.targets.length}）`));
+    const same = (a, b) => clean(a).toLowerCase() === clean(b).toLowerCase();
+    const places = () => {
+      const slots = range.value === "all" ? Object.entries(every) : parents().map((p) => [p, me.slots(p)]);
+      return slots.flatMap(([parent, found]) => found.filter((s) => same(s.part, old.value) && Number(s.quantity) !== 0).map((s) => [parent, s]));
+    };
+    const chosen = () => places().filter(([, s]) => !off.has(s.balloon));
+    const run = el("button", { class: "btn pri", onclick: () => replace().catch(fail) });
+    const drawList = () => {
+      const found = new Map();
+      for (const [parent, s] of places()) {
+        if (!found.has(s.balloon)) found.set(s.balloon, []);
+        found.get(s.balloon).push(parent);
+      }
+      const shown = [...found].sort(([a], [b]) => balloonOrder(a, b));
+      fill(list, shown.length ? el("table", { class: "list" }, el("tr", {}, ["替える", "風船", "箇所", unit].map((t) => el("th", {}, t))),
+        shown.map(([balloon, codes]) => el("tr", {},
+          el("td", {}, el("input", { type: "checkbox", checked: !off.has(balloon), onchange: (e) => {
+            e.target.checked ? off.delete(balloon) : off.add(balloon);
+            drawList();
+          } })),
+          el("td", {}, balloon ?? NO_BALLOON), el("td", { class: "r" }, codes.length),
+          el("td", { title: codes.join("・") }, codes.slice(0, 4).join("・") + (codes.length > 4 ? ` ほか ${codes.length - 4}` : "")))))
+        : el("div", { class: "mini" }, clean(old.value) ? "今の構成にありません" : ""));
+      run.textContent = `${chosen().length} 箇所を替える`;
+      run.disabled = !chosen().length || !clean(next.value) || same(old.value, next.value);
+    };
+    const names = async () => {
+      const codes = [clean(old.value), clean(next.value)];
+      await lookup(codes);
+      oldName.textContent = nameCell(codes[0]).text;
+      nextName.textContent = nameCell(codes[1]).text;
+    };
+    old.addEventListener("input", () => {
+      off.clear();
+      drawList();
+    });
+    next.addEventListener("input", drawList);
+    for (const input of [old, next]) input.addEventListener("change", () => names().catch(fail));
+    range.addEventListener("change", async () => {
+      try {
+        if (range.value === "all" && !every) every = (await api("GET", "/api/v2/structure", q({ plan: PLAN, all: "1" }))).direct;
+      } catch (e) {
+        range.value = "here";
+        fail(e);
+      }
+      off.clear();
+      drawList();
+    });
+    const replace = async () => {
+      const list = chosen();
+      const to = clean(next.value);
+      const body = { replace: [], inside: [] };
+      for (const [parent, s] of list) {
+        if (me.child) body.inside.push({ parent, products: me.range(), balloon: s.balloon, old: s.part, new: to });
+        else body.replace.push({ product: parent, balloon: s.balloon, old: s.part, new: to });
+      }
+      try {
+        await send("/api/v2/structure", body, `${list.length} 箇所を ${to} に替えました`);
+      } catch (e) {
+        return fail(e);
+      }
+      for (const [, s] of list) {
+        // 替えた行が動かないように、新しい鍵に位置を渡す
+        const [from, key] = [s.part, to].map((part) => keyOf({ balloon: s.balloon, part }));
+        if (place.has(from) && !place.has(key)) place.set(key, place.get(from));
+      }
+      box.close();
+      items.clear(); // 仮品番の品番・名称が変わる
+      await me.load();
+      await lookup(drafts.map((d) => d.part));
+      draw();
+      grid.focus();
+    };
+    const box = dialog("一括置換", [
+      el("div", { class: "row" }, el("label", { class: "f" }, "元の品番", old), oldName, "→", el("label", { class: "f" }, "新しい品番", next), nextName,
+        el("label", { class: "f" }, "範囲", range)),
+      list,
+    ], [run, el("span", { class: "sp" }), el("button", { class: "btn", onclick: () => box.close() }, "閉じる")]);
+    drawList();
+    next.focus();
+    await names();
+  };
   const addRow = () => {
     const d = newDraft(selected() || null);
     drafts.push(d);
@@ -1805,11 +1919,11 @@ async function rewriteScreen(main, cur) {
   };
   // 足しかけの行がある間は、ほかの窓の保存で描き直さない（打ちかけが消えるため）
   cur.saver = { flush: async () => {}, get pending() { return drafts.some((d) => d.part || d.balloon || d.amounts.size); } };
-  main.append(card(me.title("構成変更"), [button("行を追加", addRow), button("行を削除", dropRow), rowBack, allBack, button("風船番号で並べる", () => {
+  main.append(card(me.title("構成変更"), [button("行を追加", addRow), button("行を削除", dropRow), button("一括置換", () => bulkDialog().catch(fail)), rowBack, allBack, button("風船番号で並べる", () => {
     restart();
     draw();
   })], [
-    el("div", { class: "row" }, me.picks, me.filters, el("div", { class: "chips" }, me.onlyButton, zeroButton), me.users, me.note),
+    el("div", { class: "row" }, me.picks, me.filters, el("div", { class: "chips" }, me.onlyButton, zeroButton, spreadButton), me.users, me.note),
     body, nowLine,
   ]));
   draw();
