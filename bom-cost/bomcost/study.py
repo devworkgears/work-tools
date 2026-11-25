@@ -1,7 +1,7 @@
 """設計検討: 部品の差し替えを、対象の製品にまたがって案ごとに試算する。
 
-検討が持つのは「製品×親×風船番号×品番の数量の増減」（変更）だけで、部品表は計算のたびに今の物を読む。
-部品変更（品番・数量・部品追加）と構成変更は同じ変更の集まりに書き、同じ箇所は後に書いた方が勝つ（足し算しない）。
+検討が持つのは、変えた箇所（製品×風船番号×現行の品番）ごとの、変えた後の品番と数量だけで、部品表は計算のたびに今の物を読む。
+部品変更（品番・数量・部品追加）と構成変更は同じ箇所の集まりに書き、後に書いた方が勝つ（足し算しない）。
 変えられるのは製品の直下（1階層目）だけ。組立品の中を替える時は、組立品を流用した仮品番を作り、直下で置き換える。
 版確定の時だけ、そのときの検討と部品表（対象にかかる分）を写して固める。
 """
@@ -12,7 +12,7 @@ import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, Iterable, Mapping, NamedTuple, Sequence
+from typing import Any, Collection, Container, Iterable, Mapping, NamedTuple, Sequence
 
 from . import settings
 from .formula import COMPARE_HEADS, Breakdown, Head, OwnValues, breakdown, registered_own
@@ -75,27 +75,18 @@ CREATE TABLE IF NOT EXISTS v2_plan (
     plan TEXT NOT NULL,
     PRIMARY KEY (study_id, plan)
 );
-CREATE TABLE IF NOT EXISTS v2_replace (
-    study_id INTEGER NOT NULL REFERENCES v2_study(study_id) ON DELETE CASCADE,
-    plan TEXT NOT NULL,
-    position INTEGER NOT NULL,
-    old_part TEXT NOT NULL,
-    new_part TEXT NOT NULL,
-    balloon TEXT,
-    PRIMARY KEY (study_id, plan, position)
-);
-CREATE TABLE IF NOT EXISTS v2_change (
+CREATE TABLE IF NOT EXISTS v2_slot (
     study_id INTEGER NOT NULL REFERENCES v2_study(study_id) ON DELETE CASCADE,
     plan TEXT NOT NULL,
     product TEXT NOT NULL,
     parent TEXT NOT NULL,
     balloon TEXT NOT NULL,
+    now TEXT NOT NULL,
     part TEXT NOT NULL,
-    delta TEXT NOT NULL,
-    source TEXT NOT NULL,
-    origin TEXT,
+    quantity TEXT NOT NULL,
+    given TEXT,
     seq INTEGER NOT NULL,
-    PRIMARY KEY (study_id, plan, product, parent, balloon, part)
+    PRIMARY KEY (study_id, plan, product, parent, balloon, now, part)
 );
 CREATE TABLE IF NOT EXISTS v2_condition (
     study_id INTEGER NOT NULL REFERENCES v2_study(study_id) ON DELETE CASCADE,
@@ -112,13 +103,15 @@ CREATE TABLE IF NOT EXISTS v2_temp_item (
     base TEXT,
     PRIMARY KEY (study_id, position)
 );
-CREATE TABLE IF NOT EXISTS v2_temp_line (
+CREATE TABLE IF NOT EXISTS v2_temp_slot (
     study_id INTEGER NOT NULL REFERENCES v2_study(study_id) ON DELETE CASCADE,
     code TEXT NOT NULL,
     balloon TEXT NOT NULL,
+    now TEXT NOT NULL,
     part TEXT NOT NULL,
-    delta TEXT NOT NULL,
-    PRIMARY KEY (study_id, code, balloon, part)
+    quantity TEXT NOT NULL,
+    given TEXT,
+    PRIMARY KEY (study_id, code, balloon, now, part)
 );
 CREATE TABLE IF NOT EXISTS v2_own (
     study_id INTEGER NOT NULL REFERENCES v2_study(study_id) ON DELETE CASCADE,
@@ -151,22 +144,20 @@ BOM_TABLES = ("item", "bom_line", "cost", "volume")
 ATTRIBUTES: tuple[tuple[str, str], ...] = (("model", "系列"), ("product_spec", "タイプ"), ("drawing", "図面"))
 Attributes = dict[str, dict[str, str]]  # 品番 → 属性の名前 → 値（無い列は空文字）
 
-REPLACE = "replace"
-QUANTITY = "quantity"
-ADD = "add"
-KEEP = object()  # save_targets で主対象を今のまま持つ印
-REWRITE = "rewrite"
+KEEP = object()  # 渡されなかった印（None と分ける）
 
 NOT_TARGET = "対象品番に無い"
 NO_PLACE = "箇所が無い"
 OTHER_PART = "元の品番が違う"
+MOVED = "元の数量が変わった"
 NEGATIVE = "数量がマイナス"
 UNREGISTERED = "未登録"
-PAIR_OUT = "置換の相手が外れた"
 WAITING = "単価待ち"  # 変更の問題ではなく、⑦ と Excel の影響の印
 DEEP = "2階層目の変更"
-# 計算に入れない問題。未登録は入れて、結果に不完全の印を付ける
-EXCLUDING = frozenset({NOT_TARGET, NO_PLACE, OTHER_PART, NEGATIVE, PAIR_OUT, DEEP})
+# 計算に入れない問題。未登録と元の数量が変わった物は入れる
+EXCLUDING = frozenset({NOT_TARGET, NO_PLACE, OTHER_PART, NEGATIVE, DEEP})
+
+REPLACED, DELETED, ADDED, RECOUNTED = "置き換え", "削除", "追加", "数量"
 # 数量・台数の桁の上限（これより大きい・細かい値は打ち間違いとして受けない。計算の桁あふれも防ぐ）
 MAX_ADJUSTED = 9
 MIN_EXPONENT = -6
@@ -185,6 +176,19 @@ def input_code(value: Any, *, name: str = "品番") -> str:
         if value is None or str(value).strip() == "":
             raise ValueError(f"{name}を入力してください") from None
         raise ValueError(f"{name}の形が違います（{value}）") from None
+
+
+def known_code(value: Any, known: Container[str], *, name: str = "品番") -> str:
+    """画面から来た品番。部品表に全角のまま入っている品番は、そのまま指せるようにする。"""
+    if isinstance(value, str) and value.strip() in known:
+        return value.strip()
+    return input_code(value, name=name)
+
+
+def known_balloon(value: Any, known: Container[str | None]) -> str | None:
+    if isinstance(value, str) and value.strip() in known and value.strip() != "":
+        return value.strip()
+    return input_optional_code(value, name="風船")
 
 
 def input_optional_code(value: Any, *, name: str = "品番") -> str | None:
@@ -217,37 +221,126 @@ HEADS: dict[str, Head] = {
 # ⑩ で製品ごとに書き換える費目（製品自身の値。部品の置き換えでは変わらない）
 OWN_HEADS: dict[str, Head] = {"processing": Head.PROCESSING, "amortization": Head.AMORTIZATION, "direct": Head.DIRECT}
 
-Place = tuple[str, str, str | None, str]  # 製品・親・風船番号・品番
+SlotKey = tuple[str | None, str]  # （風船番号, 品番）
+
+
+class Slot(NamedTuple):
+    """変えた箇所1つ。now は現行の品番（足した箇所は None）、part と quantity は変えた後（消した箇所は part＝now・quantity 0）。
+
+    given は打った時の現行の数量（足した箇所は None）。
+    """
+
+    balloon: str | None
+    now: str | None
+    part: str
+    quantity: Decimal
+    given: Decimal | None
+
+
+class Placed(NamedTuple):
+    """変えた後の構成の箇所1つ。now・before は現行の品番と数量（足した箇所は None）、slot は変えた箇所の記録（変えていなければ None）。
+
+    lost は、変えた後に部品表から現行の品番が無くなった箇所（構成には入れない）。
+    """
+
+    balloon: str | None
+    now: str | None
+    part: str
+    before: Decimal | None
+    quantity: Decimal
+    slot: Slot | None = None
+    lost: bool = False
+
+
+def place_slots(now: Mapping[SlotKey, Decimal], slots: Iterable[Slot]) -> list[Placed]:
+    """現行の直下に、変えた箇所を当てる（現行の並び・無くなった箇所・足した箇所の順）。"""
+    changed = {(s.balloon, s.now): s for s in slots if s.now is not None}
+    added = {(s.balloon, s.part): s for s in slots if s.now is None}
+    out: list[Placed] = []
+    for key, before in now.items():
+        # 足した後に部品表にも入った箇所は、足した数量をその箇所の数量とみなす（2つ分にしない）
+        slot = changed.pop(key, None) or added.pop(key, None)
+        out.append(Placed(key[0], key[1], key[1], before, before) if slot is None
+                   else Placed(key[0], key[1], slot.part, before, slot.quantity, slot))
+    out += [Placed(s.balloon, s.now, s.part, None, s.quantity, s, True) for s in changed.values()]
+    return out + [Placed(s.balloon, None, s.part, None, s.quantity, s) for s in added.values()]
+
+
+def placed_lines(placed: Iterable[Placed]) -> dict[SlotKey, Decimal]:
+    """変えた後の直下（風船番号と品番ごとの数量・0 は入れない）。"""
+    out: dict[SlotKey, Decimal] = {}
+    for p in placed:
+        if not p.lost and p.quantity != 0:
+            out[(p.balloon, p.part)] = out.get((p.balloon, p.part), Decimal(0)) + p.quantity
+    return out
+
+
+def settle_slots(now: Mapping[SlotKey, Decimal], slots: Sequence[Slot]) -> list[Slot]:
+    """同じ品番の現行の箇所が変わっていない所に足した物は、その箇所の数量に足す。"""
+    changed = {(s.balloon, s.now) for s in slots if s.now is not None}
+    return [Slot(s.balloon, s.part, s.part, now[key] + s.quantity, now[key])
+            if s.now is None and (key := (s.balloon, s.part)) in now and key not in changed else s for s in slots]
+
+
+def pair_slots(now: Mapping[SlotKey, Decimal], deltas: Mapping[SlotKey, Decimal], apart: Collection[SlotKey] = ()) -> list[Slot]:
+    """増減を箇所にする。同じ風船番号で 0 になった品番と増えた品番を置き換えの組にする（数の合う相手が先）。apart（足した部品）は組にしない。"""
+    out: list[Slot] = []
+    ups = {k: d for k, d in deltas.items() if d > 0}
+    for key, d in deltas.items():
+        if d >= 0:
+            continue
+        before = now.get(key, -d)
+        if before + d != 0:
+            out.append(Slot(key[0], key[1], key[1], before + d, before))
+            continue
+        same = [k for k in ups if k[0] == key[0] and k not in apart]
+        up = next((k for k in same if ups[k] == -d), next(iter(same), None))
+        out.append(Slot(key[0], key[1], key[1], Decimal(0), before) if up is None else Slot(key[0], key[1], up[1], ups.pop(up), before))
+    for key, d in ups.items():
+        out.append(Slot(key[0], key[1], key[1], now[key] + d, now[key]) if key in now and key not in apart
+                   else Slot(key[0], None, key[1], now.get(key, Decimal(0)) + d, None))
+    return out
+
+
+ChangeKey = tuple[str, str, str, str | None, str | None, str | None]
 
 
 @dataclass(frozen=True)
-class StoredChange:
+class Change:
+    """案の、変えた箇所1つ。親は製品（前に固めた版には、2階層目の物もある）。"""
+
     plan: str
     product: str
     parent: str
-    balloon: str | None
-    part: str
-    delta: Decimal
-    source: str
-    origin: str | None
-    seq: int
+    slot: Slot
+    seq: int = 0
 
     @property
-    def place(self) -> Place:
-        return (self.product, self.parent, self.balloon, self.part)
+    def key(self) -> ChangeKey:
+        s = self.slot
+        return (self.plan, self.product, self.parent, s.balloon, s.now, s.part if s.now is None else None)
 
 
 @dataclass(frozen=True)
-class CheckedChange:
-    change: StoredChange
-    before: Decimal
-    after: Decimal
+class Checked:
+    change: Change
+    now: str | None  # 現行の品番（足した箇所は None。足した後に部品表にも入った箇所は、その品番）
+    before: Decimal | None  # 現行の数量（足した箇所と、現行の品番が無くなった箇所は None）
     problems: tuple[str, ...]
-    added: bool  # その箇所に元は無かった品番
 
     @property
     def counted(self) -> bool:
         return not EXCLUDING & set(self.problems)
+
+    @property
+    def kind(self) -> str:
+        s = self.change.slot
+        return kind_of(self.now, s.part, s.quantity)
+
+
+def kind_of(now: str | None, part: str, quantity: Decimal) -> str:
+    """した事: 置き換え・数量・追加・削除。"""
+    return ADDED if now is None else DELETED if quantity == 0 else RECOUNTED if now == part else REPLACED
 
 
 @dataclass
@@ -255,23 +348,17 @@ class PlanInfo:
     plan: str
 
 
-# 置換の行（元品番, 新品番, 風船番号）。風船番号 None は全部の箇所・"" は風船番号の無い箇所
-ReplaceRow = tuple[str, str, str | None]
-# 仮品番の中の変更（風船番号, 品番, 流用元からの数量の増減）
-TempLine = tuple[str | None, str, Decimal]
-
-
 class Temp(NamedTuple):
     """仮品番。部品の原価は製品の材料費にだけ入るので、値は材料費だけ（None は未登録か、流用元から計算）。
 
-    base は流用元の組立品、lines は流用元の直下からの変更。material が空なら、流用元の材料費に変更の差を足す。
+    base は流用元の組立品、lines は流用元の直下の変えた箇所。material が空なら、流用元の材料費に変更の差を足す。
     """
 
     code: str
     name: str
     material: Decimal | None = None
     base: str | None = None
-    lines: tuple[TempLine, ...] = ()
+    lines: tuple[Slot, ...] = ()
 
 
 @dataclass
@@ -284,9 +371,7 @@ class Workspace:
     targets: list[str]
     main_product: str | None
     plans: list[PlanInfo]
-    # 案 → (元品番, 新品番, 風船番号)。風船番号 None は全部の箇所・"" は風船番号の無い箇所
-    replaces: dict[str, list[ReplaceRow]]
-    changes: list[StoredChange]
+    changes: list[Change]
     conditions: dict[str, Decimal]
     bom: Version
     attributes: Attributes = field(default_factory=dict)
@@ -300,6 +385,7 @@ class Workspace:
     # 2階層目の変更を計算から外すか（外す前に固めた版は、固めた時の計算のまま）
     level1: bool = True
     hold: bool = True  # 単価の無い品番への置き換えを、現行のまま計算する（False は前の版の写し）
+    strict: bool = True  # 中の一部の単価が分からない組立品も、単価が無い物とみる（False は前の版の写し）
 
     def use_rates(self) -> settings.Rates:
         return self.rates or settings.rates()
@@ -310,14 +396,19 @@ class Workspace:
     def plan_ids(self) -> list[str]:
         return [p.plan for p in self.plans]
 
-    def plan_changes(self, plan: str) -> list[StoredChange]:
+    def plan_changes(self, plan: str) -> list[Change]:
         return [c for c in self.changes if c.plan == plan]
+
+    def placed(self, plan: str, product: str) -> list[Placed]:
+        """製品の直下の、変えた後の箇所。"""
+        return place_slots(direct_lines(self.bom, product),
+                           [c.slot for c in self.changes if c.plan == plan and c.product == c.parent == product])
 
 
 def merge_temps(bom: Version, temps: Sequence[Temp]) -> set[str]:
     """仮品番のうち bom の品目に無い物を、品目と材料費の行として足す。足した品番を返す。
 
-    流用した仮品番で材料費を打っていない物は、流用元の材料費＋Σ（増減×部品の材料費）。1つでも分からなければ未登録のまま。
+    流用した仮品番で材料費を打っていない物は、流用元の材料費＋Σ（変えた箇所の差）。1つでも分からなければ未登録のまま。
     """
     fresh = {t.code: t for t in temps if t.code not in bom.items}
     derived = {c: t for c, t in fresh.items() if t.base is not None and t.material is None}
@@ -343,14 +434,17 @@ def merge_temps(bom: Version, temps: Sequence[Temp]) -> set[str]:
     def derive(t: Temp) -> Decimal | None:
         assert t.base is not None
         total = unit(t.base) if t.base in bom.items else None
-        _, after = temp_lines(bom, t)
-        if total is None or any(qty < 0 for qty in after.values()):
+        if total is None or any(p.lost for p in temp_placed(bom, t)):
             return None
-        for _, part, delta in t.lines:
-            price = unit(part) if part in bom.items else None
+        now, after = temp_lines(bom, t)
+        for key in dict.fromkeys([*now, *after]):
+            change = after.get(key, Decimal(0)) - now.get(key, Decimal(0))
+            if change == 0:
+                continue
+            price = unit(key[1]) if key[1] in bom.items else None
             if price is None:
                 return None
-            total += delta * price
+            total += change * price
         return total
 
     for code in derived:
@@ -358,9 +452,6 @@ def merge_temps(bom: Version, temps: Sequence[Temp]) -> set[str]:
     for code in derived:
         bom.add_cost(CostRow(code, {CostHead.MATERIAL: values[code]}))
     return set(fresh)
-
-
-SlotKey = tuple[str | None, str]  # （風船番号, 品番）
 
 
 def direct_lines(bom: Version, code: str) -> dict[SlotKey, Decimal]:
@@ -372,25 +463,26 @@ def direct_lines(bom: Version, code: str) -> dict[SlotKey, Decimal]:
     return out
 
 
+def temp_placed(bom: Version, temp: Temp) -> list[Placed]:
+    """流用した仮品番の直下の、変えた後の箇所。"""
+    return place_slots(direct_lines(bom, temp.base) if temp.base is not None else {}, temp.lines)
+
+
 def temp_lines(bom: Version, temp: Temp) -> tuple[dict[SlotKey, Decimal], dict[SlotKey, Decimal]]:
     """流用した仮品番の直下を（流用元, 変えた後）で返す。"""
-    now = direct_lines(bom, temp.base) if temp.base is not None else {}
-    after = dict(now)
-    for balloon, part, delta in temp.lines:
-        after[(balloon, part)] = after.get((balloon, part), Decimal(0)) + delta
-    return now, after
+    return direct_lines(bom, temp.base) if temp.base is not None else {}, placed_lines(temp_placed(bom, temp))
 
 
 def temp_cycle(bom: Version, temps: Mapping[str, Temp], code: str) -> None:
     """仮品番の中に自分が（別の仮品番を通しても）入ると、材料費が決まらないので断る。"""
-    stack, seen = [part for _, part, d in temps[code].lines if d > 0], set()
+    stack, seen = [s.part for s in temps[code].lines if s.quantity > 0], set()
     while stack:
         part = stack.pop()
         if part == code:
             raise ValueError(f"{code} の中に {code} 自身は入れられません")
         if part in temps and part not in seen:
             seen.add(part)
-            stack += [k[1] for k, q in temp_lines(bom, temps[part])[1].items() if q > 0]
+            stack += [k[1] for k in temp_lines(bom, temps[part])[1]]
 
 
 def inside_lines(ws: Workspace, code: str) -> dict[SlotKey, Decimal]:
@@ -409,32 +501,20 @@ def refuse_unregistered(bom: Version, codes: Iterable[str]) -> None:
 
 def unregistered_parts(ws: Workspace) -> list[str]:
     """変更に出てくる品番のうち、品目の台帳にも仮品番にも無い物（変更に出た順）。"""
-    return list(dict.fromkeys(c.part for c in ws.changes if c.part not in ws.bom.items))
+    return list(dict.fromkeys(c.slot.part for c in ws.changes if c.slot.part not in ws.bom.items))
 
 
-def pair_key(old: str, new: str, balloon: str | None = None) -> str:
-    """置換の組から書いた変更の出どころ。風船番号で分けた組は「元品番@風船番号>新品番」。"""
-    return f"{old}>{new}" if balloon is None else f"{old}@{balloon}>{new}"
-
-
-def balloon_group(line: BomLine) -> str:
-    """置換のまとまりの風船番号（風船番号の無い箇所は空の文字）。"""
-    return line.balloon or ""
-
-
-def replace_groups(bom: Version, targets: Sequence[str], part: str) -> list[tuple[str, list[str]]]:
-    """対象品番の中で part を置き換えられる箇所を、風船番号ごとのまとまり（風船番号, 製品）にする。"""
-    groups: dict[str, list[str]] = {}
-    for product in targets:
-        for line in replace_lines(bom, product, part):
-            members = groups.setdefault(balloon_group(line), [])
-            if product not in members:
-                members.append(product)
-    return sorted(groups.items(), key=lambda kv: (kv[0] == "", _natural(kv[0])))
-
-
-def _natural(text: str) -> tuple[int, str]:
-    return (int(text), "") if text.isdigit() else (10 ** 9, text)
+def refuse_loop(ws: Workspace, product: str, part: str) -> None:
+    """製品の中に、その製品を含む品番を入れると原価が決まらないので断る。"""
+    stack, seen = [part], set()
+    while stack:
+        code = stack.pop()
+        if code == product:
+            raise ValueError(f"{part} を {product} の中には入れられません（{product} を含んでいます）" if part != product
+                             else f"{product} を自分の中には入れられません")
+        if code not in seen:
+            seen.add(code)
+            stack += [k[1] for k in inside_lines(ws, code)]
 
 
 def next_plan_id(existing: Iterable[str]) -> str:
@@ -481,33 +561,6 @@ def product_usage(bom: Version, product: str) -> dict[str, Decimal]:
     return usage
 
 
-def occurrences(bom: Version, product: str, part: str) -> list[BomLine]:
-    """製品の直下（1階層目）でその品番がある行。"""
-    return [line for line in bom.children(product, by_balloon=True) if line.child == part]
-
-
-def replace_lines(bom: Version, product: str, part: str) -> list[BomLine]:
-    """置換が効く箇所。数量がマイナスの行（抜く部品）は置き換える物が無いので外す。"""
-    return [line for line in occurrences(bom, product, part) if line.quantity > 0]
-
-
-def line_quantity(bom: Version, parent: str, balloon: str | None, part: str) -> Decimal | None:
-    total: Decimal | None = None
-    for line in bom.children(parent, by_balloon=True):
-        if line.balloon == balloon and line.child == part:
-            total = (total or Decimal(0)) + line.quantity
-    return total
-
-
-def parts_of(bom: Version, products: Sequence[str]) -> list[tuple[str, int]]:
-    """製品たちの直下の部品と、そのうち何製品で使うか。品番の順。"""
-    used: dict[str, int] = {}
-    for product in dict.fromkeys(products):
-        for code in dict.fromkeys(line.child for line in bom.children(product)):
-            used[code] = used.get(code, 0) + 1
-    return sorted(used.items())
-
-
 def where_used(bom: Version, part: str, targets: Sequence[str]) -> tuple[list[str], list[str], int]:
     """部品を直下で使う製品を（範囲内, 範囲外, 組立品の中でだけ使う製品の数）で。製品は一番上の品目（どこの子でもない）か対象品番。"""
     part = to_code(part)
@@ -532,15 +585,24 @@ def where_used(bom: Version, part: str, targets: Sequence[str]) -> tuple[list[st
 # 確かめる・計算する ---------------------------------------------------------
 
 
-def check_changes(ws: Workspace, changes: Iterable[StoredChange] | None = None) -> list[CheckedChange]:
+def check_changes(ws: Workspace, changes: Iterable[Change] | None = None) -> list[Checked]:
     """変更を今の部品表と突き合わせる。どの画面から書いた変更も同じ決まりで見る。"""
     bom = ws.bom
     targets = set(ws.targets)
     usages: dict[str, dict[str, Decimal]] = {}
+    found: dict[ChangeKey, Placed] = {}  # 箇所 → 今の部品表に当てた物
     result = []
-    for c in ws.changes if changes is None else changes:
+    chosen = list(ws.changes if changes is None else changes)
+    groups: dict[tuple[str, str, str], list[Change]] = {}
+    for c in chosen:
+        groups.setdefault((c.plan, c.product, c.parent), []).append(c)
+    for (plan, product, parent), members in groups.items():
+        for p in place_slots(direct_lines(bom, parent), [c.slot for c in members]):
+            if p.slot is not None:
+                found[Change(plan, product, parent, p.slot).key] = p
+    for c in chosen:
+        s, p = c.slot, found[c.key]
         problems: list[str] = []
-        before = line_quantity(bom, c.parent, c.balloon, c.part)
         if c.product not in targets:
             problems.append(NOT_TARGET)
         if ws.level1 and c.parent != c.product:
@@ -548,44 +610,22 @@ def check_changes(ws: Workspace, changes: Iterable[StoredChange] | None = None) 
         usage = usages.setdefault(c.product, product_usage(bom, c.product))
         if c.parent not in usage:
             problems.append(NO_PLACE)
-        elif before is None and c.delta < 0:
-            others = [l for l in bom.children(c.parent, by_balloon=True)
-                      if c.balloon is not None and l.balloon == c.balloon]
-            problems.append(OTHER_PART if others else NO_PLACE)
-        base = before or Decimal(0)
-        after = base + c.delta
-        if after < 0 and NO_PLACE not in problems and OTHER_PART not in problems:
+        elif p.lost:
+            problems.append(OTHER_PART if s.balloon is not None and any(k[0] == s.balloon for k in direct_lines(bom, c.parent)) else NO_PLACE)
+        elif p.before != s.given:
+            problems.append(MOVED)
+        if s.quantity < 0 and s.quantity != p.before:
             problems.append(NEGATIVE)
-        if c.part not in bom.items:
+        if any(code is not None and code not in bom.items for code in (s.now, s.part)):
             problems.append(UNREGISTERED)
-        result.append(CheckedChange(c, base, after, tuple(problems), before is None and c.delta > 0))
-    # 置換から入った −元・＋新 の組は、片方が外れたら両方外す（片方だけ効くと部品が消える・増える）
-    out_pairs = {(r.change.plan, r.change.product, r.change.parent, r.change.balloon, r.change.origin)
-                 for r in result if r.change.source == REPLACE and not r.counted}
-    return [CheckedChange(r.change, r.before, r.after, r.problems + (PAIR_OUT,), r.added)
-            if r.change.source == REPLACE and r.counted
-            and (r.change.plan, r.change.product, r.change.parent, r.change.balloon, r.change.origin) in out_pairs
-            else r for r in result]
-
-
-LineKey = tuple[str, str | None, str]  # （親, 風船番号, 品番）
-
-
-def after_lines(ws: Workspace, plan: str, product: str) -> tuple[dict[LineKey, Decimal], dict[LineKey, Decimal]]:
-    """製品の直下の箇所ごとの数量を（今の部品表, 変えた後）で返す。変えた後＝今＋案の変更。"""
-    now: dict[LineKey, Decimal] = {(product, *k): q for k, q in direct_lines(ws.bom, product).items()}
-    after = dict(now)
-    for c in ws.plan_changes(plan):
-        if c.product == product and c.parent == product:
-            key = (c.parent, c.balloon, c.part)
-            after[key] = after.get(key, Decimal(0)) + c.delta
-    return now, after
+        result.append(Checked(c, p.now, p.before, tuple(problems)))
+    return result
 
 
 class PartPlace(NamedTuple):
-    """変えた後の構成で、部品がある製品の直下の箇所。was は置き換える前の品番（その箇所で減った品番）。
+    """変えた後の構成で、部品がある製品の直下の箇所（同じ風船番号と品番は1つにまとめる）。was は置き換える前の品番。
 
-    before は今の数量（置き換えた箇所は元の品番の数量・足した箇所は None）。quantity 0 は、置き換えずに消した箇所。
+    before は現行の数量（足した箇所は None）。quantity 0 は、消した箇所。
     """
 
     product: str
@@ -594,49 +634,24 @@ class PartPlace(NamedTuple):
     quantity: Decimal
     was: list[str]
     before: Decimal | None
+    nows: list[str | None]  # まとめた箇所ごとの、現行の品番
 
 
-def after_places(ws: Workspace, plan: str) -> list[PartPlace]:
-    """対象品番の直下の、変えた後の箇所（対象品番の順・その中は風船の順のまま）。"""
+def after_places(ws: Workspace, plan: str, products: Sequence[str] | None = None) -> list[PartPlace]:
+    """製品（渡さなければ対象品番）の直下の、変えた後の箇所（製品の順・その中は部品表の順のまま）。"""
     found = []
-    for product in ws.targets:
-        now, after = after_lines(ws, plan, product)
-        # 足した部品は、同じ風船番号（無い時も）で減った品番の置き換えとは見ない
-        extra = {c.place[1:] for c in ws.plan_changes(plan) if c.product == product and c.source == ADD}
-        down: dict[str | None, list[str]] = {}
-        up: set[str | None] = set()
-        for key, qty in after.items():
-            if qty < now.get(key, Decimal(0)):
-                down.setdefault(key[1], []).append(key[2])
-            elif qty > now.get(key, Decimal(0)) and key not in extra:
-                up.add(key[1])
-        for key, qty in after.items():
-            if qty == 0 and (key not in now or key[1] in up):
-                continue
-            was = sorted(down.get(key[1], [])) if qty > now.get(key, Decimal(0)) and key not in extra else []
-            before = now.get(key, now.get((key[0], key[1], was[0])) if len(was) == 1 else None)
-            found.append(PartPlace(product, key[1], key[2], qty, was, before))
+    for product in ws.targets if products is None else products:
+        groups: dict[tuple[SlotKey, bool], list[Placed]] = {}
+        for p in ws.placed(plan, product):
+            if not p.lost:
+                groups.setdefault(((p.balloon, p.part), p.quantity == 0), []).append(p)
+        for ((balloon, part), _), members in groups.items():
+            nows = list(dict.fromkeys(p.now for p in members if p.now is not None))
+            befores = [p.before for p in members if p.before is not None]
+            found.append(PartPlace(product, balloon, part, sum((p.quantity for p in members), Decimal(0)),
+                                   [] if nows in ([], [part]) else sorted(nows), sum(befores, Decimal(0)) if befores else None,
+                                   [p.now for p in members]))
     return found
-
-
-class AfterPart(NamedTuple):
-    code: str
-    users: list[str]  # 変えた後に直下で使う対象品番
-    before: int  # 今の部品表で直下で使う対象品番の数
-    was: list[str]
-
-
-def after_parts(ws: Workspace, plan: str) -> list[AfterPart]:
-    """対象品番の直下の、変えた後の部品（品番の順）。"""
-    before = dict(parts_of(ws.bom, ws.targets))
-    found: dict[str, tuple[dict[str, None], set[str]]] = {}
-    for p in after_places(ws, plan):
-        if p.quantity == 0:
-            continue
-        users, was = found.setdefault(p.part, ({}, set()))
-        users[p.product] = None
-        was.update(p.was)
-    return [AfterPart(code, list(users), before.get(code, 0), sorted(was)) for code, (users, was) in sorted(found.items())]
 
 
 def problem_count(ws: Workspace) -> int:
@@ -665,57 +680,68 @@ def annual_of(ws: Workspace, product: str) -> Decimal | None:
     return given if given is not None else None if volume is None else volume.annual
 
 
-def held_changes(ws: Workspace, checked: Iterable[CheckedChange], calc: CostCalculator) -> set[tuple[str, Place]]:
-    """単価の無い品番に置き換えた箇所の、元の品番の引き（案, 箇所）。単価が分かるまで引かない（引くと、ただで付く値になる）。
-
-    組の見方は ⑥ と同じ（同じ箇所で 0 になった品番が1つ・増えた品番が1つ）。2つ以上ある時は、数の合う相手が1つの時だけ。
-    """
-    held: set[tuple[str, Place]] = set()
-    if not ws.hold:
-        return held
-    slots: dict[tuple[str, str, str, str | None], list[CheckedChange]] = {}
-    for c in checked:
-        ch = c.change
-        slots.setdefault((ch.plan, ch.product, ch.parent, ch.balloon), []).append(c)
-    for members in slots.values():
-        up = [c.change for c in members if c.change.delta > 0 and c.change.source != ADD]
-        down = [c.change for c in members if c.change.delta < 0 and c.after == 0]
-        for new in up:
-            if calc.item_cost(new.part) is not None:
-                continue
-            pair = down if len(up) == 1 else [d for d in down if d.delta == -new.delta]
-            if len(pair) == 1:
-                held.add((new.plan, pair[0].place))
-    return held
+class Price(NamedTuple):
+    value: Decimal | None  # 材料費。循環して決まらない・1つも分からなければ None
+    full: bool  # 中の部品の材料費が全部分かるか
 
 
-class MaterialEffect(NamedTuple):
-    value: Decimal | None  # 製品1台あたりの材料費小計の増減。計算に入らない変更・単価の無い変更・それを待つ変更は None
-    waiting: bool  # 単価待ち
+class Prices:
+    """品番ごとの材料費。"""
 
+    def __init__(self, bom: Version) -> None:
+        self._bom = bom
+        self._calc = CostCalculator(bom, CostHead.MATERIAL)
+        self._memo: dict[str, Price] = {}
 
-def material_effects(ws: Workspace, plan: str) -> dict[Place, MaterialEffect]:
-    """案の変更1つずつの、材料費小計への効き方。"""
-    calc = CostCalculator(ws.bom, CostHead.MATERIAL)
-    usages: dict[str, dict[str, Decimal]] = {}
-    out: dict[Place, MaterialEffect] = {}
-    checked = check_changes(ws, ws.plan_changes(plan))
-    held = held_changes(ws, [c for c in checked if c.counted], calc)
-    for c in checked:
-        ch = c.change
-        unit, waiting = None, False
-        if c.counted:
-            unit = calc.item_cost(ch.part)
-            waiting = unit is None or (plan, ch.place) in held
+    def of(self, code: str) -> Price:
+        if code not in self._memo:
             try:
-                if waiting or calc.item_cost(ch.product) is None:  # 今の値が出ない製品は、変えた後の値も出ない
-                    unit = None
-            except ValueError:
-                unit = None
-        if ch.product not in usages:
-            usages[ch.product] = product_usage(ws.bom, ch.product)
-        out[ch.place] = MaterialEffect(
-            None if unit is None else ch.delta * usages[ch.product].get(ch.parent, Decimal(0)) * unit, waiting)
+                result = self._calc.calculate(code)
+            except ValueError:  # 構成が循環している
+                self._memo[code] = Price(None, False)
+            else:
+                # 組立品の未登録は子から足し上げて出るので、分からないのは子の無い品目の未登録だけ
+                full = result.total is not None and not any(not self._bom.children(m) for m in result.missing)
+                self._memo[code] = Price(result.total, full)
+        return self._memo[code]
+
+
+class Effect(NamedTuple):
+    value: Decimal | None  # 親1つあたりの材料費の増減。計算に入れない変更は None
+    missing: bool  # 単価が分からず、差が足りない
+
+
+def change_effect(ws: Workspace, c: Checked, prices: Prices) -> Effect:
+    """変更1つの効き方。単価の分からない品番への置き換えは、分かるまで現行のまま（引くと、ただで付く値になる）。"""
+    s = c.change.slot
+    if not c.counted:
+        return Effect(None, False)
+    before = c.before or Decimal(0)
+    if c.now == s.part:
+        price = prices.of(s.part)
+        return Effect(None, True) if price.value is None else Effect((s.quantity - before) * price.value, ws.strict and not price.full)
+    new = prices.of(s.part) if s.quantity != 0 else Price(Decimal(0), True)
+    if (not new.full if ws.strict else new.value is None) and (c.now is None or ws.hold):
+        return Effect(None, True)
+    old = Price(Decimal(0), True) if c.now is None else prices.of(c.now)
+    return Effect(s.quantity * (new.value or Decimal(0)) - before * (old.value or Decimal(0)), new.value is None or old.value is None)
+
+
+def material_effects(ws: Workspace, plan: str) -> dict[ChangeKey, Effect]:
+    """案の変更1つずつの、製品1台あたりの材料費小計への効き方。"""
+    prices = Prices(ws.bom)
+    usages: dict[str, dict[str, Decimal]] = {}
+    out: dict[ChangeKey, Effect] = {}
+    for c in check_changes(ws, ws.plan_changes(plan)):
+        ch = c.change
+        effect = change_effect(ws, c, prices)
+        if effect.value is not None:
+            if prices.of(ch.product).value is None:  # 現行の値が出ない製品は、変えた後の値も出ない
+                effect = Effect(None, effect.missing)
+            else:
+                usage = usages.setdefault(ch.product, product_usage(ws.bom, ch.product))
+                effect = Effect(effect.value * usage.get(ch.parent, Decimal(0)), effect.missing)
+        out[ch.key] = effect
     return out
 
 
@@ -728,11 +754,10 @@ def calculate_heads(ws: Workspace, heads: Sequence[Head] = COMPARE_HEADS) -> dic
     台数の加重平均＝年間の影響 ÷ 年間の影響に入れた製品の年間台数の合計（1台あたりの増減）。台数の合計が 0 なら None。
     """
     bom = ws.bom
-    calc = CostCalculator(bom, CostHead.MATERIAL)
+    prices = Prices(bom)
     rates = ws.use_rates()
     all_checked = check_changes(ws)
     checked = [c for c in all_checked if c.counted]
-    held = held_changes(ws, checked, calc)
     # 計算から外した変更がある製品・案は、値に不完全の印を付ける
     dropped = {(c.change.plan, c.change.product) for c in all_checked if not c.counted}
     plans = ws.plan_ids()
@@ -751,13 +776,8 @@ def calculate_heads(ws: Workspace, heads: Sequence[Head] = COMPARE_HEADS) -> dic
 
     for product in ws.targets:
         own = registered_own(bom, product)
-        try:
-            material_result = calc.calculate(product)
-        except ValueError:
-            material_result = None
-        now_material = None if material_result is None else material_result.total
-        # 組立品の未登録は子から足し上げて出るので、不完全は子の無い品目の未登録だけ
-        now_missing = material_result is None or any(not bom.children(m) for m in material_result.missing)
+        now_material, full = prices.of(product)
+        now_missing = not full
         now_b = None if now_material is None else breakdown(now_material, own, rates=rates)
         annual = annual_of(ws, product)
         usage = product_usage(bom, product)
@@ -768,11 +788,10 @@ def calculate_heads(ws: Workspace, heads: Sequence[Head] = COMPARE_HEADS) -> dic
             for c in checked:
                 if c.change.plan != plan or c.change.product != product:
                     continue
-                unit = calc.item_cost(c.change.part)
-                if unit is None or (plan, c.change.place) in held:
-                    missing = True
-                    continue
-                delta += c.change.delta * usage.get(c.change.parent, Decimal(0)) * unit
+                effect = change_effect(ws, c, prices)
+                missing |= effect.missing
+                if effect.value is not None:
+                    delta += usage.get(c.change.parent, Decimal(0)) * effect.value
             b = None if now_material is None else breakdown(now_material + delta, own_values(ws, plan, product, own),
                                                                rates=rates)
             after_b[plan] = (b, missing)
@@ -807,10 +826,11 @@ def calculate_heads(ws: Workspace, heads: Sequence[Head] = COMPARE_HEADS) -> dic
     return results
 
 
-def own_rows(ws: Workspace, plan: str) -> list[dict[str, Any]]:
-    """⑩ の行: 対象品番ごとの名称と、書き換える費目の今の値（台帳）と書き換えた値。"""
+def own_rows(ws: Workspace, plan: str, outside: bool = False) -> list[dict[str, Any]]:
+    """⑩ の行: 対象品番ごとの名称と、書き換える費目の今の値（台帳）と書き換えた値。outside なら、書き換えたまま対象品番から外した製品も。"""
     rows = []
-    for product in ws.targets:
+    others = [p for p in dict.fromkeys(p for p, _ in ws.owns.get(plan, {})) if p not in ws.targets] if outside else []
+    for product in [*ws.targets, *others]:
         own = registered_own(ws.bom, product)
         values = {}
         for key, head in OWN_HEADS.items():
@@ -831,12 +851,16 @@ def _now() -> str:
     return datetime.now().replace(microsecond=0).isoformat()
 
 
-def _balloon_db(balloon: str | None) -> str:
-    return "" if balloon is None else balloon
-
-
 def _balloon_py(text: str) -> str | None:
     return None if text == "" else text
+
+
+def _slot_db(s: Slot) -> tuple[str, str, str, str, str | None]:
+    return (s.balloon or "", s.now or "", s.part, str(s.quantity), _txt(s.given))
+
+
+def _slot_py(balloon: str, now: str, part: str, quantity: str, given: str | None) -> Slot:
+    return Slot(balloon or None, now or None, part, Decimal(quantity), _dec(given))
 
 
 def _dec(text: str | None) -> Decimal | None:
@@ -845,6 +869,18 @@ def _dec(text: str | None) -> Decimal | None:
 
 def _txt(value: Decimal | None) -> str | None:
     return None if value is None else str(value)
+
+
+class _Places(dict[str, list[Placed]]):
+    """製品 → 直下の箇所（聞かれた製品だけ数える）。"""
+
+    def __init__(self, ws: Workspace, plan: str) -> None:
+        super().__init__()
+        self._ws, self._plan = ws, plan
+
+    def __missing__(self, product: str) -> list[Placed]:
+        self[product] = self._ws.placed(self._plan, product)
+        return self[product]
 
 
 class StudyStore:
@@ -859,13 +895,43 @@ class StudyStore:
         for name in (*(n for n, _ in ATTRIBUTES), "lifecycle"):
             if name not in present:
                 conn.execute(f"ALTER TABLE v2_item ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
-        # 置換の組に風船番号の列を足す前に作った表には列を足す（NULL＝全部の箇所）
-        if "balloon" not in {r[1] for r in conn.execute("PRAGMA table_info(v2_replace)")}:
-            conn.execute("ALTER TABLE v2_replace ADD COLUMN balloon TEXT")
         # 流用元の列を足す前に作った仮品番の表
         if "base" not in {r[1] for r in conn.execute("PRAGMA table_info(v2_temp_item)")}:
             conn.execute("ALTER TABLE v2_temp_item ADD COLUMN base TEXT")
         conn.commit()
+        self._take_deltas()
+
+    def _take_deltas(self) -> None:
+        """増減で持っていた前の版の変更を、箇所に移す（前の表は名前を変えて残す）。
+
+        現行の数量が要るので、部品表が空の間は移さずに、取り込んだ時に移す。
+        """
+        c = self._conn
+        tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        old = [t for t in ("v2_change", "v2_temp_line") if t in tables]
+        if not old:
+            return
+        bom = self.load_bom()
+        if not bom.lines and any(c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in old):
+            return
+        with c:
+            if "v2_change" in old:
+                rows = [(sid, plan, product, parent, _balloon_py(b), part, Decimal(d), source) for sid, plan, product, parent, b, part, d, source in c.execute(
+                    "SELECT study_id, plan, product, parent, balloon, part, delta, source FROM v2_change ORDER BY study_id, seq")]
+                for sid in dict.fromkeys(r[0] for r in rows):
+                    for change in _changes_from_deltas(bom, [r[1:] for r in rows if r[0] == sid]):
+                        self._insert(sid, change.plan, change.product, change.slot, change.parent)
+            if "v2_temp_line" in old:
+                bases = {(sid, code): base for sid, code, base in c.execute("SELECT study_id, code, base FROM v2_temp_item")}
+                lines: dict[tuple[int, str], dict[SlotKey, Decimal]] = {}
+                for sid, code, b, part, d in c.execute("SELECT study_id, code, balloon, part, delta FROM v2_temp_line ORDER BY rowid"):
+                    lines.setdefault((sid, code), {})[(_balloon_py(b), part)] = Decimal(d)
+                for (sid, code), deltas in lines.items():
+                    base = bases.get((sid, code))
+                    self._put_temp_lines(sid, code, pair_slots(direct_lines(bom, base) if base else {}, deltas))
+            for table in old:
+                name = next(n for n in (f"{table}_old{i or ''}" for i in range(99)) if n not in tables)
+                c.execute(f"ALTER TABLE {table} RENAME TO {name}")
 
     # 部品表 -----------------------------------------------------------------
 
@@ -894,6 +960,7 @@ class StudyStore:
                 c.execute("DELETE FROM v2_volume")
                 c.executemany("INSERT INTO v2_volume VALUES (?, ?)",
                               [(v.product, str(v.annual)) for v in version.volumes.values()])
+        self._take_deltas()
 
     def save_columns(self, headers: Sequence[str], kind: str, columns: Mapping[str, str]) -> None:
         """取り込みの列の対応（項目 → 見出し）を、見出しの並びと表の種類ごとに残す。"""
@@ -909,10 +976,13 @@ class StudyStore:
     def drop_old_bom(self) -> bool:
         """前に見た設定と今の設定が違えば、取り込んだ部品表を消す（前の設定で読んだ値が残らないように）。違えば True。
 
-        空の項目は比べない（設定の項目が増えた版に替えただけでは消さない）。
+        空の項目は比べない（設定の項目が増えた版に替えただけでは消さない）。全部空の時（settings.json の置き忘れ）も消さない。
         """
-        now = json.dumps({k: v for k, v in settings.current().to_json().items() if v}, ensure_ascii=False, sort_keys=True)
+        values = {k: v for k, v in settings.current().to_json().items() if v}
+        now = json.dumps(values, ensure_ascii=False, sort_keys=True)
         row = self._conn.execute("SELECT settings FROM v2_bom_settings").fetchone()
+        if row is not None and not values:
+            return False
         if row is not None and row[0] == now:
             return False
         with self._conn:
@@ -1003,12 +1073,8 @@ class StudyStore:
         targets = [r[0] for r in q("SELECT product FROM v2_target WHERE study_id = ? ORDER BY position", (sid,))]
         plans = [PlanInfo(p) for (p,) in q(
             "SELECT plan FROM v2_plan WHERE study_id = ? ORDER BY plan", (sid,))]
-        replaces: dict[str, list[ReplaceRow]] = {}
-        for plan, old, new, balloon in q("SELECT plan, old_part, new_part, balloon FROM v2_replace WHERE study_id = ? "
-                                         "ORDER BY plan, position", (sid,)):
-            replaces.setdefault(plan, []).append((old, new, balloon))
-        changes = [StoredChange(p, pr, pa, _balloon_py(b), pt, Decimal(d), s, o, seq) for p, pr, pa, b, pt, d, s, o, seq
-                   in q("SELECT plan, product, parent, balloon, part, delta, source, origin, seq FROM v2_change "
+        changes = [Change(plan, product, parent, _slot_py(*slot), seq) for plan, product, parent, *slot, seq
+                   in q("SELECT plan, product, parent, balloon, now, part, quantity, given, seq FROM v2_slot "
                         "WHERE study_id = ? ORDER BY seq", (sid,))]
         conditions = {p: Decimal(a) for p, a in q("SELECT product, annual FROM v2_condition WHERE study_id = ?",
                                                   (sid,))}
@@ -1018,15 +1084,14 @@ class StudyStore:
         temps = self._temps(sid)
         bom = self.load_bom()
         merged = merge_temps(bom, temps)
-        return Workspace(n, None, header, targets, main, plans or [PlanInfo("A")], replaces, changes, conditions,
+        return Workspace(n, None, header, targets, main, plans or [PlanInfo("A")], changes, conditions,
                          bom, self.load_attributes(), temps=temps, temp_merged=merged, owns=owns)
 
     def _temps(self, sid: int) -> list[Temp]:
         q = self._conn.execute
-        lines: dict[str, list[TempLine]] = {}
-        for code, balloon, part, delta in q(
-                "SELECT code, balloon, part, delta FROM v2_temp_line WHERE study_id = ? ORDER BY rowid", (sid,)):
-            lines.setdefault(code, []).append((_balloon_py(balloon), part, Decimal(delta)))
+        lines: dict[str, list[Slot]] = {}
+        for code, *slot in q("SELECT code, balloon, now, part, quantity, given FROM v2_temp_slot WHERE study_id = ? ORDER BY rowid", (sid,)):
+            lines.setdefault(code, []).append(_slot_py(*slot))
         return [Temp(c, nm, _dec(m), base, tuple(lines.get(c, ()))) for c, nm, m, base in q(
             "SELECT code, name, material, base FROM v2_temp_item WHERE study_id = ? ORDER BY position", (sid,))]
 
@@ -1049,33 +1114,52 @@ class StudyStore:
         self._conn.execute("UPDATE v2_study SET change_seq = change_seq + 1 WHERE study_id = ?", (sid,))
         return self._conn.execute("SELECT change_seq FROM v2_study WHERE study_id = ?", (sid,)).fetchone()[0]
 
-    def _put(self, sid: int, plan: str, place: Place, delta: Decimal, source: str, origin: str | None = None) -> None:
-        product, parent, balloon, part = place
-        if delta == 0:
-            self._delete(sid, plan, place)
-            return
-        self._conn.execute(
-            "INSERT OR REPLACE INTO v2_change VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (sid, plan, product, parent, _balloon_db(balloon), part, str(delta), source, origin,
-             self._next_seq(sid)))
+    def _insert(self, sid: int, plan: str, product: str, slot: Slot, parent: str | None = None) -> None:
+        self._conn.execute("INSERT OR REPLACE INTO v2_slot VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                           (sid, plan, product, parent or product, *_slot_db(slot), self._next_seq(sid)))
 
-    def _delete(self, sid: int, plan: str, place: Place) -> None:
-        product, parent, balloon, part = place
-        self._conn.execute(
-            "DELETE FROM v2_change WHERE study_id = ? AND plan = ? AND product = ? AND parent = ? AND balloon = ? "
-            "AND part = ?", (sid, plan, product, parent, _balloon_db(balloon), part))
+    def _drop(self, sid: int, plan: str, product: str, slot: Slot | None) -> None:
+        """変えた箇所の記録を消す（現行に戻る）。"""
+        if slot is not None:
+            self._conn.execute("DELETE FROM v2_slot WHERE study_id = ? AND plan = ? AND product = ? AND parent = ? AND balloon = ? AND now = ? "
+                               "AND part = ?", (sid, plan, product, product, slot.balloon or "", slot.now or "", slot.part))
+
+    def _set(self, sid: int, plan: str, product: str, placed: Placed, part: str, quantity: Decimal) -> None:
+        """箇所の品番と数量を替える。現行と同じになれば記録は残さない。"""
+        self._drop(sid, plan, product, placed.slot)
+        if placed.now is None:
+            if quantity != 0:
+                self._insert(sid, plan, product, Slot(placed.balloon, None, part, quantity, None))
+            return
+        if quantity == 0:
+            part = placed.now  # 消した箇所は、置き換えた品番を持たない
+        if part != placed.now or quantity != placed.before:
+            self._insert(sid, plan, product, Slot(placed.balloon, placed.now, part, quantity, placed.before))
+
+    def _settle(self, sid: int, plan: str, before: Workspace, products: Iterable[str]) -> None:
+        """今の操作で現行の箇所が元に戻り、足してあった同じ品番と重なった所は、1つの箇所に足す。"""
+        def doubled(ws: Workspace, product: str) -> list[Placed]:
+            return [p for p in ws.placed(plan, product) if p.slot is not None and p.slot.now is None and p.now is not None]
+
+        after = self.workspace(before.number)
+        for product in dict.fromkeys(products):
+            known = {(p.balloon, p.now) for p in doubled(before, product)}
+            for p in doubled(after, product):
+                if (p.balloon, p.now) not in known:
+                    self._set(sid, plan, product, p, p.part, p.quantity + (p.before or Decimal(0)))
 
     # 対象品番 ---------------------------------------------------------------
 
     def save_targets(self, number: str, products: Sequence[Any], main_product: Any = KEEP) -> None:
         """対象品番を入れ替える。main_product を渡さなければ、今の主対象を（対象品番に残れば）そのまま持つ。"""
         sid = self.study_id(number)
-        codes = list(dict.fromkeys(input_code(p, name="対象品番") for p in products
+        items = self.load_bom().items
+        codes = list(dict.fromkeys(known_code(p, items, name="対象品番") for p in products
                                    if p is not None and str(p).strip()))
         if main_product is KEEP:
             main_product = self._conn.execute("SELECT main_product FROM v2_study WHERE study_id = ?",
                                               (sid,)).fetchone()[0]
-        main = input_optional_code(main_product, name="主対象")
+        main = main_product if main_product in codes else input_optional_code(main_product, name="主対象")
         if main is not None and main not in codes:
             main = None
         with self._conn:
@@ -1088,8 +1172,8 @@ class StudyStore:
     def save_main(self, number: str, main_product: Any) -> None:
         """⑤構成一覧の並びの基準にする主対象を1つ選ぶ（空なら外す）。対象品番の中からだけ選べる。"""
         sid = self.study_id(number)
-        main = input_optional_code(main_product, name="主対象")
         targets = [r[0] for r in self._conn.execute("SELECT product FROM v2_target WHERE study_id = ?", (sid,))]
+        main = main_product if main_product in targets else input_optional_code(main_product, name="主対象")
         if main is not None and main not in targets:
             raise ValueError(f"主対象は対象品番から選んでください（{main}）")
         with self._conn:
@@ -1098,267 +1182,174 @@ class StudyStore:
 
     # 部品変更 -------------------------------------------------------------------
 
-    def apply_replace(self, number: str, plan: str, old: Any, new: Any) -> None:
-        """変えた後の構成で、対象品番の全製品の直下の old を new に置き換える（1回きりの操作で、決まりとしては残さない）。
+    def _row_product(self, ws: Workspace, row: Mapping[str, Any]) -> str:
+        product = known_code(row.get("product"), ws.targets, name="製品")
+        if product not in ws.targets:
+            raise ValueError(f"{product} は対象品番にありません")
+        return product
 
-        同じ箇所に new が既にあれば数量を足す。今の部品表に戻った箇所の変更は消える。
-        """
-        old_code, new_code = input_code(old, name="元品番"), input_code(new, name="新品番")
+    @staticmethod
+    def _row_slots(placed: Sequence[Placed], row: Mapping[str, Any], part: str) -> list[Placed]:
+        """行が指す箇所。now（現行の品番）があれば balloon と now、足した箇所と now の無い行は balloon と変えた後の品番 part で指す。"""
+        balloon = known_balloon(row.get("balloon"), {p.balloon for p in placed})
+        now = row["now"] if "now" in row else KEEP
+        return [p for p in placed if not p.lost and p.balloon == balloon
+                and (p.part == part and (now is KEEP or p.now is None) if now in (KEEP, None) else p.now == now)]
+
+    def apply_replace(self, number: str, plan: str, old: Any, new: Any) -> None:
+        """変えた後の構成で、対象品番の全製品の直下の old を new に置き換える（1回きりの操作で、決まりとしては残さない）。"""
+        ws = self.workspace(number)
+        old_code, new_code = known_code(old, ws.bom.items, name="元品番"), known_code(new, ws.bom.items, name="新品番")
         if old_code == new_code:
             return
-        ws = self.workspace(number)
-        refuse_unregistered(ws.bom, [new_code])
-        self._replace_at(ws, plan, [(p.product, p.balloon, old_code, new_code)
-                                    for p in after_places(ws, plan) if p.part == old_code])
+        rows = [{"product": product, "balloon": p.balloon, "now": p.now, "old": old_code, "new": new_code}
+                for product in ws.targets for p in ws.placed(plan, product) if not p.lost and p.part == old_code and p.quantity != 0]
+        if not rows:
+            raise ValueError("対象品番の直下に、置き換える品番がありません")
+        self.apply_places(number, plan, rows)
 
     def apply_places(self, number: str, plan: str, rows: Sequence[Mapping[str, Any]]) -> None:
-        """箇所（product・balloon）ごとに old を new に置き換える。1行でも当たらなければ、どれも変えない。"""
+        """箇所（product・balloon・old、任意で now）ごとに old を new に置き換える。1行でも当たらなければ、どれも変えない。"""
         ws = self.workspace(number)
-        picks: list[tuple[str, str | None, str, str]] = []
+        work: list[tuple[str, Placed, str]] = []
+        seen: set[tuple[str, str | None, str | None, str]] = set()
+        placed_of = _Places(ws, plan)
+        safe: set[tuple[str, str]] = set()
         for r in rows:
-            product = input_code(r.get("product"), name="製品")
-            if product not in ws.targets:
-                raise ValueError(f"{product} は対象品番にありません")
-            old, new = input_code(r.get("old"), name="元品番"), input_code(r.get("new"), name="新品番")
-            pick = (product, input_optional_code(r.get("balloon"), name="風船"), old)
-            if pick in (p[:3] for p in picks):
-                raise ValueError(f"{product} の {old} が2行あります")
-            if old != new:
-                picks.append((*pick, new))
-        refuse_unregistered(ws.bom, [p[3] for p in picks])
-        if picks:
-            self._replace_at(ws, plan, picks)
-
-    def _replace_at(self, ws: Workspace, plan: str, picks: Sequence[tuple[str, str | None, str, str]]) -> None:
-        """picks（製品, 風船番号, 元品番, 新品番）を、始める前の構成から見て同時に置き換える。"""
-        sid = self.study_id(ws.number)
-        states: dict[str, tuple[dict[LineKey, Decimal], dict[LineKey, Decimal]]] = {}
-        moved: dict[Place, Decimal] = {}
-        if not picks:
-            raise ValueError("対象品番の直下に、置き換える品番がありません")
-        for product, balloon, old, new in picks:
-            if product not in states:
-                states[product] = after_lines(ws, plan, product)
-            qty = states[product][1].get((product, balloon, old), Decimal(0))
-            if qty == 0:
+            product = self._row_product(ws, r)
+            placed = placed_of[product]
+            old = known_code(r.get("old"), {p.part for p in placed}, name="元品番")
+            new = known_code(r.get("new"), ws.bom.items, name="新品番")
+            found = [p for p in self._row_slots(placed, r, old) if p.quantity != 0]
+            if not found:
                 raise ValueError(f"{old} は {product} の直下にありません（画面を開き直してください）")
-            for part, change in ((old, -qty), (new, qty)):
-                place = (product, product, balloon, part)
-                moved[place] = moved.get(place, Decimal(0)) + change
+            for p in found:
+                if (product, p.balloon, p.now, p.part) in seen:
+                    raise ValueError(f"{product} の {old} が2行あります")
+                seen.add((product, p.balloon, p.now, p.part))
+                if p.part != new:
+                    refuse_unregistered(ws.bom, [new] if new != p.now else [])
+                    if (product, new) not in safe:
+                        refuse_loop(ws, product, new)
+                        safe.add((product, new))
+                    work.append((product, p, new))
+        self._apply(ws, plan, work)
+
+    def _apply(self, ws: Workspace, plan: str, work: Sequence[tuple[str, Placed, str]]) -> None:
+        """（製品, 箇所, 新品番）を置き換える。足した箇所が同じ風船番号と品番に重なったら、1つに足す。"""
+        sid = self.study_id(ws.number)
         with self._conn:
             self._ensure_plan(sid, plan)
-            for place, change in moved.items():
-                now, after = states[place[0]]
-                self._put(sid, plan, place, after.get(place[1:], Decimal(0)) + change - now.get(place[1:], Decimal(0)), REPLACE)
+            added: dict[tuple[str, SlotKey], Decimal] = {}
+            for product, p, new in work:
+                if p.now is None:
+                    self._drop(sid, plan, product, p.slot)
+                    added[(product, (p.balloon, new))] = added.get((product, (p.balloon, new)), Decimal(0)) + p.quantity
+                else:
+                    self._set(sid, plan, product, p, new, p.quantity)
+            for (product, key), quantity in added.items():
+                self._add(sid, plan, self.workspace(ws.number), product, key, quantity)
+            self._settle(sid, plan, ws, [product for product, _, _ in work])
             self._touch(sid)
 
-    def revert_replace(self, number: str, plan: str, part: Any, place: tuple[Any, Any] | None = None) -> None:
-        """part が今の部品表より増えた直下の箇所（風船番号）を、今の部品表に戻す。place（製品, 風船番号）があればその箇所だけ。
-
-        もともと part を使っている箇所には触れない（part を打ち替えて戻すと、そこまで変わってしまう）。
-        """
-        code = input_code(part)
-        only = None if place is None else (input_code(place[0], name="製品"), input_optional_code(place[1], name="風船"))
-        ws = self.workspace(number)
-        sid = self.study_id(number)
-        gone: list[Place] = []
-        for product in ws.targets:
-            slots: dict[str | None, list[StoredChange]] = {}
-            for c in ws.plan_changes(plan):
-                if c.product == product and c.parent == product and (only is None or only == (product, c.balloon)):
-                    slots.setdefault(c.balloon, []).append(c)
-            for members in slots.values():
-                members = [c for c in members if c.source != ADD]  # 足した部品は置き換えではない
-                mine = next((c for c in members if c.part == code and c.delta > 0), None)
-                if mine is None:
-                    continue
-                down = [c for c in members if c.delta < 0]
-                if sum(1 for c in members if c.delta > 0) > 1:
-                    # 同じ箇所で2つ以上替えた時（風船番号の無い部品表など）は、数の合う相手が1つの時だけ組とみなす
-                    down = [c for c in down if c.delta == -mine.delta]
-                    if len(down) != 1:
-                        raise ValueError(f"{code} の置き換える前が1つに決まりません（{product}）。構成変更で直してください")
-                gone += [mine.place, *(c.place for c in down)]
-        if not gone:
-            raise ValueError(f"{code} に置き換えた箇所はありません")
-        with self._conn:
-            for place in gone:
-                self._delete(sid, plan, place)
-            self._touch(sid)
+    def _add(self, sid: int, plan: str, ws: Workspace, product: str, key: SlotKey, quantity: Decimal) -> None:
+        """足した箇所にする。消した箇所・もう足した箇所と同じなら、その箇所の数量にする。"""
+        same = [p for p in ws.placed(plan, product) if not p.lost and (p.balloon, p.part) == key]
+        at = next((p for p in same if p.now is None), next((p for p in same if p.quantity == 0), None))
+        self._set(sid, plan, product, at or Placed(key[0], None, key[1], None, Decimal(0)), key[1], quantity + (at.quantity if at else 0))
 
     def save_quantities(self, number: str, plan: str, rows: Sequence[Mapping[str, Any]]) -> None:
-        """箇所（product・balloon・part）ごとに、変えた後の数量を入れる（0 は消す・空は今の部品表に戻す）。1行でも当たらなければ、どれも変えない。"""
+        """箇所（product・balloon・part、任意で now）ごとに、変えた後の数量を入れる（0 は消す・空は現行の数量に戻し、足した箇所は消す）。
+
+        1行でも当たらなければ、どれも変えない。
+        """
         ws = self.workspace(number)
         sid = self.study_id(number)
-        current = {c.place: c for c in ws.plan_changes(plan)}
-        work: dict[Place, Decimal] = {}
+        work: list[tuple[str, Placed, Decimal]] = []
+        placed_of = _Places(ws, plan)
         for r in rows:
-            product, part = input_code(r.get("product"), name="製品"), input_code(r.get("part"))
-            if product not in ws.targets:
-                raise ValueError(f"{product} は対象品番にありません")
-            now, after = after_lines(ws, plan, product)
-            key = (product, input_optional_code(r.get("balloon"), name="風船"), part)
-            if key not in after:
+            product = self._row_product(ws, r)
+            placed = placed_of[product]
+            part = known_code(r.get("part"), {p.part for p in placed})
+            found = self._row_slots(placed, r, part)
+            if not found:
                 raise ValueError(f"{part} は {product} の直下にありません（画面を開き直してください）")
+            if len(found) > 1:
+                raise ValueError(f"{product} の同じ風船番号に {part} が {len(found)} つあります。構成変更で直してください")
             value = r.get("quantity")
-            before = now.get(key, Decimal(0))
-            amount = before if value is None or str(value).strip() == "" else input_amount(value)
-            if amount < 0:
+            amount = (found[0].before or Decimal(0)) if value is None or str(value).strip() == "" else input_amount(value)
+            if amount < 0 and amount != found[0].before:
                 raise ValueError(f"数量は0以上で入力してください（{value}）")
-            work[(product, *key)] = amount - before
+            work.append((product, found[0], amount))
         with self._conn:
             self._ensure_plan(sid, plan)
-            for place, delta in work.items():
-                # 置き換えた・足した箇所の数量を直しても、置き換え・追加のまま
-                kept = current.get(place)
-                self._put(sid, plan, place, delta, QUANTITY if kept is None else kept.source,
-                          None if kept is None else kept.origin)
+            for product, p, amount in work:
+                self._set(sid, plan, product, p, p.part, amount)
+            self._settle(sid, plan, ws, [product for product, _, _ in work])
+            self._touch(sid)
+
+    def back_places(self, number: str, plan: str, rows: Sequence[Mapping[str, Any]]) -> None:
+        """箇所（product・balloon・now・part）を現行の品番と数量に戻す（足した箇所と、現行の品番が無くなった箇所の変更は消える）。"""
+        ws = self.workspace(number)
+        sid = self.study_id(number)
+        work: list[tuple[str, Slot]] = []
+        for r in rows:
+            product = self._row_product(ws, r)
+            found = [p.slot for p in ws.placed(plan, product) if p.slot is not None and p.balloon == (r.get("balloon") or None)
+                     and p.now == r.get("now") and p.part == r.get("part")]
+            if not found:
+                raise ValueError(f"{r.get('part')} は {product} の直下で変わっていません（画面を開き直してください）")
+            work += [(product, s) for s in found if s is not None]
+        with self._conn:
+            for product, slot in work:
+                self._drop(sid, plan, product, slot)
+            self._settle(sid, plan, ws, [product for product, _ in work])
             self._touch(sid)
 
     def add_part(self, number: str, plan: str, part: Any, quantity: Any, products: Sequence[Any]) -> None:
         """部品を、製品たちの直下に足す（風船番号は無し）。もう直下にある製品が混ざれば、どれも変えない。"""
         ws = self.workspace(number)
-        sid = self.study_id(number)
-        code, amount = input_code(part), input_amount(quantity)
-        refuse_unregistered(ws.bom, [code])
-        if amount <= 0:
-            raise ValueError(f"数量は0より大きい数で入力してください（{quantity}）")
-        codes = list(dict.fromkeys(input_code(p, name="製品") for p in products))
+        code = known_code(part, ws.bom.items)
+        codes = list(dict.fromkeys(known_code(p, ws.targets, name="製品") for p in products))
         if not codes:
             raise ValueError("足す製品を選んでください")
-        work: dict[Place, Decimal] = {}
         for product in codes:
-            if product not in ws.targets:
-                raise ValueError(f"{product} は対象品番にありません")
-            if product == code:
-                raise ValueError(f"{code} を自分の中には足せません")
-            now, after = after_lines(ws, plan, product)
-            if any(k[2] == code and q != 0 for k, q in after.items()):
+            if product in ws.targets and any(p.part == code and p.quantity != 0 and not p.lost for p in ws.placed(plan, product)):
                 raise ValueError(f"{code} は {product} にもうあります。数量は「製品別」で変えてください")
-            key = (product, None, code)
-            work[(product, *key)] = amount - now.get(key, Decimal(0))
-        with self._conn:
-            self._ensure_plan(sid, plan)
-            for place, delta in work.items():
-                self._put(sid, plan, place, delta, ADD)
-            self._touch(sid)
+        self.add_places(number, plan, [{"product": product, "part": code, "quantity": quantity} for product in codes])
 
     def add_places(self, number: str, plan: str, rows: Sequence[Mapping[str, Any]]) -> None:
         """部品を、製品の直下の箇所（product・balloon・part・quantity）に足す。同じ箇所にもうあれば、どれも変えない。"""
         ws = self.workspace(number)
         sid = self.study_id(number)
-        work: dict[Place, Decimal] = {}
+        work: dict[tuple[str, SlotKey], Decimal] = {}
         for r in rows:
-            product, part = input_code(r.get("product"), name="製品"), input_code(r.get("part"))
+            product = self._row_product(ws, r)
+            placed = ws.placed(plan, product)
+            part = known_code(r.get("part"), ws.bom.items)
             amount = input_amount(r.get("quantity"))
-            if product not in ws.targets:
-                raise ValueError(f"{product} は対象品番にありません")
-            if product == part:
-                raise ValueError(f"{part} を自分の中には足せません")
+            refuse_loop(ws, product, part)
             if amount <= 0:
-                raise ValueError(f"数量は0より大きい数で入力してください（{amount}）")
-            now, after = after_lines(ws, plan, product)
-            key = (product, input_optional_code(r.get("balloon"), name="風船"), part)
-            if (product, *key) in work or after.get(key, Decimal(0)) != 0:
+                raise ValueError(f"数量は0より大きい数で入力してください（{r.get('quantity')}）")
+            key = (known_balloon(r.get("balloon"), {p.balloon for p in placed}), part)
+            if (product, key) in work or key in placed_lines(placed):
                 raise ValueError(f"{part} は {product} の同じ風船番号にもうあります")
-            work[(product, *key)] = amount - now.get(key, Decimal(0))
-        refuse_unregistered(ws.bom, [place[3] for place in work])
+            work[(product, key)] = amount
+        refuse_unregistered(ws.bom, [key[1] for _, key in work])
         with self._conn:
             self._ensure_plan(sid, plan)
-            for place, delta in work.items():
-                self._put(sid, plan, place, delta, ADD)
-            self._touch(sid)
-
-    def save_replaces(self, number: str, plan: str, rows: Sequence[Sequence[Any]]) -> None:
-        """置換の行（元品番, 新品番[, 風船番号]）を入れ替え、行ごとの変更を書き直す。
-
-        風船番号を付けた行は、その風船番号の箇所だけに効く（無い・None の行は全部の箇所）。
-        手で直した箇所（置換以外から書いた変更）はその箇所だけ残す。
-        同じ箇所に2回足されないよう、同じ元品番・同じ風船番号の行や、全部の行と風船番号の行が重なれば ValueError で止めて行を示す。
-        """
-        ws = self.workspace(number)
-        sid = self.study_id(number)
-        pairs: list[ReplaceRow] = []
-        seen: dict[tuple[str, str | None], int] = {}
-        for i, row in enumerate(rows, start=1):
-            old, new, *rest = row
-            balloon = rest[0] if rest else None
-            old_code, new_code = input_code(old, name="元品番"), input_code(new, name="新品番")
-            balloon = None if balloon is None else nfkc(str(balloon)).strip()
-            if old_code == new_code:
-                raise ValueError(f"元品番と新品番が同じです（{i}行目）")
-            clash = next((j for (o, b), j in seen.items() if o == old_code and (b == balloon or b is None or balloon is None)),
-                         None)
-            if clash is not None:
-                raise ValueError(f"元品番 {old_code} が重複しています（{clash}行目・{i}行目）")
-            seen[(old_code, balloon)] = i
-            pairs.append((old_code, new_code, balloon))
-        before = ws.replaces.get(plan, [])
-        with self._conn:
-            self._ensure_plan(sid, plan)
-            self._conn.execute("DELETE FROM v2_replace WHERE study_id = ? AND plan = ?", (sid, plan))
-            self._conn.executemany("INSERT INTO v2_replace (study_id, plan, position, old_part, new_part, balloon) "
-                                   "VALUES (?, ?, ?, ?, ?, ?)",
-                                   [(sid, plan, i, o, n, b) for i, (o, n, b) in enumerate(pairs)])
-            for old, new, balloon in set(before) | set(pairs):
-                self._conn.execute("DELETE FROM v2_change WHERE study_id = ? AND plan = ? AND source = ? "
-                                   "AND origin = ?", (sid, plan, REPLACE, pair_key(old, new, balloon)))
-            manual = {c.place for c in ws.plan_changes(plan) if c.source != REPLACE}
-            for old, new, balloon in pairs:
-                for product in ws.targets:
-                    for line in replace_lines(ws.bom, product, old):
-                        if balloon is not None and balloon_group(line) != balloon:
-                            continue
-                        for place, delta in (((product, line.parent, line.balloon, old), -line.quantity),
-                                             ((product, line.parent, line.balloon, new), line.quantity)):
-                            if place not in manual:
-                                self._put(sid, plan, place, delta, REPLACE, pair_key(old, new, balloon))
-            self._touch(sid)
-
-    # ⑧ 構成変更 -------------------------------------------------------------
-
-    def save_rewrite(self, number: str, plan: str, product: Any, rows: Sequence[Mapping[str, Any]]) -> None:
-        """1製品の書き換えた直下の構成（balloon・part・quantity）と今の部品表の差を変更にする。"""
-        ws = self.workspace(number)
-        sid = self.study_id(number)
-        product = input_code(product, name="対象品番")
-        before: dict[tuple[str, str | None, str], Decimal] = {}
-        for line in ws.bom.children(product, by_balloon=True):
-            before[line.key] = before.get(line.key, Decimal(0)) + line.quantity
-        after: dict[tuple[str, str | None, str], Decimal] = {}
-        for r in rows:
-            if not str(r.get("part") or "").strip():
-                continue
-            if input_code(r.get("parent") or product, name="親") != product:
-                raise ValueError("組立品の中はここでは変えられません。仮品番で流用して作り、直下で置き換えてください")
-            key = (product, input_optional_code(r.get("balloon"), name="風船"), input_code(r["part"]))
-            qty = r.get("quantity")
-            amount = Decimal(0) if qty is None or str(qty).strip() == "" else input_amount(qty)
-            after[key] = after.get(key, Decimal(0)) + amount
-        current = {c.place: c for c in ws.plan_changes(plan) if c.product == product and c.parent == product}
-        # もう構成にある品番（部品表の取り直しで後から消えた物）は、そのまま保存できる
-        there = {k[2] for k in before} | {p[3] for p in current}
-        refuse_unregistered(ws.bom, [k[2] for k in after if k[2] not in there])
-        keys = set(before) | set(after) | {p[1:] for p in current}
-        with self._conn:
-            self._ensure_plan(sid, plan)
-            for key in sorted(keys, key=lambda k: (k[0], k[1] or "", k[2])):
-                place = (product, *key)
-                delta = after.get(key, Decimal(0)) - before.get(key, Decimal(0))
-                kept = current.get(place)
-                if delta == 0:
-                    if kept is not None:
-                        self._delete(sid, plan, place)
-                elif kept is None or kept.delta != delta:
-                    self._put(sid, plan, place, delta, REWRITE)
+            for (product, key), amount in work.items():
+                self._add(sid, plan, ws, product, key, amount)
+            self._settle(sid, plan, ws, [product for product, _ in work])
             self._touch(sid)
 
     # ⑩ 費目変更 -----------------------------------------------------------
 
     def save_owns(self, number: str, plan: str, rows: Sequence[Mapping[str, Any]]) -> None:
-        """案の製品の費目の書き換え（product・head・value）を入れ替える。値が空の行は書き換えなし（台帳の値）。"""
+        """案の製品の費目の書き換え（product・head・value）を、対象品番の分だけ入れ替える。値が空の行は書き換えなし（台帳の値）。"""
         sid = self.study_id(number)
         values: dict[tuple[str, str], Decimal] = {}
+        targets = {r[0] for r in self._conn.execute("SELECT product FROM v2_target WHERE study_id = ?", (sid,))}
         for r in rows:
             head = str(r.get("head") or "")
             if head not in OWN_HEADS:
@@ -1366,21 +1357,24 @@ class StudyStore:
             value = r.get("value")
             if value is None or str(value).strip() == "":
                 continue
-            product = input_code(r.get("product"), name="対象品番")
+            product = known_code(r.get("product"), targets, name="対象品番")
             values[(product, head)] = input_amount(value, name=OWN_HEADS[head].value)
         with self._conn:
             self._ensure_plan(sid, plan)
-            self._conn.execute("DELETE FROM v2_own WHERE study_id = ? AND plan = ?", (sid, plan))
-            self._conn.executemany("INSERT INTO v2_own VALUES (?, ?, ?, ?, ?)",
+            # 対象品番から外している製品の分は、戻した時のために残す
+            self._conn.execute("DELETE FROM v2_own WHERE study_id = ? AND plan = ? AND product IN "
+                               "(SELECT product FROM v2_target WHERE study_id = ?)", (sid, plan, sid))
+            self._conn.executemany("INSERT OR REPLACE INTO v2_own VALUES (?, ?, ?, ?, ?)",
                                    [(sid, plan, p, h, str(v)) for (p, h), v in values.items()])
             self._touch(sid)
 
     # ⑨ 仮品番 ---------------------------------------------------------------
 
-    def save_temps(self, number: str, rows: Sequence[Mapping[str, Any]]) -> None:
+    def save_temps(self, number: str, rows: Sequence[Mapping[str, Any]], known: Collection[str] | None = None) -> None:
         """仮品番の行（code・name・material・base）を入れ替える。品番の無い行は飛ばし、同じ品番が2行あれば ValueError。
 
         key は前に保存した時の品番（品番を打ち替えた行に、流用の中身を引き継ぎ、使っている所も替える）。流用元を替えた行の中身の変更は消す。
+        known は画面が知っている仮品番（渡せば、知らない仮品番＝ほかの窓でできた物は消さずに後ろへ残す）。
         """
         sid = self.study_id(number)
         bom = self.load_bom()
@@ -1396,8 +1390,10 @@ class StudyStore:
             seen[code] = i
             value = r.get("material")
             material = None if value is None or str(value).strip() == "" else input_amount(value, name="材料費")
+            if material is not None and material < 0:
+                raise ValueError(f"材料費は0以上で入力してください（{code}）")
             old = kept.get(str(r.get("key") or code))
-            base = input_optional_code(r["base"], name="流用元") if "base" in r else old.base if old else None
+            base = (None if r["base"] is None or str(r["base"]).strip() == "" else known_code(r["base"], bom.items, name="流用元")) if "base" in r else old.base if old else None
             same = old is not None and old.base == base
             if base is not None and not same:
                 if base == code:
@@ -1405,15 +1401,22 @@ class StudyStore:
                 if not bom.children(base):
                     raise ValueError(f"流用元は、部品表にある組立品を入れてください（{base}）")
             temps.append(Temp(code, str(r.get("name") or "").strip(), material, base, old.lines if same and old else ()))
+        if known is not None:
+            shown = {*known, *(str(r.get("key") or "") for r in rows)}
+            hidden = [t for t in kept.values() if t.code not in shown]
+            for t in hidden:
+                if t.code in seen:
+                    raise ValueError(f"品番 {t.code} は、ほかの窓で仮品番になりました（画面を開き直してください）")
+            temps += hidden
         renamed = {str(r["key"]): input_code(r["code"]) for r in rows
                    if str(r.get("code") or "").strip() and r.get("key") and str(r["key"]) in kept}
         renamed = {old: new for old, new in renamed.items() if old != new}
         if renamed:
-            temps = [t._replace(lines=tuple((b, renamed.get(part, part), d) for b, part, d in t.lines)) for t in temps]
+            temps = [t._replace(lines=tuple(s._replace(part=renamed.get(s.part, s.part)) for s in t.lines)) for t in temps]
         with self._conn:
             self._rename_changes(sid, renamed)
             self._conn.execute("DELETE FROM v2_temp_item WHERE study_id = ?", (sid,))
-            self._conn.execute("DELETE FROM v2_temp_line WHERE study_id = ?", (sid,))
+            self._conn.execute("DELETE FROM v2_temp_slot WHERE study_id = ?", (sid,))
             self._conn.executemany(
                 "INSERT INTO v2_temp_item (study_id, position, code, name, material, base) VALUES (?, ?, ?, ?, ?, ?)",
                 [(sid, i, t.code, t.name, _txt(t.material), t.base) for i, t in enumerate(temps)])
@@ -1422,21 +1425,20 @@ class StudyStore:
             self._touch(sid)
 
     def _rename_changes(self, sid: int, renamed: Mapping[str, str]) -> None:
-        """変更に出てくる仮品番の品番を替える。同じ箇所に替えた後の品番の変更がもうあれば足す。"""
+        """変更に出てくる仮品番の品番を替える。同じ箇所に替えた後の品番の足した箇所がもうあれば足す。"""
         if not renamed:
             return
-        merged: dict[tuple[Any, ...], list[Any]] = {}
-        rows = self._conn.execute("SELECT plan, product, parent, balloon, part, delta, source, origin, seq FROM v2_change "
-                                  "WHERE study_id = ? ORDER BY seq", (sid,)).fetchall()
-        for plan, product, parent, balloon, part, delta, *rest in rows:
-            place = (plan, product, parent, balloon, renamed.get(part, part))
-            if place in merged:
-                merged[place][0] += Decimal(delta)
-            else:
-                merged[place] = [Decimal(delta), *rest]
-        self._conn.execute("DELETE FROM v2_change WHERE study_id = ?", (sid,))
-        self._conn.executemany("INSERT INTO v2_change VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                               [(sid, *place, str(delta), *rest) for place, (delta, *rest) in merged.items() if delta != 0])
+        merged: dict[ChangeKey, Change] = {}
+        for plan, product, parent, *slot in self._conn.execute(
+                "SELECT plan, product, parent, balloon, now, part, quantity, given FROM v2_slot WHERE study_id = ? ORDER BY seq", (sid,)).fetchall():
+            s = _slot_py(*slot)
+            change = Change(plan, product, parent, s._replace(part=renamed.get(s.part, s.part)))
+            if change.key in merged:
+                change = Change(plan, product, parent, change.slot._replace(quantity=change.slot.quantity + merged[change.key].slot.quantity))
+            merged[change.key] = change
+        self._conn.execute("DELETE FROM v2_slot WHERE study_id = ?", (sid,))
+        for c in merged.values():
+            self._insert(sid, c.plan, c.product, c.slot, c.parent)
 
     def rename_temp(self, number: str, code: Any, new: Any) -> None:
         """仮品番の品番を替える。"""
@@ -1449,12 +1451,18 @@ class StudyStore:
         self.save_temps(number, [{"key": t.code, "code": new_code if t.code == old_code else t.code, "name": t.name,
                                   "material": t.material, "base": t.base} for t in temps])
 
-    def _put_temp_lines(self, sid: int, code: str, lines: Iterable[TempLine]) -> None:
-        self._conn.executemany("INSERT INTO v2_temp_line VALUES (?, ?, ?, ?, ?)",
-                               [(sid, code, _balloon_db(b), part, str(d)) for b, part, d in lines])
+    def _put_temp_lines(self, sid: int, code: str, lines: Iterable[Slot]) -> None:
+        merged: dict[tuple[str | None, str | None, str], Slot] = {}
+        for s in lines:
+            key = (s.balloon, s.now, s.part)
+            merged[key] = s if key not in merged else s._replace(quantity=s.quantity + merged[key].quantity)
+        self._conn.executemany("INSERT OR REPLACE INTO v2_temp_slot VALUES (?, ?, ?, ?, ?, ?, ?)", [(sid, code, *_slot_db(s)) for s in merged.values()])
 
     def save_temp_lines(self, number: str, code: Any, rows: Sequence[Mapping[str, Any]]) -> None:
-        """流用した仮品番の書き換えた直下（balloon・part・quantity）と流用元の差を、中の変更にする。"""
+        """流用した仮品番の書き換えた直下（balloon・part・quantity・now＝流用元の品番）を、変えた箇所にする。行の無い流用元の箇所は消した箇所。
+
+        now の無い行だけの時は、同じ風船番号で 0 になった品番と増えた品番を置き換えの組にする。
+        """
         sid = self.study_id(number)
         target = input_code(code)
         temps = {t.code: t for t in self._temps(sid)}
@@ -1465,29 +1473,40 @@ class StudyStore:
         now = direct_lines(bom, temp.base)
         if not now:
             raise ValueError(f"流用元 {temp.base} が部品表にありません。取り込み直してから変えてください")
+        there = {k[1] for k in now} | {s.part for s in temp.lines}
+        slots: dict[tuple[str | None, str | None, str | None], Slot] = {}
         after: dict[SlotKey, Decimal] = {}
         for r in rows:
             if not str(r.get("part") or "").strip():
                 continue
-            key = (input_optional_code(r.get("balloon"), name="風船"), input_code(r["part"]))
+            balloon = known_balloon(r.get("balloon"), {k[0] for k in now})
+            part = known_code(r["part"], {*bom.items, *there})
             qty = r.get("quantity")
             amount = Decimal(0) if qty is None or str(qty).strip() == "" else input_amount(qty)
             if amount < 0:
-                raise ValueError(f"数量がマイナスです（{key[1]}）")
-            after[key] = after.get(key, Decimal(0)) + amount
-        there = {k[1] for k in now} | {part for _, part, _ in temp.lines}
+                raise ValueError(f"数量がマイナスです（{part}）")
+            after[(balloon, part)] = after.get((balloon, part), Decimal(0)) + amount
+            origin = r.get("now")
+            if origin is not None and (balloon, origin) in now:
+                slots[(balloon, origin, None)] = Slot(balloon, origin, part if amount else origin, amount, now[(balloon, origin)])
+            elif amount != 0:
+                key = (balloon, None, part)
+                slots[key] = Slot(balloon, None, part, amount + (slots[key].quantity if key in slots else 0), None)
         refuse_unregistered(bom, [k[1] for k in after if k[1] not in there and k[1] not in temps])
-        lines = tuple((*k, after.get(k, Decimal(0)) - now.get(k, Decimal(0))) for k in dict.fromkeys([*now, *after]))
-        lines = tuple(x for x in lines if x[2] != 0)
-        temp_cycle(bom, {**temps, target: temp._replace(lines=lines)}, target)
+        if any("now" in r for r in rows):
+            lines = [slots.pop((b, p, None), Slot(b, p, p, Decimal(0), q)) for (b, p), q in now.items()]
+            lines = settle_slots(now, [s for s in lines if s.part != s.now or s.quantity != s.given] + list(slots.values()))
+        else:
+            lines = pair_slots(now, {k: d for k in dict.fromkeys([*now, *after]) if (d := after.get(k, Decimal(0)) - now.get(k, Decimal(0))) != 0})
+        temp_cycle(bom, {**temps, target: temp._replace(lines=tuple(lines))}, target)
         with self._conn:
-            self._conn.execute("DELETE FROM v2_temp_line WHERE study_id = ? AND code = ?", (sid, target))
+            self._conn.execute("DELETE FROM v2_temp_slot WHERE study_id = ? AND code = ?", (sid, target))
             self._put_temp_lines(sid, target, lines)
             self._touch(sid)
 
-    def save_inside(self, ws: Workspace, plan: str, added: Sequence[Temp], lines: Mapping[str, Sequence[TempLine]],
-                    picks: Sequence[tuple[str, str | None, str, str]]) -> None:
-        """仮品番を足し、仮品番の中（lines）を入れ替え、直下（picks）を置き換える。"""
+    def save_inside(self, ws: Workspace, plan: str, added: Sequence[Temp], lines: Mapping[str, Sequence[Slot]],
+                    picks: Sequence[tuple[str, Placed, str]]) -> None:
+        """仮品番を足し、仮品番の中（lines）を入れ替え、直下（picks＝製品・箇所・新品番）を置き換える。"""
         sid = self.study_id(ws.number)
         with self._conn:
             at = self._conn.execute("SELECT COALESCE(MAX(position), -1) + 1 FROM v2_temp_item WHERE study_id = ?", (sid,)).fetchone()[0]
@@ -1495,17 +1514,15 @@ class StudyStore:
                 "INSERT INTO v2_temp_item (study_id, position, code, name, material, base) VALUES (?, ?, ?, ?, ?, ?)",
                 [(sid, at + i, t.code, t.name, _txt(t.material), t.base) for i, t in enumerate(added)])
             for code, rows in [*((t.code, t.lines) for t in added), *lines.items()]:
-                self._conn.execute("DELETE FROM v2_temp_line WHERE study_id = ? AND code = ?", (sid, code))
+                self._conn.execute("DELETE FROM v2_temp_slot WHERE study_id = ? AND code = ?", (sid, code))
                 self._put_temp_lines(sid, code, rows)
-            self._touch(sid)
-            if picks:
-                self._replace_at(ws, plan, picks)
+            self._apply(ws, plan, picks)
 
     def drop_deep_changes(self, number: str, plan: str) -> int:
         """前に入れた2階層目の変更を消し、消した数を返す。"""
         sid = self.study_id(number)
         with self._conn:
-            n = self._conn.execute("DELETE FROM v2_change WHERE study_id = ? AND plan = ? AND parent <> product",
+            n = self._conn.execute("DELETE FROM v2_slot WHERE study_id = ? AND plan = ? AND parent <> product",
                                    (sid, plan)).rowcount
             self._touch(sid)
         return n
@@ -1513,13 +1530,19 @@ class StudyStore:
     # 計算条件・版 -----------------------------------------------------------
 
     def save_conditions(self, number: str, annual: Mapping[str, Any]) -> None:
+        """年間台数を、対象品番の分だけ入れ替える（外している製品の分は、戻した時のために残す）。"""
         sid = self.study_id(number)
-        values = {input_code(product): str(input_amount(value, name="年間台数"))
+        targets = {r[0] for r in self._conn.execute("SELECT product FROM v2_target WHERE study_id = ?", (sid,))}
+        values = {known_code(product, targets): input_amount(value, name="年間台数")
                   for product, value in annual.items() if value is not None and str(value).strip() != ""}
+        for product, value in values.items():
+            if value < 0:
+                raise ValueError(f"年間台数は0以上で入力してください（{product}）")
         with self._conn:
-            self._conn.execute("DELETE FROM v2_condition WHERE study_id = ?", (sid,))
-            self._conn.executemany("INSERT INTO v2_condition VALUES (?, ?, ?)",
-                                   [(sid, p, v) for p, v in values.items()])
+            self._conn.execute("DELETE FROM v2_condition WHERE study_id = ? AND product IN "
+                               "(SELECT product FROM v2_target WHERE study_id = ?)", (sid, sid))
+            self._conn.executemany("INSERT OR REPLACE INTO v2_condition VALUES (?, ?, ?)",
+                                   [(sid, p, str(v)) for p, v in values.items()])
             self._touch(sid)
 
     def take_release(self, number: str) -> int:
@@ -1544,6 +1567,18 @@ class StudyStore:
         return _from_snapshot(json.loads(row[0]), version)
 
 
+def _changes_from_deltas(bom: Version, rows: Iterable[tuple[str, str, str, str | None, str, Decimal, str]]) -> list[Change]:
+    """前の版の変更（案・製品・親・風船番号・品番・増減・書いた操作）を、箇所にする。"""
+    groups: dict[tuple[str, str, str], tuple[dict[SlotKey, Decimal], set[SlotKey]]] = {}
+    for plan, product, parent, balloon, part, delta, source in rows:
+        deltas, apart = groups.setdefault((plan, product, parent), ({}, set()))
+        deltas[(balloon, part)] = delta
+        if source == "add":
+            apart.add((balloon, part))
+    return [Change(plan, product, parent, slot, i) for (plan, product, parent), (deltas, apart) in groups.items()
+            for i, slot in enumerate(pair_slots(direct_lines(bom, parent), deltas, apart))]
+
+
 def _rates_snapshot(rates: settings.Rates) -> list[str]:
     return [str(rates.adjustment), str(rates.indirect)]
 
@@ -1552,9 +1587,9 @@ def _snapshot(ws: Workspace) -> dict[str, Any]:
     bom = ws.bom
     codes: set[str] = set(ws.targets)
     for c in ws.changes:
-        codes |= {c.parent, c.part}
+        codes |= {x for x in (c.parent, c.slot.now, c.slot.part) if x is not None}
     for t in ws.temps:
-        codes |= {c for c in (t.code, t.base, *(part for _, part, _ in t.lines)) if c is not None}
+        codes |= {c for c in (t.code, t.base, *(s.part for s in t.lines)) if c is not None}
     stack = list(codes)
     while stack:
         for line in bom.children(stack.pop(), by_balloon=True):
@@ -1567,14 +1602,13 @@ def _snapshot(ws: Workspace) -> dict[str, Any]:
         "main_product": ws.main_product,
         "rates": _rates_snapshot(ws.use_rates()),
         "plans": [{"plan": p.plan} for p in ws.plans],
-        "replaces": ws.replaces,
-        "changes": [[c.plan, c.product, c.parent, c.balloon, c.part, str(c.delta), c.source, c.origin, c.seq]
-                    for c in ws.changes],
+        "slots": [[c.plan, c.product, c.parent, *_slot_db(c.slot), c.seq] for c in ws.changes],
         "conditions": {k: str(v) for k, v in ws.conditions.items()},
         # 仮品番は bom の写しにも入る（変更に出る品番は写す）。画面で見せるために元の行も残す
-        "temps": [[t.code, t.name, _txt(t.material), t.base, [[b, p, str(d)] for b, p, d in t.lines]] for t in ws.temps],
+        "temps": [[t.code, t.name, _txt(t.material), t.base, [list(_slot_db(s)) for s in t.lines]] for t in ws.temps],
         "level1": ws.level1,
         "hold": ws.hold,
+        "strict": ws.strict,
         "temp_merged": sorted(ws.temp_merged),
         "owns": {plan: [[p, h, str(v)] for (p, h), v in values.items()] for plan, values in ws.owns.items()},
         "bom": {
@@ -1602,6 +1636,18 @@ def _from_snapshot(data: dict[str, Any], version: int) -> Workspace:
     for product, annual in b["volumes"]:
         bom.add_volume(Volume(product, Decimal(annual)))
     rates = data.get("rates")  # 率を残す前に固めた版には無い
+    by_slot = "slots" in data  # 箇所で持つ前に固めた版は、増減で残っている
+
+    def temp(code: str, name: str, material: str | None, *rest: Any) -> Temp:
+        base, rows = (rest[0], rest[1]) if rest else (None, [])  # 流用を足す前に固めた版は (品番, 名称, 材料費) の3つ
+        lines = ([_slot_py(*s) for s in rows] if by_slot
+                 else pair_slots(direct_lines(bom, base) if base else {}, {(b, p): Decimal(d) for b, p, d in rows}))
+        return Temp(code, name, _dec(material), base, tuple(lines))
+
+    if by_slot:
+        changes = [Change(plan, product, parent, _slot_py(*slot), seq) for plan, product, parent, *slot, seq in data["slots"]]
+    else:
+        changes = _changes_from_deltas(bom, [(p, pr, pa, bl, pt, Decimal(d), s) for p, pr, pa, bl, pt, d, s, *_ in data["changes"]])
     return Workspace(
         number=data["header"]["number"],
         version=version,
@@ -1609,41 +1655,15 @@ def _from_snapshot(data: dict[str, Any], version: int) -> Workspace:
         targets=list(data["targets"]),
         main_product=data.get("main_product"),
         plans=[PlanInfo(p["plan"]) for p in data["plans"]],
-        # 風船番号の列を足す前に固めた版は (元品番, 新品番) の2つ。全部の箇所として読む
-        replaces={k: [(x[0], x[1], x[2] if len(x) > 2 else None) for x in v] for k, v in data["replaces"].items()},
-        changes=[StoredChange(p, pr, pa, bl, pt, Decimal(d), s, o, seq) for p, pr, pa, bl, pt, d, s, o, seq
-                 in data["changes"]],
+        changes=changes,
         conditions={k: Decimal(v) for k, v in data["conditions"].items()},
         bom=bom,
         attributes=attributes,
-        # 流用を足す前に固めた版は (品番, 名称, 材料費) の3つ
-        temps=[Temp(c, nm, _dec(m), rest[0] if rest else None,
-                    tuple((b, p, Decimal(d)) for b, p, d in rest[1]) if rest else ())
-               for c, nm, m, *rest in data.get("temps", [])],
+        temps=[temp(*row) for row in data.get("temps", [])],
         level1=data.get("level1", False),
         hold=data.get("hold", False),
+        strict=data.get("strict", False),
         temp_merged=set(data.get("temp_merged", [])),
         rates=None if rates is None else settings.Rates(Decimal(rates[0]), Decimal(rates[1])),
         owns={plan: {(p, h): Decimal(v) for p, h, v in rows} for plan, rows in data.get("owns", {}).items()},
     )
-
-
-def replace_overridden(ws: Workspace, plan: str) -> dict[ReplaceRow, bool]:
-    """置換の行ごとに、その行が効く箇所を 手で直した所があるか。
-
-    置換の後に足した製品のように、まだ置換を当てていないだけの箇所には印を付けない。
-    """
-    stored = {c.place: c for c in ws.plan_changes(plan)}
-    result = {}
-    for old, new, balloon in ws.replaces.get(plan, []):
-        hit = False
-        for product in ws.targets:
-            for line in replace_lines(ws.bom, product, old):
-                if balloon is not None and balloon_group(line) != balloon:
-                    continue
-                for place in ((product, line.parent, line.balloon, old), (product, line.parent, line.balloon, new)):
-                    c = stored.get(place)
-                    if c is not None and c.source != REPLACE:
-                        hit = True
-        result[(old, new, balloon)] = hit
-    return result

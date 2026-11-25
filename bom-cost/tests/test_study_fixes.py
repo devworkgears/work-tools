@@ -1,4 +1,4 @@
-"""設計検討（/v2/）の点検で見つかった不具合の再発止め。データは架空。"""
+"""設計検討の点検で見つかった不具合の再発止め。データは架空。"""
 
 import json
 import shutil
@@ -12,17 +12,7 @@ import example_settings  # noqa: F401
 from bomcost.api import Api
 from bomcost.model import BomLine, CostHead, CostRow, Item, Version, Volume
 from bomcost.store import Store
-from bomcost.study import (
-    OTHER_PART,
-    PAIR_OUT,
-    REPLACE,
-    REWRITE,
-    StudyStore,
-    calculate,
-    check_changes,
-    input_amount,
-    replace_overridden,
-)
+from bomcost.study import OTHER_PART, StudyStore, calculate, check_changes, input_amount
 
 ALL = ("item", "bom_line", "cost", "volume")
 WEB = Path(__file__).resolve().parent.parent / "bomcost" / "web"
@@ -53,63 +43,33 @@ class FixCase(unittest.TestCase):
         self.number = self.store.create_study()
         self.store.save_targets(self.number, targets)
 
-    def changes(self) -> dict[tuple, tuple[str, str]]:
-        return {c.place: (str(c.delta), c.source) for c in self.store.workspace(self.number).plan_changes("A")}
+    def changes(self, plan: str = "A") -> dict[tuple, tuple[str, str]]:
+        """（製品, 風船番号, 現行の品番）→（変えた後の品番, 数量）。"""
+        return {(c.product, c.slot.balloon, c.slot.now): (c.slot.part, str(c.slot.quantity)) for c in self.store.workspace(self.number).plan_changes(plan)}
 
     def material(self) -> dict:
         return calculate(self.store.workspace(self.number), CostHead.MATERIAL)["rows"][0]
 
 
-class ReplaceAgain(FixCase):
-    def test_a_rerun_keeps_the_untouched_side_of_a_hand_edited_pair(self) -> None:
+class LostPlace(FixCase):
+    def test_a_lost_place_is_left_out_and_marks_incomplete(self) -> None:
         self.open(SIMPLE, ["X"])
-        self.store.save_replaces(self.number, "A", [("OLD", "NEW")])
-        self.store.save_rewrite(self.number, "A", "X", [{"balloon": "1", "part": "NEW", "quantity": "3"},
-                                                        {"balloon": "2", "part": "S", "quantity": "1"}])
-        self.store.save_replaces(self.number, "A", [("OLD", "NEW")])
-        self.assertEqual(self.changes(), {("X", "X", "1", "OLD"): ("-2", REPLACE), ("X", "X", "1", "NEW"): ("3", REWRITE)})
-        self.assertEqual(self.material()["plans"]["A"], Decimal(210 - 200 + 360))
-
-    def test_f_same_old_part_twice_is_refused_with_rows(self) -> None:
-        self.open(SIMPLE, ["X"])
-        with self.assertRaisesRegex(ValueError, "重複しています（1行目・2行目）"):
-            self.store.save_replaces(self.number, "A", [("OLD", "NEW"), ("OLD", "OTHER")])
-        self.assertEqual(self.changes(), {})
-
-    def test_g_mark_only_for_hand_edits_not_for_products_added_later(self) -> None:
-        self.open(SIMPLE + [BomLine("Y", "1", "OLD", 1)], ["X"])
-        self.store.save_replaces(self.number, "A", [("OLD", "NEW")])
-        self.store.save_targets(self.number, ["X", "Y"])
-        self.assertEqual(replace_overridden(self.store.workspace(self.number), "A"), {("OLD", "NEW", None): False})
-        self.store.save_rewrite(self.number, "A", "X", [{"balloon": "1", "part": "NEW", "quantity": "1"},
-                                                        {"balloon": "2", "part": "S", "quantity": "1"}])
-        self.assertEqual(replace_overridden(self.store.workspace(self.number), "A"), {("OLD", "NEW", None): True})
-
-
-class PairAndIncomplete(FixCase):
-    def test_b_and_c_a_lost_minus_side_drops_its_plus_side_and_marks_incomplete(self) -> None:
-        self.open(SIMPLE, ["X"])
-        self.store.save_replaces(self.number, "A", [("OLD", "NEW")])
+        self.store.apply_replace(self.number, "A", "OLD", "NEW")
+        self.assertFalse(self.material()["incomplete"]["A"])
         self.store.replace_bom(version([BomLine("X", "1", "OTHER", 2), BomLine("X", "2", "S", 1)], COSTS), ALL)
-        got = {c.change.part: (c.problems, c.counted) for c in check_changes(self.store.workspace(self.number))}
-        self.assertEqual(got, {"OLD": ((OTHER_PART,), False), "NEW": ((PAIR_OUT,), False)})
+        self.assertEqual([(c.problems, c.counted) for c in check_changes(self.store.workspace(self.number))], [((OTHER_PART,), False)])
         row = self.material()
         self.assertEqual(row["plans"]["A"], row["now"])
         self.assertTrue(row["incomplete"]["A"])
-
-    def test_c_no_mark_when_nothing_is_dropped(self) -> None:
-        self.open(SIMPLE, ["X"])
-        self.store.save_replaces(self.number, "A", [("OLD", "NEW")])
-        self.assertFalse(self.material()["incomplete"]["A"])
 
 
 class Inputs(FixCase):
     def test_full_width_codes_and_numbers_are_folded(self) -> None:
         self.open(SIMPLE, ["X"])
         self.store.save_quantities(self.number, "A", [{"product": "Ｘ", "balloon": "１", "part": "ＯＬＤ", "quantity": "１"}])
-        self.store.save_replaces(self.number, "B", [("Ｓ", "ＮＥＷ")])
-        self.assertEqual(self.changes(), {("X", "X", "1", "OLD"): ("-1", "quantity")})
-        self.assertIn(("X", "X", "2", "NEW"), {c.place for c in self.store.workspace(self.number).plan_changes("B")})
+        self.store.apply_replace(self.number, "B", "Ｓ", "ＮＥＷ")
+        self.assertEqual(self.changes(), {("X", "1", "OLD"): ("OLD", "1")})
+        self.assertEqual(self.changes("B"), {("X", "2", "S"): ("NEW", "1")})
         self.store.save_targets(self.number, ["Ｘ"])
         self.assertEqual(self.store.workspace(self.number).targets, ["X"])
 
@@ -145,8 +105,10 @@ class ApiShapes(unittest.TestCase):
             ("POST", "/api/v2/add-part", {"part": "ADD", "quantity": "1", "products": "X"}),
             ("POST", "/api/v2/add-part", {"part": "ADD", "quantity": "1", "products": [{"code": "X"}]}),
             ("POST", "/api/v2/add-part", {"part": "ADD", "products": ["X"]}),
-            ("PUT", "/api/v2/replace", {"rows": ["a"]}),
-            ("PUT", "/api/v2/replace", {"rows": {"old": "a"}}),
+            ("POST", "/api/v2/replace/apply", {"rows": ["a"]}),
+            ("POST", "/api/v2/replace/apply", {"rows": {"old": "a"}}),
+            ("POST", "/api/v2/structure", {"back": ["x"]}),
+            ("POST", "/api/v2/structure", {"back": [{"product": "X", "balloon": "1", "now": "OLD", "part": "OLD"}]}),
             ("POST", "/api/v2/structure", {"add": ["x"]}),
             ("POST", "/api/v2/structure", {"add": [{"product": "X", "balloon": "2", "part": "S", "quantity": "1e400000000"}]}),
             ("POST", "/api/v2/structure", {"inside": [{"parent": "A1", "products": "X", "old": "S", "new": "NEW"}]}),
@@ -159,24 +121,23 @@ class ApiShapes(unittest.TestCase):
         self.assertEqual(self.api.handle("GET", "/api/v2/changes", self.q).json()["rows"], [])
         self.assertEqual(self.api.handle("GET", "/api/v2/export/study", self.q).status, 200)
 
-    def test_f_duplicate_rows_are_named_by_screen_row(self) -> None:
-        status, error = self.status("PUT", "/api/v2/replace", {"rows": [
-            {"old": "OLD", "new": "NEW"}, {"old": "", "new": ""}, {"old": "ＯＬＤ", "new": "OTHER"}]})
-        self.assertEqual(status, 400)
-        self.assertIn("重複しています（1行目・3行目）", error)
-
     def test_lost_place_shows_no_before_count(self) -> None:
-        self.api.handle("PUT", "/api/v2/replace", self.q, json.dumps({"rows": [{"old": "OLD", "new": "NEW"}]}).encode())
+        self.api.handle("POST", "/api/v2/replace/apply", self.q, json.dumps({"old": "OLD", "new": "NEW"}).encode())
         StudyStore(self.store.connection).replace_bom(
             version([BomLine("X", "1", "OTHER", 2), BomLine("X", "2", "S", 1)], COSTS), ALL)
-        rows = {r["part"]: r for r in self.api.handle("GET", "/api/v2/changes", self.q).json()["rows"]}
-        self.assertEqual((rows["OLD"]["before"], rows["OLD"]["delta"]), (None, "-2"))
-        self.assertEqual(rows["NEW"]["before"], "0")  # 置換の相手が外れただけの行は、箇所が無いのとは別
+        rows = self.api.handle("GET", "/api/v2/changes", self.q).json()["rows"]
+        self.assertEqual([(r["kind"], r["old"], r["new"], r["before"], r["after"]) for r in rows], [("置き換え", "OLD", "NEW", None, "2")])
         self.assertEqual(self.api.handle("GET", "/api/v2/export/study", self.q).status, 200)
+
+    def test_own_values_of_products_out_of_the_targets_are_shown(self) -> None:
+        self.api.handle("PUT", "/api/v2/own", self.q, json.dumps({"rows": [{"product": "X", "head": "direct", "value": "5"}]}).encode())
+        self.api.handle("PUT", "/api/v2/targets", self.q, json.dumps({"products": ["S"]}).encode())
+        rows = self.api.handle("GET", "/api/v2/changes", self.q).json()["rows"]
+        self.assertEqual([(r["product"], r["part"], r["problems"]) for r in rows], [("X", "直接費", ["対象品番に無い"])])
 
     def test_messages_are_polite(self) -> None:
         cases = (
-            ("PUT", "/api/v2/replace", {"rows": [{"old": "OLD", "new": ""}]}, "元品番と新品番を入力してください（1行目）"),
+            ("POST", "/api/v2/replace/apply", {"old": "OLD", "new": ""}, "新品番を入力してください"),
             ("POST", "/api/v2/quantity", {"rows": [{"product": "X", "balloon": "2", "part": "S", "quantity": "abc"}]}, "数量は数で入力してください（abc）"),
         )
         for method, path, body, message in cases:
@@ -190,7 +151,6 @@ class ApiShapes(unittest.TestCase):
         # ほかの画面が読む検討の案の一覧にもすぐ出る
         self.assertEqual(self.api.handle("GET", "/api/v2/study", self.q).json()["plans"], ["A", "B"])
         self.assertEqual(self.api.handle("POST", "/api/v2/plans", self.q, b"{}").json()["plan"], "C")
-        self.assertEqual(self.api.handle("GET", "/api/v2/replace", self.q + "&plan=B").json()["rows"], [])
 
     def test_version_must_be_ascii_digits(self) -> None:
         r = self.api.handle("GET", "/api/v2/study", self.q + "&version=²")
@@ -250,6 +210,28 @@ let editedAt = null;
 typed.td = (r, c) => { editedAt = [r, c]; throw new Error("stop"); };
 try { typed.startEdit(false, "K"); } catch (_) {}
 out.nav = { tab, edge, typed: typed.sel, editedAt };
+// 書けない列でも lock の付いた列（前からある行の風船など）は、打った文字も貼った値も右の列へ回さない
+const locked = navGrid({ r: 0, c: 0 });
+locked.model = { nRows: () => 1, nCols: () => 3, cell: (r, c) => (c === 0 ? { lock: true } : { editable: true }) };
+const set = [];
+const lockedModel = { ...locked.model, set: (r, c, text) => set.push([c, text]) };
+paste(lockedModel, "7\tK\t2", { r: 0, c: 0 });
+out.lock = { typed: locked.startEdit(false, "7"), sel: locked.sel, set };
+// 入力欄と写しには、丸めた表示ではなく元の値を使う
+let copied = null;
+const raw = { model: { cell: () => ({ text: "1,234.57", edit: "1234.5678" }) }, sel: { r: 0, c: 0 } };
+Grid.prototype.onCopy.call(raw, { preventDefault() {}, clipboardData: { setData: (_, text) => { copied = text; } } });
+let input = null;
+globalThis.document = { createElement: () => (input = { addEventListener() {}, focus() {}, setSelectionRange() {} }) };
+Grid.prototype.startEdit.call({ ...raw, model: { cell: () => ({ text: "0.33", edit: "0.333333", editable: true }) }, td: () => ({ append() {} }), drawn: [] }, true);
+out.raw = [copied, input.value];
+// 打っていたセルを閉じたら idle を呼ぶ（打っている間に来た描き直しを、ここで出す）
+const calls = [];
+const closing = { editing: { r: 0, c: 0, input: { value: "5" } }, changed() { calls.push("changed"); }, render() {}, focus() {},
+  model: { set: () => calls.push("set"), idle: () => calls.push("idle") } };
+Grid.prototype.commit.call(closing);
+Grid.prototype.cancel.call({ ...closing, editing: {} });
+out.idle = calls;
 console.log(JSON.stringify(out));
 """
 
@@ -272,6 +254,13 @@ class GridPaste(unittest.TestCase):
         self.assertEqual(got["tab"], {"r": 0, "c": 3})
         self.assertEqual(got["edge"], {"r": 0, "c": 4})
         self.assertEqual((got["typed"], got["editedAt"]), ({"r": 1, "c": 3}, [1, 3]))
+
+    def test_locked_columns_raw_values_and_idle(self) -> None:
+        source = (WEB / "grid.js").read_text(encoding="utf-8")
+        got = json.loads(subprocess.run(["node", "-e", source + HARNESS], capture_output=True, text=True, check=True).stdout)
+        self.assertEqual(got["lock"], {"typed": False, "sel": {"r": 0, "c": 0}, "set": [[1, "K"], [2, "2"]]})
+        self.assertEqual(got["raw"], ["1234.5678", "0.333333"])
+        self.assertEqual(got["idle"], ["set", "changed", "idle", "idle"])
 
     def test_text_entered_without_keydown_starts_editing(self) -> None:
         source = (WEB / "grid.js").read_text(encoding="utf-8")
@@ -318,6 +307,41 @@ class Busy(unittest.TestCase):
         self.assertEqual(json.loads(run.stdout), {
             "short": True, "during": [False, "計算しています…", True], "after": [True, False, 0],
             "error": "x", "nested": True, "end": [False, 0, None]})
+
+
+QUEUE_HARNESS = r"""
+globalThis.alert = () => {};
+const fail = (e) => out.failed.push(e.message);
+const out = { failed: [], order: [] };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+(async () => {
+  const owner = {};
+  let drafts = 0;
+  const later = sendQueue(owner, () => drafts > 0);
+  later(async () => { await sleep(30); out.order.push(1); later(async () => { await sleep(10); out.order.push(3); }); });
+  later(async () => { out.order.push(2); throw new Error("x"); });
+  out.pending = owner.saver.pending;
+  await owner.saver.flush(); // 送っている途中の物も、後から足された物も待つ
+  out.after = owner.saver.pending;
+  drafts = 1;
+  out.draft = owner.saver.pending;
+  out.text = madeText({ made: [{ code: "U", new: "U-K1", typed: false }, { code: "W", new: "W-K1", typed: true }], typed: ["T9"] });
+  console.log(JSON.stringify(out));
+})();
+"""
+
+
+@unittest.skipUnless(shutil.which("node"), "node が無い")
+class Queue(unittest.TestCase):
+    """打ち替えを順に送る。閉じる時は、送っている途中の物も待つ。"""
+
+    def test_jobs_run_in_order_and_flush_waits_for_all(self) -> None:
+        source = (WEB / "v2.js").read_text(encoding="utf-8")
+        part = source[source.index("function sendQueue("):source.index("// 別の窓 ---")]
+        got = json.loads(subprocess.run(["node", "-e", part + QUEUE_HARNESS], capture_output=True, text=True, check=True).stdout)
+        self.assertEqual((got["order"], got["failed"], got["pending"], got["after"], got["draft"]), ([1, 2, 3], ["x"], True, False, True))
+        self.assertEqual(got["text"], "。組立品 2 つに新しい品番を付けました（U → U-K1・W → W-K1）。W-K1 は、元の仮品番に入力した材料費を使わず、流用元から計算します"
+                                      "。T9 は材料費を入力してあるので、金額は変わりません")
 
 
 if __name__ == "__main__":

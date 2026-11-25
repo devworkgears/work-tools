@@ -1,4 +1,4 @@
-"""設計検討（/v2/）の階層: 変えられるのは製品の直下だけ・組立品の中は流用した仮品番で替える・置換の製品ごと。データは架空。"""
+"""設計検討の階層: 変えられるのは製品の直下だけ・組立品の中は流用した仮品番で替える・置換の製品ごと。データは架空。"""
 
 import io
 import json
@@ -13,7 +13,7 @@ from bomcost.model import BomLine, CostHead, CostRow, Item, Version
 from bomcost.store import Store
 from bomcost.studyapi import StudyApi, change_effects
 from bomcost.structure import structure
-from bomcost.study import DEEP, REPLACE, StudyStore, after_parts, after_places, calculate, check_changes
+from bomcost.study import DEEP, NEGATIVE, Slot, StudyStore, after_places, calculate, check_changes, pair_slots
 
 ALL = ("item", "bom_line", "cost", "volume")
 D = Decimal
@@ -48,8 +48,9 @@ class LevelCase(unittest.TestCase):
     def ws(self, version: int | None = None):
         return self.store.workspace(self.number, version)
 
-    def changes(self) -> dict[tuple, Decimal]:
-        return {c.place: c.delta for c in self.ws().plan_changes("A")}
+    def changes(self) -> dict[tuple, tuple[str, str]]:
+        """（製品, 風船番号, 現行の品番）→（変えた後の品番, 数量）。"""
+        return {(c.product, c.slot.balloon, c.slot.now): (c.slot.part, str(c.slot.quantity)) for c in self.ws().plan_changes("A")}
 
     def material(self, version: int | None = None) -> dict[str, tuple]:
         rows = calculate(self.ws(version), CostHead.MATERIAL)["rows"]
@@ -59,17 +60,15 @@ class LevelCase(unittest.TestCase):
         """前の版のモックが書いた、組立品の中の変更。"""
         sid = self.store.study_id(self.number)
         with self.conn:
-            for part, delta in (("K", "-2"), ("N", "2")):
-                self.conn.execute("INSERT INTO v2_change VALUES (?, 'A', 'P1', 'U', '11', ?, ?, ?, NULL, 1)", (sid, part, delta, REPLACE))
+            self.conn.execute("INSERT INTO v2_slot VALUES (?, 'A', 'P1', 'U', '11', 'K', 'N', '2', '2', 1)", (sid,))
 
 
 class FirstLevel(LevelCase):
     def test_lists_and_replace_see_only_the_first_level(self) -> None:
-        self.assertEqual([p.code for p in after_parts(self.ws(), "A")], ["K", "S", "U"])
+        self.assertEqual({p.part for p in after_places(self.ws(), "A")}, {"K", "S", "U"})
         self.store.apply_replace(self.number, "A", "K", "N")
         # U の中の K は替わらない
-        self.assertEqual(self.changes(), {("P1", "P1", "2", "K"): D(-1), ("P1", "P1", "2", "N"): D(1),
-                                          ("P2", "P2", "2", "K"): D(-4), ("P2", "P2", "2", "N"): D(4)})
+        self.assertEqual(self.changes(), {("P1", "2", "K"): ("N", "1"), ("P2", "2", "K"): ("N", "4")})
         with self.assertRaisesRegex(ValueError, "直下"):
             self.store.apply_replace(self.number, "A", "B", "N")
 
@@ -81,25 +80,23 @@ class FirstLevel(LevelCase):
 
     def test_old_deep_changes_are_marked_left_out_and_kept(self) -> None:
         self.deep_change()
-        got = [c.problems for c in check_changes(self.ws())]
-        self.assertTrue(all(DEEP in p for p in got) and len(got) == 2)
+        self.assertEqual([c.problems for c in check_changes(self.ws())], [(DEEP,)])
         now, after, incomplete = self.material()["P1"]
         self.assertEqual((now, after, incomplete), (now, now, True))
-        # 直下の画面から保存しても消えない
-        self.store.save_rewrite(self.number, "A", "P1", [{"balloon": "1", "part": "U", "quantity": "1"},
-                                                          {"balloon": "2", "part": "K", "quantity": "3"},
-                                                          {"balloon": "3", "part": "S", "quantity": "1"}])
-        self.store.save_quantities(self.number, "A", [{"product": "P1", "balloon": "3", "part": "S", "quantity": "1"}])
-        self.assertEqual(self.changes(), {("P1", "U", "11", "K"): D(-2), ("P1", "U", "11", "N"): D(2), ("P1", "P1", "2", "K"): D(2)})
-        self.assertEqual(self.store.drop_deep_changes(self.number, "A"), 2)
-        self.assertEqual(self.changes(), {("P1", "P1", "2", "K"): D(2)})
+        # 直下の画面から変えても消えない
+        self.store.save_quantities(self.number, "A", [{"product": "P1", "balloon": "2", "part": "K", "quantity": "3"}])
+        self.assertEqual(self.changes(), {("P1", "11", "K"): ("N", "2"), ("P1", "2", "K"): ("K", "3")})
+        self.assertEqual(self.store.drop_deep_changes(self.number, "A"), 1)
+        self.assertEqual(self.changes(), {("P1", "2", "K"): ("K", "3")})
 
     def test_version_taken_before_this_keeps_its_value(self) -> None:
         self.deep_change()
         version = self.store.take_release(self.number)
         row = self.conn.execute("SELECT snapshot FROM v2_release").fetchone()
         old = json.loads(row[0])
-        del old["level1"]
+        for key in ("level1", "slots", "strict"):
+            del old[key]
+        old["changes"] = [["A", "P1", "U", "11", "K", "-2", "replace", None, 1], ["A", "P1", "U", "11", "N", "2", "replace", None, 2]]
         old["temps"] = [["Z", "仮", "1"]]
         with self.conn:
             self.conn.execute("UPDATE v2_release SET snapshot = ?", (json.dumps(old),))
@@ -117,11 +114,8 @@ class PlaceReplace(LevelCase):
                                                    {"product": "P1", "balloon": "3", "old": "S", "new": "N"}])
         self.assertEqual(self.rows()[("P2", "2", "N")], (D(4), ["K"]))
         self.assertIn(("P1", "2", "K"), self.rows())
-        k, n = (next(p for p in after_parts(self.ws(), "A") if p.code == c) for c in ("K", "N"))
-        self.assertEqual((k.users, k.before, k.was), (["P1"], 2, []))  # 替え残しが分かる
-        self.assertEqual((n.users, n.before, n.was), (["P1", "P2"], 0, ["K", "S"]))
-        self.store.revert_replace(self.number, "A", "N", ("P2", "2"))
-        self.assertEqual(self.changes(), {("P1", "P1", "3", "S"): D(-1), ("P1", "P1", "3", "N"): D(1)})
+        self.store.back_places(self.number, "A", [{"product": "P2", "balloon": "2", "now": "K", "part": "N"}])
+        self.assertEqual(self.changes(), {("P1", "3", "S"): ("N", "1")})
 
     def test_swap_at_once_and_one_bad_row_changes_nothing(self) -> None:
         self.store.apply_places(self.number, "A", [{"product": "P1", "balloon": "2", "old": "K", "new": "S"},
@@ -136,20 +130,15 @@ class PlaceReplace(LevelCase):
             self.store.apply_places(self.number, "A", [{"product": "P2", "balloon": "2", "old": "K", "new": n} for n in ("N", "S")])
         self.assertEqual(self.changes(), before)
 
-    def test_revert_without_balloons_takes_the_matching_pair_or_refuses(self) -> None:
-        v = bom()
-        lines = [BomLine("P1", None, "K", 2), BomLine("P1", None, "S", 3), BomLine("P2", None, "K", 2), BomLine("P2", None, "S", 2)]
-        w = Version("t")
-        for item in v.items.values():
-            w.add_item(item)
-        w.add_bom_lines(lines)
-        self.store.replace_bom(w, ["item", "bom_line"])
+    def test_places_without_balloons_come_back_one_by_one(self) -> None:
+        v = bom_of([BomLine("P1", None, "K", 2), BomLine("P1", None, "S", 3), BomLine("N", "1", "B", 1), BomLine("P2", None, "V", 1)])
+        self.store.replace_bom(v, ["item", "bom_line"])
         self.store.apply_places(self.number, "A", [{"product": "P1", "old": "K", "new": "N"}, {"product": "P1", "old": "S", "new": "B"}])
-        self.store.revert_replace(self.number, "A", "N")
-        self.assertEqual(self.changes(), {("P1", "P1", None, "S"): D(-3), ("P1", "P1", None, "B"): D(3)})
-        self.store.apply_places(self.number, "A", [{"product": "P2", "old": "K", "new": "N"}, {"product": "P2", "old": "S", "new": "V"}])
-        with self.assertRaisesRegex(ValueError, "1つに決まりません"):
-            self.store.revert_replace(self.number, "A", "N")
+        self.store.back_places(self.number, "A", [{"product": "P1", "balloon": None, "now": "K", "part": "N"}])
+        self.assertEqual(self.changes(), {("P1", None, "S"): ("B", "3")})
+        for bad in ({"now": "K", "part": "N"}, {"now": None, "part": "B"}):
+            with self.assertRaisesRegex(ValueError, "開き直して"):
+                self.store.back_places(self.number, "A", [{"product": "P1", "balloon": None, **bad}])
 
 
 class Derived(LevelCase):
@@ -166,7 +155,7 @@ class Derived(LevelCase):
         self.assertFalse(any(x[2] for x in self.material().values()))
         self.temp(material="100")  # 打った値があればそちら（中の変更は残る）
         self.assertEqual(self.ws().bom.cost_value("T1", CostHead.MATERIAL), D(100))
-        self.assertEqual(len(self.ws().temps[0].lines), 2)
+        self.assertEqual(len(self.ws().temps[0].lines), 1)
         self.temp()
         self.assertEqual(self.ws().bom.cost_value("T1", CostHead.MATERIAL), D(29))
 
@@ -191,7 +180,7 @@ class Derived(LevelCase):
             self.store.save_temp_lines(self.number, "T1", rows)
         self.store.save_temps(self.number, [{"code": "T1", "name": "名前だけ直す", "base": "U"}])  # 流用元が無い間も、ほかは直せる
         self.store.replace_bom(bom(XX="1"), ALL)
-        self.assertEqual(len(self.ws().temps[0].lines), 2)
+        self.assertEqual(len(self.ws().temps[0].lines), 1)
 
     def test_three_levels_by_temps_in_temps_and_no_loop(self) -> None:
         self.store.save_temps(self.number, [{"code": "T1", "base": "U"}, {"code": "T2", "base": "V"}])
@@ -207,7 +196,7 @@ class Derived(LevelCase):
         self.temp()
         self.store.save_temp_lines(self.number, "T1", [{"balloon": "12", "part": "V", "quantity": "1"}])
         self.store.save_temps(self.number, [{"code": "T9", "key": "T1", "base": "U"}])
-        self.assertEqual((self.ws().temps[0].code, self.ws().temps[0].lines), ("T9", (("11", "K", D(-2)),)))
+        self.assertEqual((self.ws().temps[0].code, self.ws().temps[0].lines), ("T9", (Slot("11", "K", "K", D(0), D(2)),)))
         self.store.save_temps(self.number, [{"code": "T9", "key": "T9", "base": "V"}])
         self.assertEqual(self.ws().temps[0].lines, ())
         for base in ("K", "ZZ", "T9"):
@@ -223,6 +212,13 @@ class Derived(LevelCase):
         number = store.create_study()
         store.save_temps(number, [{"code": "T1", "name": "仮", "material": "3"}])
         self.assertEqual(store.workspace(number).temps[0].material, D(3))
+
+    def test_a_quantity_change_in_the_base_keeps_the_typed_quantity(self) -> None:
+        self.temp()
+        self.store.save_temp_lines(self.number, "T1", [{"balloon": "11", "part": "K", "quantity": "1"}, {"balloon": "12", "part": "V", "quantity": "1"}])
+        v = bom()
+        self.store.replace_bom(bom_of([BomLine("U", "11", "K", 9), BomLine("U", "12", "V", 1), *v.children("V", by_balloon=True)]), ["bom_line"])
+        self.assertEqual(self.ws().bom.cost_value("T1", CostHead.MATERIAL), D(25))  # K 1個＋V 15
 
     def test_version_keeps_the_inside(self) -> None:
         self.temp()
@@ -290,27 +286,45 @@ class LevelApi(unittest.TestCase):
         self.assertIn(("仮品番", "T1", "組立改", 29, "流用元 U から計算"), list(book()["計算条件"].iter_rows(values_only=True)))
 
     def test_moved_places_go_back_to_the_current_side_in_one_call(self) -> None:
-        # ⑧ の［行を現行に戻す］［全部を現行に戻す］の送り方
+        # ⑧ の［戻す］［全て戻す］の送り方
         before = self.ok("GET", "/api/v2/structure")
         self.ok("POST", "/api/v2/structure", {
-            "quantity": [{"product": "P1", "balloon": "3", "part": "S", "quantity": "0"}, {"product": "P2", "balloon": "2", "part": "K", "quantity": "9"}],
+            "quantity": [{"product": "P1", "balloon": "3", "now": "S", "part": "S", "quantity": "0"},
+                         {"product": "P2", "balloon": "2", "now": "K", "part": "K", "quantity": "9"}],
             "add": [{"product": "P1", "balloon": "9", "part": "N", "quantity": "2"}]})
-        self.ok("POST", "/api/v2/structure", {"replace": [{"product": "P2", "balloon": "2", "old": "K", "new": "N"}]})
-        places = [("P1", "3", "S"), ("P2", "2", "K"), ("P2", "2", "N"), ("P1", "9", "N")]
-        self.ok("POST", "/api/v2/structure", {"quantity": [{"product": p, "balloon": b, "part": c, "quantity": ""} for p, b, c in places]})
+        self.ok("POST", "/api/v2/structure", {"replace": [{"product": "P2", "balloon": "2", "now": "K", "old": "K", "new": "N"}]})
+        direct = self.ok("GET", "/api/v2/structure")["direct"]
+        moved = [{"product": p, **{k: r[k] for k in ("balloon", "now", "part")}} for p, rows in direct.items() for r in rows
+                 if r["now"] != r["part"] or r["before"] != r["quantity"]]
+        self.assertEqual(len(moved), 3)
+        self.ok("POST", "/api/v2/structure", {"back": moved})
         self.assertEqual(self.ok("GET", "/api/v2/changes")["rows"], [])
         # 組立品の中: 置き換え＋数量・追加・削除
         at = {"parent": "U", "products": ["P1", "P2"]}
         self.ok("POST", "/api/v2/structure", {"inside": [
-            {**at, "balloon": "11", "old": "K", "new": "N", "quantity": "5"}, {**at, "balloon": "12", "old": "V", "quantity": "0"},
+            {**at, "balloon": "11", "now": "K", "old": "K", "new": "N", "quantity": "5"}, {**at, "balloon": "12", "now": "V", "old": "V", "quantity": "0"},
             {**at, "balloon": "13", "old": None, "new": "S", "quantity": "1"}]})
         self.assertEqual({r["part"] for r in self.ok("GET", "/api/v2/structure")["direct"]["P1"] if r["balloon"] == "1"}, {"U-K1"})
         at["parent"] = "U-K1"
         self.ok("POST", "/api/v2/structure", {"inside": [
-            {**at, "balloon": "11", "old": "N", "new": "K", "quantity": "2"}, {**at, "balloon": "12", "old": None, "new": "V", "quantity": "1"},
-            {**at, "balloon": "13", "old": "S", "quantity": "0"}]})
+            {**at, "balloon": "11", "now": "K", "old": "N", "new": "K", "quantity": "2"}, {**at, "balloon": "12", "old": None, "new": "V", "quantity": "1"},
+            {**at, "balloon": "13", "now": None, "old": "S", "quantity": "0"}]})
         after = self.ok("GET", "/api/v2/structure")
         self.assertEqual((after["direct"], after["inside"]), (before["direct"], before["inside"]))
+
+    def test_two_places_with_the_same_part_inside_are_pointed_at_by_the_current_part(self) -> None:
+        at = {"parent": "U", "products": ["P1", "P2"], "balloon": "11"}
+        self.ok("POST", "/api/v2/structure", {"inside": [{**at, "old": None, "new": "S", "quantity": "3"}]})
+        at["parent"] = "U-K1"
+        self.ok("POST", "/api/v2/structure", {"inside": [{**at, "now": "K", "old": "K", "new": "N"}, {**at, "now": None, "old": "S", "new": "N"}]})
+        rows = lambda: [(r["now"], r["part"], r["quantity"]) for r in self.ok("GET", "/api/v2/structure")["inside"]["U-K1"]]
+        self.assertEqual(rows(), [("K", "N", "2"), ("V", "V", "1"), (None, "N", "3")])
+        self.ok("POST", "/api/v2/structure", {"inside": [{**at, "now": "K", "old": "N", "quantity": "8"}]})
+        self.assertEqual(rows(), [("K", "N", "8"), ("V", "V", "1"), (None, "N", "3")])
+        # 足した箇所を、もう戻っている品番に替えると、その箇所に足す
+        self.ok("POST", "/api/v2/structure", {"inside": [{**at, "now": "K", "old": "N", "new": "K", "quantity": "2"}]})
+        self.ok("POST", "/api/v2/structure", {"inside": [{**at, "now": None, "old": "N", "new": "K"}]})
+        self.assertEqual(rows(), [("K", "K", "5"), ("V", "V", "1")])
 
     def test_after_parts_tells_places_and_deeper_parts(self) -> None:
         data = self.ok("GET", "/api/v2/after-parts")
@@ -318,11 +332,9 @@ class LevelApi(unittest.TestCase):
             (["U"], "K", [{"balloon": "11", "quantity": "2", "was": []}]), (["U"], "V", [{"balloon": "12", "quantity": "1", "was": []}]),
             (["U", "V"], "B", [{"balloon": "21", "quantity": "3", "was": []}])])
         self.assertEqual(data["tops"], {"U": [{"product": "P1", "balloon": "1"}, {"product": "P2", "balloon": "1"}]})
-        self.assertIn({"product": "P2", "balloon": "2", "part": "K", "quantity": "4", "was": [], "before": "4"}, data["places"])
+        self.assertIn({"product": "P2", "balloon": "2", "part": "K", "quantity": "4", "was": [], "before": "4", "now": "K"}, data["places"])
         got = self.ok("POST", "/api/v2/replace/apply", {"rows": [{"product": "P2", "balloon": "2", "old": "K", "new": "N"}]})
-        self.assertEqual({p["code"]: (p["used"], p["before"]) for p in got["parts"]}["K"], (1, 2))
-        self.ok("POST", "/api/v2/replace/revert", {"part": "N", "product": "P2", "balloon": "2"})
-        self.assertEqual(self.ok("GET", "/api/v2/changes")["rows"], [])
+        self.assertIn({"product": "P2", "balloon": "2", "part": "N", "quantity": "4", "was": ["K"], "before": "4", "now": "K"}, got["places"])
 
     def test_structure_edits_direct_places_and_insides_in_one_call(self) -> None:
         got = self.ok("POST", "/api/v2/structure", {
@@ -330,7 +342,7 @@ class LevelApi(unittest.TestCase):
             "replace": [{"product": "P2", "balloon": "2", "old": "K", "new": "N"}],
             "add": [{"product": "P1", "balloon": "9", "part": "N", "quantity": "2"}],
             "inside": [{"parent": "U", "products": ["P1", "P2"], "balloon": "11", "old": "K", "quantity": "3"}]})
-        self.assertEqual(got, {"made": [{"code": "U", "new": "U-K1", "name": "U の名称"}], "typed": []})
+        self.assertEqual(got, {"made": [{"code": "U", "new": "U-K1", "name": "U の名称", "typed": False}], "typed": []})
         data = self.ok("GET", "/api/v2/structure")
         self.assertEqual([(r["balloon"], r["now"], r["part"], r["quantity"]) for r in data["direct"]["P1"]],
                          [("1", "U", "U-K1", "1"), ("2", "K", "K", "1"), ("3", "S", "S", "0"), ("9", None, "N", "2")])
@@ -339,7 +351,7 @@ class LevelApi(unittest.TestCase):
 
     def test_list_hides_old_deep_changes_and_the_list_can_drop_them(self) -> None:
         with self.store.connection as c:
-            c.execute("INSERT INTO v2_change VALUES (1, 'A', 'P1', 'U', '11', 'K', '1', ?, NULL, 1)", (REPLACE,))
+            c.execute("INSERT INTO v2_slot VALUES (1, 'A', 'P1', 'U', '11', 'K', 'K', '3', '2', 1)")
         data = self.ok("GET", "/api/v2/structure")
         self.assertFalse(any(r["before"] != r["quantity"] or r.get("problem") for rows in data["direct"].values() for r in rows))
         self.assertEqual(self.ok("GET", "/api/v2/changes")["deep"], 1)
@@ -406,12 +418,12 @@ class RefuseUnregistered(LevelCase):
     def test_every_input_refuses_and_changes_nothing(self) -> None:
         self.store.save_temps(self.number, [{"code": "T1", "base": "U"}])
         good = {"product": "P2", "balloon": "2", "old": "K", "new": "N"}
-        rows = [{"balloon": "1", "part": "U", "quantity": "1"}, {"balloon": "9", "part": "ZZ", "quantity": "1"}]
+        rows = [{"product": "P3", "balloon": "8", "part": "N", "quantity": "1"}, {"product": "P3", "balloon": "9", "part": "ZZ", "quantity": "1"}]
         for call in (
             lambda: self.store.apply_replace(self.number, "A", "K", "ZZ"),
             lambda: self.store.apply_places(self.number, "A", [good, {**good, "product": "P1", "new": "ZZ"}]),
             lambda: self.store.add_part(self.number, "A", "ZZ", "1", ["P1"]),
-            lambda: self.store.save_rewrite(self.number, "A", "P3", rows),
+            lambda: self.store.add_places(self.number, "A", rows),
             lambda: self.store.save_temp_lines(self.number, "T1", [{"balloon": "11", "part": "ZZ", "quantity": "2"}]),
         ):
             with self.assertRaisesRegex(ValueError, self.MESSAGE):
@@ -426,10 +438,9 @@ class RefuseUnregistered(LevelCase):
         self.store.save_temps(self.number, [{"code": "ZZ"}])
         self.store.apply_places(self.number, "A", [{"product": "P1", "balloon": "3", "old": "S", "new": "ZZ"}])
         self.store.save_temps(self.number, [])
-        self.store.save_rewrite(self.number, "A", "P1", [{"balloon": "1", "part": "U", "quantity": "1"}, {"balloon": "2", "part": "K", "quantity": "5"},
-                                                         {"balloon": "3", "part": "ZZ", "quantity": "1"}])
-        self.store.save_quantities(self.number, "A", [{"product": "P1", "balloon": "3", "part": "ZZ", "quantity": "2"}])
-        self.assertEqual(self.changes(), {("P1", "P1", "2", "K"): D(4), ("P1", "P1", "3", "S"): D(-1), ("P1", "P1", "3", "ZZ"): D(2)})
+        self.store.save_quantities(self.number, "A", [{"product": "P1", "balloon": "2", "part": "K", "quantity": "5"},
+                                                      {"product": "P1", "balloon": "3", "part": "ZZ", "quantity": "2"}])
+        self.assertEqual(self.changes(), {("P1", "2", "K"): ("K", "5"), ("P1", "3", "S"): ("ZZ", "2")})
 
 
 class HoldUnpriced(LevelCase):
@@ -489,6 +500,94 @@ def bom_of(lines: list[BomLine]) -> Version:
         v.add_item(Item(code, code))
     v.add_bom_lines(lines)
     return v
+
+
+class OldDatabase(unittest.TestCase):
+    """変更を増減で持っていた前の版の DB と、固めた版。"""
+
+    OLD = """CREATE TABLE v2_change (study_id INTEGER, plan TEXT, product TEXT, parent TEXT, balloon TEXT, part TEXT, delta TEXT, source TEXT,
+                                     origin TEXT, seq INTEGER);
+             CREATE TABLE v2_temp_line (study_id INTEGER, code TEXT, balloon TEXT, part TEXT, delta TEXT);"""
+
+    def open(self, with_bom: bool = True) -> tuple[StudyStore, str]:
+        conn = sqlite3.connect(":memory:")
+        self.addCleanup(conn.close)
+        store = StudyStore(conn)
+        if with_bom:
+            store.replace_bom(bom(), ALL)
+        number = store.create_study()
+        store.save_targets(number, ["P1", "P2", "P3"])
+        store.save_temps(number, [{"code": "T1", "material": "5"}])
+        conn.executescript(self.OLD)
+        with conn:
+            for i, (product, parent, balloon, part, delta, source) in enumerate((
+                    ("P1", "P1", "2", "K", "-1", "replace"), ("P1", "P1", "2", "N", "3", "quantity"), ("P1", "P1", "3", "S", "-1", "quantity"),
+                    ("P1", "P1", "3", "B", "2", "add"), ("P2", "P2", "2", "K", "2", "rewrite"), ("P1", "U", "11", "K", "-2", "replace"),
+                    ("P1", "U", "11", "N", "2", "replace"))):
+                conn.execute("INSERT INTO v2_change VALUES (1, 'A', ?, ?, ?, ?, ?, ?, NULL, ?)", (product, parent, balloon, part, delta, source, i))
+            conn.execute("INSERT INTO v2_temp_line VALUES (1, 'T1', '11', 'K', '-2')")
+            conn.execute("INSERT INTO v2_temp_line VALUES (1, 'T1', '11', 'N', '2')")
+            conn.execute("UPDATE v2_temp_item SET base = 'U', material = NULL")
+        return StudyStore(conn), number
+
+    EXPECTED = {("P1", "P1", "2", "K"): ("N", "3"), ("P1", "P1", "3", "S"): ("S", "0"), ("P1", "P1", "3", None): ("B", "2"),
+                ("P2", "P2", "2", "K"): ("K", "6"), ("P1", "U", "11", "K"): ("N", "2")}
+
+    def found(self, store: StudyStore, number: str, version: int | None = None) -> dict:
+        return {(c.product, c.parent, c.slot.balloon, c.slot.now): (c.slot.part, str(c.slot.quantity)) for c in store.workspace(number, version).changes}
+
+    def test_changes_are_taken_over_once(self) -> None:
+        store, number = self.open()
+        self.assertEqual(self.found(store, number), self.EXPECTED)
+        ws = store.workspace(number)
+        self.assertEqual(ws.temps[0].lines, (Slot("11", "K", "N", D(2), D(2)),))
+        self.assertEqual([c.problems for c in check_changes(ws) if c.problems], [(DEEP,)])
+        again = StudyStore(store._conn)
+        self.assertEqual(self.found(again, number), self.EXPECTED)
+        # 前の版で開き直して空の表ができていても、次に開ける
+        store._conn.executescript(self.OLD)
+        self.assertEqual(self.found(StudyStore(store._conn), number), self.EXPECTED)
+
+    def test_an_emptied_bom_waits_for_the_next_import(self) -> None:
+        # 設定を替えて部品表が空の間は、現行の数量が分からないので移さない
+        store, number = self.open(with_bom=False)
+        self.assertEqual(self.found(store, number), {})
+        store.replace_bom(bom(), ALL)
+        self.assertEqual(self.found(store, number), self.EXPECTED)
+
+    def test_old_versions_are_read_with_the_same_rule_and_their_own_bom(self) -> None:
+        store, number = self.open()
+        store.take_release(number)
+        data = json.loads(store._conn.execute("SELECT snapshot FROM v2_release").fetchone()[0])
+        del data["slots"], data["strict"]
+        data["changes"] = [["A", "P1", "P1", "2", "K", "-1", "replace", None, 1], ["A", "P1", "P1", "2", "N", "1", "replace", None, 2]]
+        data["temps"] = [["T1", "", None, "U", [["11", "K", "-2"], ["11", "N", "2"]]]]
+        with store._conn as c:
+            c.execute("UPDATE v2_release SET snapshot = ?", (json.dumps(data),))
+        store.replace_bom(Version("t"), ALL)
+        self.assertEqual(self.found(store, number, 1), {("P1", "P1", "2", "K"): ("N", "1")})
+        self.assertEqual(store.workspace(number, 1).temps[0].lines, (Slot("11", "K", "N", D(2), D(2)),))
+
+    def test_pairs_of_old_changes(self) -> None:
+        now = {("1", "A"): D(2), ("1", "B"): D(3), ("2", "C"): D(4)}
+        for deltas, expected in (
+            ({("1", "A"): D(-2), ("1", "B"): D(-3), ("1", "X"): D(3), ("1", "Y"): D(2)}, [("A", "Y", D(2)), ("B", "X", D(3))]),  # 数の合う相手
+            ({("2", "C"): D(-1), ("2", "X"): D(1)}, [("C", "C", D(3)), (None, "X", D(1))]),  # 0 にならなければ置き換えではない
+            ({("2", "C"): D(1)}, [("C", "C", D(5))]),
+            ({("9", "L"): D(-2), ("9", "X"): D(2)}, [("L", "X", D(2))]),  # 現行の品番が無くなっていた
+            ({("2", "C"): D(-6)}, [("C", "C", D(-2))]),
+        ):
+            with self.subTest(deltas=deltas):
+                self.assertEqual([(s.now, s.part, s.quantity) for s in pair_slots(now, deltas)], expected)
+
+    def test_a_negative_quantity_is_left_out(self) -> None:
+        store, number = self.open()
+        with store._conn as c:
+            c.execute("UPDATE v2_slot SET quantity = '-1' WHERE product = 'P2'")
+        ws = store.workspace(number)
+        self.assertEqual([c.problems for c in check_changes(ws) if c.change.product == "P2"], [(NEGATIVE,)])
+        row = calculate(ws, CostHead.MATERIAL)["rows"][1]
+        self.assertEqual((row["plans"]["A"], row["incomplete"]["A"]), (row["now"], True))
 
 
 class StudyApiRows:

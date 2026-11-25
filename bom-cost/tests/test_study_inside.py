@@ -1,4 +1,4 @@
-"""設計検討（/v2/）の ⑪: 組立品の中の部品の置き換え（上の組立品を流用した仮品番にする）。データは架空。"""
+"""設計検討の ⑪: 組立品の中の部品の置き換え（上の組立品を流用した仮品番にする）。データは架空。"""
 
 import json
 import unittest
@@ -16,7 +16,7 @@ class InsideCase(LevelCase):
     """P1 は U×1、P2 は U×2、P3 は U×1。U は K×2・V×1、V は B×3。"""
 
     def rebuild(self, *rows: dict) -> Rebuild:
-        return Rebuild(self.ws(), "A", input_edits(rows))
+        return Rebuild(self.ws(), "A", input_edits(self.ws(), rows))
 
     def needs(self, *rows: dict) -> list[tuple]:
         return [(n["code"], n["suggested"]) for n in self.rebuild(*rows).needs()]
@@ -88,6 +88,28 @@ class ReplaceInside(InsideCase):
         self.store.add_plan(self.number)
         self.store.apply_replace(self.number, "B", "U", "U-K1")
         self.assertEqual(self.needs({"path": ["U-K1"], "old": "N", "new": "S"})[0], ("U-K1", "U-K2"))
+
+    def test_a_temp_held_by_a_product_out_of_the_targets_is_not_changed_in_place(self) -> None:
+        self.apply({"path": ["U"], "old": "K", "new": "N"})
+        self.store.save_targets(self.number, ["P1", "P2"])  # P3 は外す（U-K1 への変更は残っている）
+        row = {"path": ["U-K1"], "old": "N", "new": "S"}
+        self.assertEqual(self.needs(row), [("U-K1", "U-K2")])
+        self.apply(row)
+        self.store.save_targets(self.number, ["P1", "P2", "P3"])
+        self.assertEqual(self.tops(), {"P1": ["U-K2"], "P2": ["U-K2"], "P3": ["U-K1"]})
+        self.assertEqual(self.inside("U-K1")[("11", "N")], D(2))
+
+    def test_splitting_a_temp_with_a_typed_price_is_told(self) -> None:
+        self.apply({"path": ["U"], "old": "K", "new": "N"})
+        with self.conn:
+            self.conn.execute("UPDATE v2_temp_item SET material = '99'")
+        row = {"path": ["U-K1"], "old": "N", "new": "S", "product": "P2", "top": "1"}
+        self.assertEqual([(n["suggested"], n["typed"]) for n in self.rebuild(row).needs()], [("U-K2", True)])
+
+    def test_a_product_cannot_come_into_its_own_assembly(self) -> None:
+        with self.assertRaisesRegex(ValueError, "自分の中"):
+            self.apply({"path": ["U"], "old": "K", "new": "P1", "product": "P1", "top": "1"})
+        self.assertEqual(self.ws().temps, [])
 
     def test_different_changes_by_product_get_different_codes(self) -> None:
         rows = ({"path": ["U"], "old": "K", "new": "N", "product": "P1", "top": "1"},
@@ -200,12 +222,12 @@ class ReplaceInside(InsideCase):
 
         rows = [{"path": ["U"], "old": "K", "new": "N"}]
         data = call("/api/v2/inside/replace", {"rows": rows})
-        self.assertEqual(data["made"], [{"code": "U", "new": "U-K1", "name": "U の名称"}])
+        self.assertEqual(data["made"], [{"code": "U", "new": "U-K1", "name": "U の名称", "typed": False}])
         self.assertEqual((data["typed"], data["bases"]), ([], {"U-K1": "U"}))
         data = call("/api/v2/temp-rename", {"code": "U-K1", "new": "T9"})
         self.assertEqual(data["tops"], {"T9": [{"product": "P1", "balloon": "1"}, {"product": "P2", "balloon": "1"}]})
-        self.assertEqual({p["code"]: p["was"] for p in data["parts"]}["T9"], ["U"])
-        self.assertEqual([(r["part"], r["lines"]) for r in data["inside"] if r["path"] == ["T9"]][1],
+        self.assertEqual({p["part"]: p["was"] for p in data["places"]}["T9"], ["U"])
+        self.assertEqual([(r["part"], r["lines"]) for r in data["inside"] if r["path"] == ["T9"]][0],
                          ("N", [{"balloon": "11", "quantity": "2", "was": ["K"]}]))
         # 材料費を打った仮品番は、中を替えても金額が変わらないので知らせる
         with store.connection as c:

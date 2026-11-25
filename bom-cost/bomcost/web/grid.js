@@ -1,7 +1,8 @@
 // Excel 風の格子。セルを選び、Enter・矢印で移り、打てば書き換え、タブ区切りの貼り付けで行が足される。
-// 中身は model が持つ: nRows()・nCols()・cell(r, c) → {text, cls, editable, th}・set(r, c, text)。
+// 中身は model が持つ: nRows()・nCols()・cell(r, c) → {text, edit: 入力欄と写しに使う値（無ければ text）, cls, editable, th,
+// lock: 書けず、打った文字も貼った値もほかの列へ回さない}・set(r, c, text)。
 // 任意で groups()（見出しの上の段・{ text, span, cls }）・head()（見出しの行・{ text, cls, title, action } で押せる見出し）・action(r, c)（クリックで動くセル）・changed()（書き換えの後に1回）・
-// grow()（空の行を1行足す。足せなければ false）。
+// grow()（空の行を1行足す。足せなければ false）・idle()（打っていたセルを閉じた後）。
 "use strict";
 
 // 語の読み替え（画面の語 → 使う語）。起動の時にサーバーから受け取る。語がまるごと同じか、後ろに「（…）」が付いた物だけ替える
@@ -199,7 +200,7 @@ class Grid {
     let { r, c } = this.sel;
     if (!this.model.cell(r, c).editable) {
       // 書けないセル（名称など）で打った文字は捨てず、右の書ける列に入れる
-      const to = keep ? null : this.nextEditable(r, c, 0, 1);
+      const to = keep || this.model.cell(r, c).lock ? null : this.nextEditable(r, c, 0, 1);
       if (!to) return false;
       this.select(to.r, to.c);
       ({ r, c } = to);
@@ -207,7 +208,8 @@ class Grid {
     const td = this.td(r, c);
     const input = document.createElement("input");
     input.className = "cellin";
-    input.value = keep ? this.model.cell(r, c).text ?? "" : initial;
+    const cell = this.model.cell(r, c);
+    input.value = keep ? cell.edit ?? cell.text ?? "" : initial;
     td.textContent = "";
     td.append(input);
     this.drawn[r] = null; // 入力欄を出した行は、次に必ず作り直す
@@ -233,12 +235,14 @@ class Grid {
     this.editing = null;
     this.model.set(r, c, clean(input.value));
     this.changed();
+    if (this.model.idle) this.model.idle();
   }
 
   cancel() {
     this.editing = null;
     this.render();
     this.focus();
+    if (this.model.idle) this.model.idle();
   }
 
   changed() {
@@ -316,9 +320,9 @@ class Grid {
       let cc = c;
       for (const value of line.split("\t")) {
         // 書き換えられない列（名称など）は飛ばし、次の書き換えられる列に入れる。列は貼りながら増えるので毎回たずねる
-        while (cc < this.model.nCols() && !this.model.cell(r + i, cc).editable) cc++;
+        while (cc < this.model.nCols() && !this.model.cell(r + i, cc).editable && !this.model.cell(r + i, cc).lock) cc++;
         if (cc >= this.model.nCols()) break;
-        this.model.set(r + i, cc, clean(value));
+        if (this.model.cell(r + i, cc).editable) this.model.set(r + i, cc, clean(value));
         cc++;
       }
     });
@@ -327,7 +331,7 @@ class Grid {
 
   onCopy(e) {
     const cell = this.model.cell(this.sel.r, this.sel.c);
-    e.clipboardData.setData("text/plain", cell.text ?? "");
+    e.clipboardData.setData("text/plain", cell.edit ?? cell.text ?? "");
     e.preventDefault();
   }
 }
