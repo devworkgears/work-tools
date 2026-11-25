@@ -1,4 +1,4 @@
-"""製造原価の式（材料費小計から調整費・材料費合計・間接費・製造原価）と、検討案の費目変更。品番・数値は架空。"""
+"""製造原価の式（材料費小計から諸経費・材料費合計・間接費・製造原価）と、検討案の費目変更。品番・数値は架空。"""
 
 import io
 import json
@@ -35,7 +35,7 @@ class Formula(unittest.TestCase):
             "MANUFACTURING": D(1502),  # 1210 ＋ 242 ＋ 50
         })
         self.assertEqual(b.incomplete, frozenset())
-        # 端数は丸めない。社内加工費も調整費の元に入る
+        # 端数は丸めない。加工費も諸経費の元に入る
         c = breakdown(D("10.01"), OwnValues(D(5), D(0), D(0)))
         self.assertEqual(c.value(Head.ADJUSTMENT), D("1.501"))
         self.assertEqual(c.value(Head.MANUFACTURING), D("16.511") * D("1.2"))
@@ -141,7 +141,7 @@ class SampleApi(SampleDbCase):
         self.change("A-100", kind="REPLACE", part="B-200", replacement="X-610", quantity="2")
         r = self.compare("&q=A-100")
         self.assertEqual([(h["id"], h["label"]) for h in r["heads"]], [
-            ("MATERIAL", "材料費小計"), ("PROCESSING", "社内加工費"), ("AMORTIZATION", "償却費"), ("ADJUSTMENT", "調整費"),
+            ("MATERIAL", "材料費小計"), ("PROCESSING", "加工費"), ("AMORTIZATION", "償却費"), ("ADJUSTMENT", "諸経費"),
             ("MATERIAL_TOTAL", "材料費合計"), ("INDIRECT", "間接費"), ("DIRECT", "直接費"), ("MANUFACTURING", "製造原価")])
         base, trial = r["rows"]
         # 200 → 材料費合計 220・間接費 44・製造原価 264（直接費は未登録で 0 として通す）
@@ -164,7 +164,7 @@ class SampleApi(SampleDbCase):
         rows = self.ok("GET", "/api/group/changes", f"group=2026-10&head=MANUFACTURING")["rows"]
         self.assertEqual([(x["kind"], x["kind_label"], x["target_head"], x["text"]) for x in rows], [
             ("SET_HEAD", "費目変更", "DIRECT", "費目変更 直接費 → 50"),
-            ("SET_HEAD", "費目変更", "PROCESSING", "費目変更 社内加工費 → 100")])
+            ("SET_HEAD", "費目変更", "PROCESSING", "費目変更 加工費 → 100")])
         self.assertEqual(D(rows[0]["difference"]), D(50))
         self.assertEqual(D(rows[1]["difference"]), D(100) * D("1.1") * D("1.2"))
         heads = self.ok("GET", "/api/group/heads", f"group=2026-10&product=A-100")
@@ -199,7 +199,7 @@ class SampleApi(SampleDbCase):
         rows = self.ok("GET", "/api/group/changes", f"group=2026-10&head=MANUFACTURING")["rows"]
         self.assertEqual([(x["product"], x["text"], x["batch"]) for x in rows], [
             ("A-100", "費目変更 直接費 → 10", None),
-            ("A-100", "費目変更 社内加工費 → 30・直接費 → 50", 2),
+            ("A-100", "費目変更 加工費 → 30・直接費 → 50", 2),
             ("V-110", "費目変更 償却費 → 5", None)])
         self.assertEqual([(h["id"], h["value"]) for h in rows[1]["heads"]], [("PROCESSING", "30"), ("DIRECT", "50")])
         # 1回の操作の差は、まとめて入れた費目の差の合計
@@ -244,7 +244,7 @@ class SampleApi(SampleDbCase):
                              f"group=2026-10&names={quote(json.dumps([NAME]))}&ignore_amortization=1")
         self.assertEqual(response.status, 200, response.body)
         ws = load_openpyxl().load_workbook(io.BytesIO(response.body))["比較"]
-        self.assertEqual([c.value for c in ws[1]][4:], ["材料費小計", "社内加工費", "償却費", "調整費", "材料費合計",
+        self.assertEqual([c.value for c in ws[1]][4:], ["材料費小計", "加工費", "償却費", "諸経費", "材料費合計",
                                                          "間接費", "直接費", "製造原価"])
 
 

@@ -364,7 +364,7 @@ function compareGrid(t, head) {
       el("tr", { class: "cmp-grid-total" }, label("年間効果額"), t.heads.map((h) => cell(e[h.id].effect, h.id,
         { sign: true, excluded: e[h.id].excluded > 0 && `未登録 ${e[h.id].excluded} 製品を除く`, partial }))));
   });
-  const heads = ["品番", "名称", "記号・寸法", "", ...t.heads.map((h) => el("th", { class: `num ${current(h.id)}` }, h.label))];
+  const heads = ["品番", "名称", "仕様", "", ...t.heads.map((h) => el("th", { class: `num ${current(h.id)}` }, h.label))];
   const shown = t.products.length + t.without_trial;
   return [
     el("div", { class: "cmp-left-head" },
@@ -489,7 +489,7 @@ function breakdownShare(row) {
     el("span", { class: `num ${missing ? "missing" : ""}` }, missing ? "分母外" : `${row.share ?? "—"}%`)));
 }
 
-const analysisHeads = (...more) => ["品番", "名称", "記号・寸法", ...more, ""];
+const analysisHeads = (...more) => ["品番", "名称", "仕様", ...more, ""];
 const analysisTable = (heads, rows) => table(heads, rows.length ? rows
   : [el("tr", {}, el("td", { colspan: heads.length, class: "muted" }, "なし"))], "small cmp-bd-table");
 const nameCells = (r) => [el("td", {}, r.name), el("td", {}, r.specification)];
@@ -583,7 +583,7 @@ function drawAnalysis() {
   if (!box) return;
   const tools = el("div", { class: "cmp-an-tools" }, analysisPicker(),
     analysisSeg("cost", [["manufacturing", "製造原価"], ["material", "材料費"]]),
-    analysisSeg("by", [["code", "品番"], ["name", "名称"], ["name_spec", "名称＋記号・寸法"]]),
+    analysisSeg("by", [["code", "品番"], ["name", "名称"], ["name_spec", `名称＋${label("仕様")}`]]),
     analysisSeg("weight", [["unit", "1台ずつ"], ["volume", "年間台数"]]));
   const a = compareState.analysis;
   if (!a) {

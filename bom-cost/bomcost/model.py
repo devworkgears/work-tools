@@ -26,10 +26,10 @@ class CostHead(Enum):
     MATERIAL = "材料費"
     DIRECT = "直接費"
     INDIRECT = "間接費"
-    ADJUSTMENT = "調整費"
+    ADJUSTMENT = "諸経費"
     AMORTIZATION = "償却費"
     MANUFACTURING = "製造原価"
-    PROCESSING = "社内加工費"
+    PROCESSING = "加工費"
 
 
 # 製造原価と比べる4費目
@@ -41,7 +41,7 @@ BASIC_HEADS: tuple[CostHead, ...] = (
 )
 # 「製品から」の画面に並べる5費目（材料費のほかは式の値。償却費は式に入れ、詳細に登録値を出す）
 HEADS: tuple[CostHead, ...] = (*BASIC_HEADS, CostHead.MANUFACTURING)
-# マスタ登録で入れる費目（式の入力のうち登録値を使うもの）。調整費・間接費・製造原価は式で出すので入れない
+# マスタ登録で入れる費目（式の入力のうち登録値を使うもの）。諸経費・間接費・製造原価は式で出すので入れない
 MASTER_HEADS: tuple[CostHead, ...] = (CostHead.MATERIAL, CostHead.AMORTIZATION, CostHead.DIRECT,
                                       CostHead.PROCESSING)
 
@@ -72,17 +72,17 @@ def base_code(code: Code) -> str:
 
 
 def mbom_to_ebom(mbom_code: Code) -> str:
-    """原価の表（MBOM）の品番を、設定の桁で EBOM の品番（基本、または基本＋枝番）に戻す。設定が空ならそのまま返す。
+    """原価の表の品番を、設定の桁で 設計の品番（基本、または基本＋枝番）に戻す。設定が空ならそのまま返す。
 
     桁数が違う品番・後ろを埋める桁が 0 でない品番は ValueError。
     """
-    code = to_code(mbom_code, name="MBOM の品番")
+    code = to_code(mbom_code, name="原価の品番")
     s = settings.current()
     if not (s.code_total and s.code_base and s.code_branch):
         return code
     used = s.code_base + s.code_branch
     if len(code) != s.code_total or code[used:].strip("0"):
-        raise ValueError(f"MBOM の品番が設定の桁（{s.code_total}桁）に合わない: {mbom_code!r}")
+        raise ValueError(f"原価の品番が設定の桁（{s.code_total}桁）に合わない: {mbom_code!r}")
     return base_code(code[:used])
 
 
@@ -129,7 +129,7 @@ class BomLine:
 
 @dataclass(frozen=True)
 class CostRow:
-    """原価の1行。code は EBOM の品番、mbom_code は元の MBOM の品番。値の None は未登録（0 円ではない）。"""
+    """原価の1行。code は 設計の品番、mbom_code は元の 原価の品番。値の None は未登録（0 円ではない）。"""
 
     code: str
     values: Mapping[CostHead, Decimal | None]
@@ -138,7 +138,7 @@ class CostRow:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "code", to_code(self.code))
-        object.__setattr__(self, "mbom_code", to_optional_code(self.mbom_code, name="MBOM の品番"))
+        object.__setattr__(self, "mbom_code", to_optional_code(self.mbom_code, name="原価の品番"))
         normalized = {
             head: to_optional_decimal(self.values.get(head), name=head.value) for head in CostHead
         }
@@ -151,7 +151,7 @@ class CostRow:
         values: Mapping[CostHead, NumberLike | None],
         source: Source = Source.IMPORTED,
     ) -> "CostRow":
-        """MBOM の品番から作る。品番は EBOM の品番に戻して持つ。"""
+        """原価の品番から作る。品番は 設計の品番に戻して持つ。"""
         return cls(code=mbom_to_ebom(mbom_code), values=values, mbom_code=to_code(mbom_code), source=source)
 
     def value(self, head: CostHead) -> Decimal | None:
@@ -213,7 +213,7 @@ class Version:
     volumes: dict[str, Volume] = field(default_factory=dict)
     manual_overlaps: tuple[ManualOverlap, ...] = ()
     warnings: tuple[ImportWarning, ...] = ()  # 最後の取り込みの検証の結果（保存と読み戻しで残す）
-    dev_number: str = ""  # グループの開発番号
+    dev_number: str = ""  # グループの案件番号
     dev_name: str = ""  # グループの名称
     _children_index: tuple[tuple[int, int], dict[str, tuple[BomLine, ...]]] | None = field(
         default=None, init=False, repr=False, compare=False)

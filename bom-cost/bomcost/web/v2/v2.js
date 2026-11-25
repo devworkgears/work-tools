@@ -16,7 +16,7 @@ const items = new Map(); // 品番 → 右の列の値（/api/v2/lookup）
 let current = null; // 開いている画面 { key, saver }
 
 // 別の窓: ② から ④〜⑩ を開く。窓の URL に画面・検討番号・版・処理を載せる
-const NAMES = { 5: "グリッド画面", 6: "変更一覧", 7: "結果", 8: "書き換え", 9: "仮品番", 10: "製品の費目", 11: "置換" };
+const NAMES = { 5: "一覧入力", 6: "変更一覧", 7: "結果", 8: "書き換え", 9: "仮品番", 10: "製品の費目", 11: "置換" };
 const PARAMS = new URLSearchParams(location.search);
 const POPUP = PARAMS.has("screen");
 // 窓どうしの知らせ。saved＝その検討を一時保存した（ほかの窓は戻った時に読み直す）・switch＝② が別の検討・版に替えた（別の窓は閉じる）
@@ -447,7 +447,7 @@ async function hubScreen(main, cur) {
   const header = () => Object.fromEntries([...main.querySelectorAll("input[data-key]")].map((i) => [i.dataset.key, i.value]));
   const saver = autosaver(cur, async () => applyStudy(await api("PUT", "/api/v2/study", { number: S.number }, header())),
     () => loadStudy(S.number, S.version));
-  const fields = [field("題目", "title", 260), field("担当", "owner"), field("承認者", "approver"), field("開発番号", "dev_number")];
+  const fields = [field("題目", "title", 260), field("担当", "owner"), field("承認者", "approver"), field("案件番号", "dev_number")];
   const state = S.number ? (S.version === null ? "仮" : `版${S.version}`) : "";
   const updated = h.updated_at ? h.updated_at.slice(0, 10).replaceAll("-", "/") : "";
   // 新規作成は ③ で対象品番を選んでから［実行］で作る。作った時に番号が付く
@@ -475,7 +475,7 @@ async function hubScreen(main, cur) {
       openScreen(key);
     },
   }, label, extra);
-  const release = el("button", { class: "btn big", style: "margin-left:24px;align-self:center", disabled: !canWrite() }, "版数取得");
+  const release = el("button", { class: "btn big", style: "margin-left:24px;align-self:center", disabled: !canWrite() }, "版を固める");
   release.addEventListener("click", async () => {
     await leave(cur);
     if (!confirm(`${S.number} の版を取得します。取得した版は書き換えできません。よろしいですか？`)) return;
@@ -488,6 +488,24 @@ async function hubScreen(main, cur) {
     }
   });
 
+  // 部品表は全部の検討で共通なので、検討の操作と離して置く
+  const bomNote = el("span", { class: "mini" });
+  const showBom = async () => {
+    const { counts } = await api("GET", "/api/v2/bom");
+    const empty = !counts.item && !counts.bom_line;
+    bomNote.className = empty ? "pill warn" : "mini";
+    bomNote.textContent = empty ? "部品表なし" : `部品表 品目 ${fmt(counts.item)}・構成 ${fmt(counts.bom_line)}`;
+  };
+  showBom().catch(fail);
+  const imported = async () => {
+    items.clear();
+    await showBom();
+    if (!S.number) return;
+    await leave(cur);
+    tell("saved");
+    await loadStudy(S.number, S.version);
+  };
+
   main.append(
     el("div", { class: "row modebar" },
       el("span", { class: "mini" }, "処理"),
@@ -496,7 +514,9 @@ async function hubScreen(main, cur) {
       el("span", { class: "mini", style: "margin-left:8px" }, "検討番号"), numberInput,
       el("span", { class: "mini" }, "版"), versionSelect,
       el("button", { class: "btn", onclick: read, disabled: S.mode === "new" }, "読込"),
-      el("button", { class: "btn", onclick: studyListDialog, disabled: S.mode === "new" }, "一覧から探す")),
+      el("button", { class: "btn", onclick: studyListDialog, disabled: S.mode === "new" }, "一覧から探す"),
+      el("span", { class: "sp" }), bomNote,
+      el("button", { class: "btn quiet", onclick: () => importDialog(() => imported().catch(fail)) }, "部品表データ取込（モック）")),
     el("div", { class: "card" },
       el("div", { class: "h" }, el("span", { class: "no" }, S.number || "　"), el("span", { class: "mini", style: "font-weight:400" }, "版"),
         el("input", { class: "in ro", value: state, readonly: true, style: "min-width:50px;width:60px" })),
@@ -506,7 +526,7 @@ async function hubScreen(main, cur) {
         run))),
     el("div", { class: "groups" },
       el("fieldset", { class: "grp" }, big(3, "対象品番")),
-      el("fieldset", { class: "grp" }, big(11, "置換"), big(5, "グリッド画面"), big(8, "書き換え"), big(9, "仮品番"), big(10, "製品の費目")),
+      el("fieldset", { class: "grp" }, big(11, "置換"), big(5, "一覧入力"), big(8, "書き換え"), big(9, "仮品番"), big(10, "製品の費目")),
       el("fieldset", { class: "grp" }, big(6, "変更一覧", S.problems ? [" ", el("span", { class: "pill warn" }, S.problems)] : null), big(7, "結果")),
       release),
   );
@@ -563,7 +583,7 @@ async function targetsScreen(main, cur) {
   await lookup(rows);
   const body = el("div");
   const model = {
-    head: () => ["", "品番", "名称", "代表", "規格", "組立図", { text: "年間台数", cls: "r" }, { text: "材料費", cls: "r" }, { text: "製造原価", cls: "r" }],
+    head: () => ["", "品番", "名称", "系列", "タイプ", "図面", { text: "年間台数", cls: "r" }, { text: "材料費", cls: "r" }, { text: "製造原価", cls: "r" }],
     nRows: () => rows.length + (ro ? 0 : 1),
     grow: ro ? undefined : () => { rows.push(EMPTY_ROW()); return true; },
     nCols: () => 9,
@@ -642,8 +662,7 @@ async function targetsScreen(main, cur) {
         }
       },
     }, "行削除"),
-  ], [body, el("div", { class: "row", style: "margin:8px 0 0" }, el("span", { class: "sp" }),
-    el("button", { class: "btn quiet", onclick: () => importDialog(() => { items.clear(); lookup(rows).then(() => grid.render()).catch(fail); }) }, "部品表データ取込（モック）"))]));
+  ], [body]));
   grid.focus();
 }
 
@@ -664,7 +683,7 @@ function productSearchDialog(add) {
       found = d.products;
       checks.clear();
       list.replaceChildren(el("table", { class: "list" },
-        el("tr", {}, ["選", "品番", "名称", "代表", "規格", "年間台数"].map((t) => el("th", {}, t))),
+        el("tr", {}, ["選", "品番", "名称", "系列", "タイプ", "年間台数"].map((t) => el("th", {}, t))),
         found.map((p) => {
           const box = el("input", { type: "checkbox" });
           checks.set(p.code, box);
@@ -677,7 +696,7 @@ function productSearchDialog(add) {
   };
   const d = dialog("品番検索", [
     el("div", { class: "row" }, el("label", { class: "f" }, "品番", code), el("label", { class: "f" }, "名称", name),
-      el("label", { class: "f" }, "代表", model), el("label", { class: "f" }, "規格", spec),
+      el("label", { class: "f" }, "系列", model), el("label", { class: "f" }, "タイプ", spec),
       el("button", { class: "btn", style: "align-self:flex-end", onclick: search }, "検索")),
     list,
   ], [
@@ -969,7 +988,7 @@ async function searchReplaceScreen(main, cur) {
   grid.focus();
 }
 
-// ⑤ グリッド画面 ---------------------------------------------------------------
+// ⑤ 一覧入力 ---------------------------------------------------------------
 
 async function gridScreen(main, cur) {
   const ro = !canWrite();
@@ -1193,7 +1212,7 @@ async function gridScreen(main, cur) {
       fail(e);
     }
   } }, el("option", { value: "" }, "（なし）"), S.targets.map((code) => el("option", { value: code, selected: code === mainProduct }, code)));
-  main.append(card("グリッド画面", [
+  main.append(card("一覧入力", [
     el("label", { class: "inline" }, "主対象 ", mainPick),
     el("button", { class: "btn", onclick: whereUsed, disabled: !S.number }, "使用先"),
     el("button", { class: "btn", onclick: conditionsDialog, disabled: !S.number }, "計算条件"),
@@ -1483,8 +1502,8 @@ function exportStudy() {
 // ⑦ 結果 -----------------------------------------------------------------
 
 // 費目は式の並び（サーバの HEADS と同じ名前）。最初は全部を並べる
-const RESULT_HEADS = [["all", "全部"], ["material", "材料費小計"], ["processing", "社内加工費"], ["amortization", "償却費"],
-  ["adjustment", "調整費"], ["material_total", "材料費合計"], ["indirect", "間接費"], ["direct", "直接費"], ["total", "製造原価"]];
+const RESULT_HEADS = [["all", "全部"], ["material", "材料費小計"], ["processing", "加工費"], ["amortization", "償却費"],
+  ["adjustment", "諸経費"], ["material_total", "材料費合計"], ["indirect", "間接費"], ["direct", "直接費"], ["total", "製造原価"]];
 
 function signed(v) {
   if (v === null || v === undefined) return "—";
@@ -1553,7 +1572,7 @@ async function resultScreen(main) {
   const compute = async () => {
     try {
       data = await api("GET", "/api/v2/calc", q({ head }));
-      stamp.textContent = `計算日時 ${data.computed_at.replace("T", " ").slice(0, 16).replaceAll("-", "/")}　調整費 ${data.rates.adjustment}%・間接費 ${data.rates.indirect}%`;
+      stamp.textContent = `計算日時 ${data.computed_at.replace("T", " ").slice(0, 16).replaceAll("-", "/")}　${label("諸経費")} ${data.rates.adjustment}%・${label("間接費")} ${data.rates.indirect}%`;
       draw();
       done("計算しました");
     } catch (e) {
@@ -1569,7 +1588,7 @@ async function resultScreen(main) {
 }
 
 // ⑩ 製品の費目 -----------------------------------------------------------
-// 対象品番ごとに、製品自身の費目（社内加工費・償却費・直接費）を書き換える。空は台帳の値のまま
+// 対象品番ごとに、製品自身の費目（加工費・償却費・直接費）を書き換える。空は台帳の値のまま
 
 async function ownScreen(main, cur) {
   const ro = !canWrite();

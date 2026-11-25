@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+from . import settings
 from .model import BomLine, CostHead, CostRow, ImportWarning, Item, Version, Volume, mbom_to_ebom
 from .normalize import to_code
 
@@ -32,7 +33,7 @@ TABLE_FIELDS: dict[str, tuple[FieldSpec, ...]] = {
     "item": (
         FieldSpec("code", "品番", True, ("品目番号", "部品番号")),
         FieldSpec("name", "名称", True, ("品名", "品目名", "部品名")),
-        FieldSpec("specification", "記号・寸法", False),
+        FieldSpec("specification", "仕様", False),
         FieldSpec("kind", "区分", False),
         FieldSpec("lifecycle", "状態", False),
         FieldSpec("has_children", "子部品の有無", False, ("子部品有無",)),
@@ -45,7 +46,7 @@ TABLE_FIELDS: dict[str, tuple[FieldSpec, ...]] = {
         FieldSpec("balloon", "風船番号", False),
     ),
     "cost": (
-        FieldSpec("mbom_code", "MBOM 品番", True),
+        FieldSpec("mbom_code", "原価の品番", True),
         FieldSpec("material", CostHead.MATERIAL.value, False),
         FieldSpec("direct", CostHead.DIRECT.value, False),
         FieldSpec("indirect", CostHead.INDIRECT.value, False),
@@ -69,7 +70,7 @@ def _fold_header(text: str) -> str:
 def guess_columns(table: str, headers: Iterable[Any]) -> tuple[dict[str, str], int]:
     """項目ごとに当たりそうな見出しと、当たりの強さの計（表の種類を選ぶ目安）。
 
-    見出しが項目の名前か別名と同じ（_fold_header で比べる）なら強く当て（2）、無ければ名前を含む・名前に含まれる見出しを弱く当てる（1）。
+    見出しが項目の名前（読み替えた語も）か別名と同じ（_fold_header で比べる）なら強く当て（2）、無ければ名前を含む・名前に含まれる見出しを弱く当てる（1）。
     1つの見出しは1つの項目にだけ当てる。
     """
     present = [h for h in normalize_headers(headers) if h]
@@ -79,7 +80,7 @@ def guess_columns(table: str, headers: Iterable[Any]) -> tuple[dict[str, str], i
     used: set[str] = set()
     fields = TABLE_FIELDS[table]
     for f in fields:
-        names = {_fold_header(x) for x in (f.label, *f.aliases)}
+        names = {_fold_header(x) for x in (settings.word(f.label), f.label, *f.aliases)}
         hit = next((h for h in present if h not in used and folded[h] in names), None)
         if hit is not None:
             columns[f.name] = hit
@@ -88,8 +89,9 @@ def guess_columns(table: str, headers: Iterable[Any]) -> tuple[dict[str, str], i
     for f in fields:
         if f.name in columns:
             continue
-        label = _fold_header(f.label)
-        hit = next((h for h in present if h not in used and (label in folded[h] or folded[h] in label)), None)
+        labels = {_fold_header(x) for x in (settings.word(f.label), f.label)}
+        hit = next((h for h in present if h not in used
+                    and any(label in folded[h] or folded[h] in label for label in labels)), None)
         if hit is not None:
             columns[f.name] = hit
             used.add(hit)
@@ -207,6 +209,21 @@ def _csv_table(name: str, data: bytes) -> Table:
     return Table(name, normalize_headers(rows[0]), tuple(tuple(r) for r in rows[1:]))
 
 
+def save_workbook(wb: Any, label_columns: Mapping[str, Sequence[int]] | None = None) -> bytes:
+    """ブックを .xlsx に。見出し（各シートの1行目）と、label_columns（シート名 → 語だけが並ぶ列の番号）の語を読み替える。"""
+    for ws in wb.worksheets:
+        cells = list(ws[1]) if ws.max_row else []
+        for column in (label_columns or {}).get(ws.title, ()):
+            cells += [row[0] for row in ws.iter_rows(min_row=2, min_col=column, max_col=column)]
+        for cell in cells:
+            if isinstance(cell.value, str) and (use := settings.word(cell.value)) != cell.value:
+                cell.value = use
+                cell.data_type = "s"  # 「=」で始まる語を式にしない
+    out = io.BytesIO()
+    wb.save(out)
+    return out.getvalue()
+
+
 def load_openpyxl() -> Any:
     """フォルダ内の vendor/ にあれば優先して読み、無ければ手元の Python の openpyxl を使う。"""
     if VENDOR_DIR.is_dir() and str(VENDOR_DIR) not in sys.path:
@@ -322,12 +339,12 @@ class VersionImport:
         self.version.add_bom_lines([BomLine(r["parent"], r.get("balloon"), r["child"], r["quantity"])])
 
     def _add_cost(self, file: str, number: int, r: dict[str, Any]) -> None:
-        mbom = to_code(r["mbom_code"], name="MBOM の品番")
+        mbom = to_code(r["mbom_code"], name="原価の品番")
         try:
             code = mbom_to_ebom(mbom)
         except ValueError:
             code = mbom
-            self._warn(file, number, f"MBOM の品番が設定の桁に合わないので変換せずに取り込んだ: {mbom}")
+            self._warn(file, number, f"原価の品番が設定の桁に合わないので変換せずに取り込んだ: {mbom}")
         values = {head: r.get(name) for name, head in COST_FIELDS.items()}
         row = CostRow(code, values, mbom_code=mbom)
         kept = self.version.cost_row(code)

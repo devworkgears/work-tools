@@ -212,7 +212,7 @@ class Group:
     def compare_breakdown(self, params: dict[str, str]) -> Response:
         """選んだ製品（products）の材料費の内訳。製品の直の子ごとに 材料費小計 × 員数 を、子の合計に対する割合の高い順に。
 
-        by は まとめ方（code＝品番・name＝名称・name_spec＝名称＋記号・寸法）、weight は 数え方（unit＝1台ずつ足す・
+        by は まとめ方（code＝品番・name＝名称・name_spec＝名称＋仕様）、weight は 数え方（unit＝1台ずつ足す・
         volume＝年間台数を掛けて足す。台数が未登録の製品は除いて excluded に）。series の先頭は現行、続いて変更後
         （試算が無い製品は現行の構成で数え、数を without_trial に）。
         材料費が未登録の子は 0 にせず、行の amount を None（一部の子だけなら分かる分の合計）にして missing に数え、割合の分母から除く。
@@ -265,8 +265,8 @@ class Group:
         annual_excluded に）を足す。contributions は 現行 → 変更後 の差を行ごとに、差の大きい順に（差の無い行は除く。
         片方が未登録なら difference は None で後ろ）。部品自身の分は内訳に出さない。
 
-        cost=manufacturing は製造原価で: 部品の行は 材料費 ×(1＋調整費の率)×(1＋間接費の率)、製品の段（parts なし）では
-        部品の行の後に製品の費目の行（kind＝head・社内加工費・償却費は同じ率を掛け、直接費はそのまま。製品自身の材料費があれば
+        cost=manufacturing は製造原価で: 部品の行は 材料費 ×(1＋諸経費の率)×(1＋間接費の率)、製品の段（parts なし）では
+        部品の行の後に製品の費目の行（kind＝head・加工費・償却費は同じ率を掛け、直接費はそのまま。製品自身の材料費があれば
         その行も）を足し、行の計を③の表の製造原価にそろえる。償却費の未登録は③の表と同じ（ignore_amortization が無ければ 400、
         付ければ 0 として通し、償却費の行の金額は None）。費目の行の values は製品ごとの 1台あたりの値（率を掛ける前）。
         """
@@ -1216,7 +1216,7 @@ _OWN_MATERIAL_LABEL = "製品自身の材料費"
 
 def _head_rows(weights: dict[str, Decimal], owns: dict[str, tuple[Breakdown, Decimal]], factor: Decimal,
                ignore: bool) -> list[dict[str, Any]]:
-    """製品ごとの費目を重みを掛けて足した行。社内加工費・償却費・製品自身の材料費は factor を掛け、直接費はそのまま。
+    """製品ごとの費目を重みを掛けて足した行。加工費・償却費・製品自身の材料費は factor を掛け、直接費はそのまま。
     償却費・直接費の未登録は 0 として通して incomplete に（ignore なら償却費の行の金額は None）。"""
     rows = []
     residuals = {c: owns[c][1] for c in weights}

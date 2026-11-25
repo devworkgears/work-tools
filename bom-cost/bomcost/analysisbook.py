@@ -3,10 +3,9 @@
 シートはどれも Excel のテーブル（見出し1行）で、数は数値のセル・未登録は空のセル。
 構成の「材料費」はその場所が製品の材料費小計に足す分（下位込みの登録値がある組立品の下は 0、
 未登録の部品は空）で、製品ごとに足すと製品原価の材料費小計になる。「製造原価への寄与」はそれに
-(1＋調整費の率)×(1＋間接費の率) を掛けた値。変更後の行はグループの構成（土台 ×1）に変更の行（抜く分は負の数）を足したもの。
+(1＋諸経費の率)×(1＋間接費の率) を掛けた値。変更後の行はグループの構成（土台 ×1）に変更の行（抜く分は負の数）を足したもの。
 """
 
-import io
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -17,7 +16,7 @@ from .api import MASTER_HEADS, _View, group_label
 from .comparebook import _UNSAFE
 from .formula import Head
 from .group import _part_view, _Structure
-from .importer import load_openpyxl
+from .importer import load_openpyxl, save_workbook
 from .model import CostHead, Version
 from .rollup import Scope, ScopePolicy
 from .scenario import ChangeKind, Scenario
@@ -41,8 +40,8 @@ SHEETS: dict[str, tuple[str, tuple[str, ...]]] = {
                               "材料費", "製造原価への寄与", "年間台数", "年間の金額")),
     PRODUCT_COST: ("ProductCost", ("検討案", "製品", "費目", "値", "年間の金額")),
     CHANGES: ("Changes", ("検討案", "製品", "種類", "場所", "元", "先", "値")),
-    ITEMS: ("Items", ("品番", "名称", "記号・寸法", "区分", "子部品の有無", *(h.value for h in MASTER_HEADS))),
-    PRODUCTS: ("Products", ("品番", "名称", "開発番号", "年間台数")),
+    ITEMS: ("Items", ("品番", "名称", "仕様", "区分", "子部品の有無", *(h.value for h in MASTER_HEADS))),
+    PRODUCTS: ("Products", ("品番", "名称", "案件番号", "年間台数")),
     TRIALS: ("Trials", ("案名", "グループ", "変更の件数")),
     PREMISES: ("Premises", ("項目", "値")),
 }
@@ -202,8 +201,8 @@ def analysis_book(group: "Group", params: dict[str, str], now: datetime) -> tupl
             ["製品の絞り込み", (params.get("q") or "").strip() or "なし"],
             ["製品", len(products)],
             ["出した日時", now.strftime("%Y-%m-%d %H:%M")],
-            ["調整費の率", rates.adjustment],
-            ["間接費の率", rates.indirect],
+            [f"{settings.word('諸経費')}の率", rates.adjustment],
+            [f"{settings.word('間接費')}の率", rates.indirect],
             ["材料費から製造原価への係数", rates.factor],
             ["償却費", "無視した（0 として計算）" if ignore else "含めた"],
             ["構成の材料費", "材料費小計に足す分（下位込みの組立品の下は 0）"],
@@ -237,6 +236,4 @@ def _workbook(sheets: dict[str, list[list[Any]]]) -> bytes:
         ws.freeze_panes = "A2"
         for i, header in enumerate(headers):
             ws.column_dimensions[get_column_letter(i + 1)].width = max(10, len(header) * 2 + 2)
-    out = io.BytesIO()
-    wb.save(out)
-    return out.getvalue()
+    return save_workbook(wb, {PRODUCT_COST: [3], PREMISES: [1]})

@@ -118,7 +118,7 @@ class ReplaceInput(StudyCase):
             self.store.save_replaces(self.number, "A", [("K120", "K120")])
 
     def test_row_with_a_balloon_replaces_only_that_group(self) -> None:
-        # 置換は「元品番 × 風船番号」のまとまりで選ぶ（製品ごとに選ぶのは グリッド画面・書き換え）
+        # 置換は「元品番 × 風船番号」のまとまりで選ぶ（製品ごとに選ぶのは 一覧入力・書き換え）
         self.assertEqual(replace_groups(self.store.workspace(self.number).bom, ["P1", "P2", "P3"], "K120"),
                          [("5", ["P3"]), ("12", ["P1", "P2"])])
         self.store.save_replaces(self.number, "A", [("K120", "K121", "12")])
@@ -289,7 +289,7 @@ class Summary(unittest.TestCase):
             self.row(p, "OLD", n, "0", f"-{n}"), self.row(p, "NEW", "0", n, n))]
         rows += [self.row("P1", "S", "2", "3", "1", "9"), self.row("P1", "X", "0", "1", "1", "8"),
                  self.row("P2", "Y", "1", "0", "-1", "7"),
-                 self.row("P1", "社内加工費", "600", "700", "100", None, source="own")]
+                 self.row("P1", "加工費", "600", "700", "100", None, source="own")]
         got = [(s["kind"], s["old"], s["new"], s["quantity"], s["products"]) for s in summarize_changes(rows)]
         self.assertEqual(got, [("置き換え", "OLD", "NEW", "2（2製品）・4（1製品）", ["P1", "P2", "P3"]),
                                ("数量", "S", None, "2 → 3", ["P1"]), ("追加", None, "X", "1", ["P1"]),
@@ -359,7 +359,7 @@ class Calculation(StudyCase):
         self.assertEqual(p1["plans"]["A"], Decimal("409.2"))
 
     def test_processing_and_amortization_heads_are_the_product_own_values(self) -> None:
-        # 部品の置き換えで変わるのは材料費だけ。加工（社内加工費）は未登録なら 0、型費（償却費）は未登録なら空で不完全
+        # 部品の置き換えで変わるのは材料費だけ。加工（加工費）は未登録なら 0、型費（償却費）は未登録なら空で不完全
         self.store.save_replaces(self.number, "A", [("K120", "K121")])
         ws = self.store.workspace(self.number)
         processing = calculate(ws, HEADS["processing"])["rows"][0]
@@ -419,7 +419,7 @@ class WhereUsed(unittest.TestCase):
 
 
 class StudyApiFlow(unittest.TestCase):
-    """見本の CSV を取り込み、③→④→⑤→⑥→⑦→版数取得 を API で通す。"""
+    """見本の CSV を取り込み、③→④→⑤→⑥→⑦→版を固める を API で通す。"""
 
     def setUp(self) -> None:
         self.store = Store(":memory:")
@@ -478,7 +478,7 @@ class StudyApiFlow(unittest.TestCase):
         self.assertFalse(any(r["incomplete"]["A"] for r in with_temp["rows"]))
         self.ok("PUT", "/api/v2/replace", q + "&plan=A", {"rows": [{"old": OLD, "new": NEW}]})
         self.assertEqual(self.ok("GET", "/api/v2/calc", q + "&head=material")["impact"], with_temp["impact"])
-        # 版数取得で仮品番も固まる
+        # 版を固めるで仮品番も固まる
         self.ok("PUT", "/api/v2/replace", q + "&plan=A", {"rows": [{"old": OLD, "new": tmp}]})
         version = self.ok("POST", "/api/v2/release", q, {})["version"]
         self.ok("PUT", "/api/v2/temp-items", q, {"rows": []})
@@ -509,7 +509,7 @@ class StudyApiFlow(unittest.TestCase):
         p1 = heads["processing"]["rows"][0]
         self.assertEqual((p1["now"], p1["plans"]["A"]), (now, "1000"))
         self.assertEqual(heads["processing"]["rows"][1]["plans"]["A"], heads["processing"]["rows"][1]["now"])
-        # 加工費の差は調整費・間接費を通って製造原価に効く。費目全部の値は1つの費目で出した値と同じ
+        # 加工費の差は諸経費・間接費を通って製造原価に効く。費目全部の値は1つの費目で出した値と同じ
         total = Decimal(heads["total"]["rows"][0]["plans"]["A"]) - Decimal(heads["total"]["rows"][0]["now"])
         self.assertEqual(total, (Decimal(1000) - Decimal(now)) * Decimal("1.1") * Decimal("1.2"))
         single = self.ok("GET", "/api/v2/calc", q + "&head=total")
@@ -519,12 +519,12 @@ class StudyApiFlow(unittest.TestCase):
         money = [r for r in book["金額"].iter_rows(min_row=2, values_only=True) if r[0] == P1 and r[2] == "製造原価"][0]
         self.assertAlmostEqual(money[5], float(total))
         self.assertAlmostEqual(money[7], float(total) * money[6])
-        self.assertIn(("製品の費目", P1, "社内加工費", 1000, f"台帳の値 {now}"),
+        self.assertIn(("製品の費目", P1, "加工費", 1000, f"台帳の値 {now}"),
                       list(book["計算条件"].iter_rows(values_only=True)))
         # 変更一覧にも出る
         changed = [r for r in self.ok("GET", "/api/v2/changes", q + "&plan=A")["rows"] if r["source"] == "own"]
         self.assertEqual([(r["product"], r["before"], r["after"]) for r in changed], [(P1, now, "1000")])
-        # 版数取得で固まる
+        # 版を固めるで固まる
         version = self.ok("POST", "/api/v2/release", q, {})["version"]
         self.ok("PUT", "/api/v2/own", q + "&plan=A", {"rows": []})
         fixed = self.ok("GET", "/api/v2/own", f"{q}&plan=A&version={version}")
@@ -647,7 +647,7 @@ class StudyApiFlow(unittest.TestCase):
         # 1) 同じ品番で製品ごとに風船番号が違う
         self.assertEqual(balloons("PR1001-001", "ST0050-001"), {("PR1001-001", "20")})
         self.assertEqual(balloons("PR1003-001", "ST0050-001"), {("PR1003-001", "6")})
-        # 2) 同じ風船番号で製品ごとに品番が違う（同じ組立図）
+        # 2) 同じ風船番号で製品ごとに品番が違う（同じ図面）
         self.assertEqual(balloons("PR1004-001", "ST0051-001"), {("PR1004-001", "20")})
         # 3) 1つの製品の中で同じ品番・風船番号が別の親の下に出る
         self.assertEqual({p for p, b in balloons(P1, "BT0008-001") if b == "13"}, {"FR0010-001", "HG0040-001"})
@@ -721,7 +721,7 @@ class StudyApiFlow(unittest.TestCase):
         number = self.ok("POST", "/api/v2/studies", body={})["header"]["number"]
         self.ok("PUT", "/api/v2/targets", f"number={number}", {"products": [P1]})
         self.ok("POST", "/api/v2/release", f"number={number}", {})
-        csv = f"品番,品名,代表\n{P1},製品A,ZZ\n".encode("utf-8")
+        csv = f"品番,品名,系列\n{P1},製品A,ZZ\n".encode("utf-8")
         self.ok("POST", "/api/v2/bom/import",
                 body={"files": [{"filename": "品目.csv", "content": base64.b64encode(csv).decode()}]})
         frozen = self.ok("POST", "/api/v2/lookup", f"number={number}&version=1", {"codes": [P1]})["items"]

@@ -1,4 +1,4 @@
-"""社内加工費を品目の原価として登録する（保存・取込・マスタ登録・式・照会）。品番・数値は架空。"""
+"""加工費を品目の原価として登録する（保存・取込・マスタ登録・式・照会）。品番・数値は架空。"""
 
 import tempfile
 import unittest
@@ -19,7 +19,7 @@ D = Decimal
 
 
 def version_with_processing() -> Version:
-    """P（社内加工費 20・償却費 10・直接費 5）→ C ×2（材料費 100・社内加工費 7）。"""
+    """P（加工費 20・償却費 10・直接費 5）→ C ×2（材料費 100・加工費 7）。"""
     v = Version("t")
     v.add_items([Item("P", "製品", "P"), Item("C", "部品C", "B")])
     v.add_bom_lines([BomLine("P", "1", "C", 2)])
@@ -61,12 +61,12 @@ class Formula(unittest.TestCase):
 class StoreAndImport(unittest.TestCase):
     def test_csv_mapping_and_store_round_trip(self) -> None:
         spec = next(f for f in TABLE_FIELDS["cost"] if f.name == "processing")
-        self.assertEqual((spec.label, spec.required), ("社内加工費", False))
-        table = read_table_bytes("cost.csv", "MBOM品番,材料費,加工\nP-1,100,25\nP-2,50,\n".encode())
+        self.assertEqual((spec.label, spec.required), ("加工費", False))
+        table = read_table_bytes("cost.csv", "原価の品番,材料費,加工\nP-1,100,25\nP-2,50,\n".encode())
         version = Version("v1")
         importer = VersionImport(version)
         importer.add_table(table, ColumnMap("cost", table.headers,
-                                            {"mbom_code": "MBOM品番", "material": "材料費", "processing": "加工"}))
+                                            {"mbom_code": "原価の品番", "material": "材料費", "processing": "加工"}))
         self.assertEqual((version.cost_value("P-1", P), version.cost_value("P-2", P)), (D(25), None))
         with tempfile.TemporaryDirectory() as directory, Store(Path(directory) / "x.sqlite") as store:
             store.save_group(version)
@@ -75,27 +75,27 @@ class StoreAndImport(unittest.TestCase):
             self.assertEqual(loaded.cost_value("P-1", CostHead.MATERIAL), D(100))
 
     def test_csv_without_column_leaves_empty(self) -> None:
-        table = read_table_bytes("cost.csv", "MBOM品番,材料費\nP-1,100\n".encode())
+        table = read_table_bytes("cost.csv", "原価の品番,材料費\nP-1,100\n".encode())
         version = Version("v1")
         VersionImport(version).add_table(table, ColumnMap("cost", table.headers,
-                                                          {"mbom_code": "MBOM品番", "material": "材料費"}))
+                                                          {"mbom_code": "原価の品番", "material": "材料費"}))
         self.assertIsNone(version.cost_value("P-1", P))
 
 
 class Api(SampleDbCase):
     def test_master_heads_have_processing(self) -> None:
-        labels = ["材料費", "償却費", "直接費", "社内加工費"]
+        labels = ["材料費", "償却費", "直接費", "加工費"]
         self.assertEqual([h["label"] for h in self.ok("GET", "/api/manual", "group=2026-10")["heads"]], labels)
         self.assertEqual([h["label"] for h in self.ok("GET", "/api/meta")["master_heads"]], labels)
 
     def test_register_and_use_in_formula_and_lookup(self) -> None:
-        # A-100 は BOM で材料費 200・償却費と直接費は未登録。社内加工費は登録で埋まる
+        # A-100 は BOM で材料費 200・償却費と直接費は未登録。加工費は登録で埋まる
         self.ok("PUT", "/api/manual/items", body={"group_id": "2026-10", "code": "A-100", "name": "製品A", "costs": {"PROCESSING": "30"}})
         manual = {i["code"]: i for i in self.ok("GET", "/api/manual", "group=2026-10")["items"]}
         self.assertEqual(manual["A-100"]["costs"]["PROCESSING"], "30")
         item = self.ok("GET", "/api/lookup", "group=2026-10&q=A-100")["item"]
         costs = {c["head"]: (c["value"], c["source"], c["label"]) for c in item["costs"]}
-        self.assertEqual(costs["PROCESSING"], ("30", "master", "社内加工費"))
+        self.assertEqual(costs["PROCESSING"], ("30", "master", "加工費"))
         calc = {c["head"]: (c["value"], c["incomplete"]) for c in item["calculated"]}
         self.assertEqual(calc["PROCESSING"], ("30", False))
         self.assertEqual(calc["MANUFACTURING"][0], "303.6")  # (200 ＋ 30) × 1.1 × 1.2
@@ -113,7 +113,7 @@ class Book(DemoDbCase):
         wb = load_openpyxl().load_workbook(path)
         ws = wb["部品"]
         headers = [c.value for c in ws[1]]
-        column = headers.index("社内加工費") + 1
+        column = headers.index("加工費") + 1
         row = next(r for r in range(2, ws.max_row + 1) if ws.cell(r, 1).value == "MQ-1")
         self.assertEqual(ws.cell(row, column).value, 4)
         self.assertEqual(self.ok("POST", "/api/master/check", body={"group_id": "2026-10"})["changed"], 0)

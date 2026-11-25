@@ -1,4 +1,4 @@
-"""記号・寸法の取込・登録・照会。データはすべて架空。"""
+"""仕様の取込・登録・照会。データはすべて架空。"""
 
 import io
 import unittest
@@ -25,7 +25,7 @@ class ItemImport(unittest.TestCase):
             with self.subTest(mapped=mapped):
                 columns = {"code": "品番", "name": "名称"}
                 if mapped:
-                    columns["specification"] = "記号・寸法"
+                    columns["specification"] = "仕様"
                 version = Version("v1")
                 importer = VersionImport(version)
                 importer.add_table(table, ColumnMap("item", table.headers, columns))
@@ -35,12 +35,12 @@ class ItemImport(unittest.TestCase):
 
     def test_csv_optional_mapping(self) -> None:
         self.assertFalse(next(f for f in TABLE_FIELDS["item"] if f.name == "specification").required)
-        self.check_import("items.csv", "品番,名称,記号・寸法\nP-1,部品,M6 × 20\nP-2,部品,\n".encode())
+        self.check_import("items.csv", "品番,名称,仕様\nP-1,部品,M6 × 20\nP-2,部品,\n".encode())
 
     @unittest.skipUnless(HAS_OPENPYXL, "openpyxl が無い")
     def test_xlsx_optional_mapping(self) -> None:
         wb = load_openpyxl().Workbook()
-        wb.active.append(["品番", "名称", "記号・寸法"])
+        wb.active.append(["品番", "名称", "仕様"])
         wb.active.append(["P-1", "部品", "M6 × 20"])
         wb.active.append(["P-2", "部品", None])
         out = io.BytesIO()

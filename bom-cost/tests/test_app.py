@@ -80,7 +80,7 @@ class ListsAndTree(DemoDbCase):
     def test_groups_and_scenarios(self) -> None:
         groups = self.ok("GET", "/api/groups")
         self.assertEqual([g["group_id"] for g in groups], ["2026-12", "2026-10"])
-        # デモの2つのグループは同じ開発番号
+        # デモの2つのグループは同じ案件番号
         self.assertEqual({g["dev_number"] for g in groups}, {"D-100"})
         self.assertEqual([(g["label"], g["scenario_count"]) for g in groups],
                          [("D-100 例のユニット（原価の更新）", 0), ("D-100 例のユニット（架空の例）", 1)])
@@ -120,7 +120,7 @@ class ListsAndTree(DemoDbCase):
     def test_item_detail(self) -> None:
         d = self.ok("GET", self.url("/item"), "code=A-100")
         heads = {h["id"]: h for h in d["heads"]}
-        self.assertEqual([h["label"] for h in d["heads"]], ["材料費", "直接費", "間接費", "調整費", "製造原価"])
+        self.assertEqual([h["label"] for h in d["heads"]], ["材料費", "直接費", "間接費", "諸経費", "製造原価"])
         self.assertEqual((heads["MATERIAL"]["registered"], heads["MATERIAL"]["calculated"]), ("200", "4900"))
         self.assertEqual(heads["MATERIAL"]["verdict"], "自分だけらしい")
         self.assertEqual(heads["MATERIAL"]["compared"], "4700")

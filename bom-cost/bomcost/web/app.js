@@ -20,6 +20,25 @@ const state = {
   tableColumns: null, // 表示する列のキー
 };
 
+// 語の読み替え（画面の語 → 使う語）。起動の時にサーバーから受け取る。語がまるごと同じか、後ろに「（…）」が付いた物だけ替える
+const LABELS = {};
+function label(text) {
+  if (Object.hasOwn(LABELS, text)) return LABELS[text];
+  const at = text.indexOf("（");
+  const head = at < 0 ? text.trimEnd() : text.slice(0, at);
+  return Object.hasOwn(LABELS, head) ? LABELS[head] + text.slice(head.length) : text;
+}
+
+// index.html に書いた文字を読み替える
+function relabelPage() {
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  while (walker.nextNode()) {
+    const node = walker.currentNode;
+    const text = node.data.trim();
+    if (text && node.parentElement.tagName !== "SCRIPT") node.data = node.data.replace(text, () => label(text));
+  }
+}
+
 // 表示 ------------------------------------------------------------------
 
 // replaceChildren・append に配列や null を渡すと "[object HTMLDivElement]" や "null" の文字になるので、
@@ -41,7 +60,7 @@ function el(tag, attrs = {}, ...children) {
   }
   for (const child of children.flat(Infinity)) {
     if (child === null || child === undefined || child === false) continue;
-    node.append(child instanceof Node ? child : document.createTextNode(String(child)));
+    node.append(child instanceof Node ? child : document.createTextNode(label(String(child))));
   }
   return node;
 }
@@ -757,4 +776,8 @@ function wire() {
 }
 
 wire();
-guarded(init);
+guarded(async () => {
+  Object.assign(LABELS, (await api("GET", "/api/v2/labels")).labels);
+  relabelPage();
+  await init();
+});

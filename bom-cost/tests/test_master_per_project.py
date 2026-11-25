@@ -64,7 +64,7 @@ class Overlay(unittest.TestCase):
         own.add_bom_lines([BomLine("T-1", None, "N-999", 1)])  # 試作の製品に N-999 を使う
         self.store.save_manual(own, "g1")
         self.assertEqual((self.total("g1", "T-1"), self.total("g1")), (Decimal(100), Decimal(20)))
-        # 同じ開発番号の別のグループにも重ならない
+        # 同じ案件番号の別のグループにも重ならない
         for group_id in ("g2", "g3"):
             other = self.store.load_group(group_id)
             self.assertNotIn("T-1", other.items)

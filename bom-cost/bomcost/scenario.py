@@ -21,7 +21,7 @@ class ChangeKind(Enum):
     REMOVE = "削除"
     REPLACE = "置換"
     SET_QUANTITY = "員数変更"
-    SET_HEAD = "費目変更"  # 製品の社内加工費・償却費・直接費を書き換える（構成は変えない）
+    SET_HEAD = "費目変更"  # 製品の加工費・償却費・直接費を書き換える（構成は変えない）
 
 
 @dataclass(frozen=True)

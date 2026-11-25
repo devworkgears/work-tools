@@ -455,7 +455,7 @@ async function renderManual(data) {
     const kind = el("input", { value: val(role, "kind"), size: 4 });
     const costs = Object.fromEntries(m.heads.map((h) => [h.id, el("input", { value: val(role, h.id), inputmode: "decimal", size: 9 })]));
     return el("div", { class: "form-row" },
-      field("品番", code), field("名称", name), field("記号・寸法", specification), role === "part" ? field("区分", kind) : null,
+      field("品番", code), field("名称", name), field("仕様", specification), role === "part" ? field("区分", kind) : null,
       m.heads.map((h) => field(h.label, costs[h.id])),
       el("button", { type: "button", onclick: () => send("PUT", "/api/manual/items", {
         role, code: code.value, name: name.value, specification: specification.value, kind: role === "part" ? kind.value : "",
@@ -465,8 +465,8 @@ async function renderManual(data) {
   };
   const productRows = m.items.filter((i) => i.role === "product").map((i) => el("tr", {},
     el("td", {}, i.code, " ", inBom(i.code)), el("td", {}, i.name), el("td", {}, i.specification), ...itemCells(i)));
-  const productHeads = ["品番", "名称", "記号・寸法", ...m.heads.map((h) => numTh(h.label)), ""];
-  const partHeads = ["品番", "名称", "記号・寸法", "区分", ...m.heads.map((h) => numTh(h.label)), ""];
+  const productHeads = ["品番", "名称", "仕様", ...m.heads.map((h) => numTh(h.label)), ""];
+  const partHeads = ["品番", "名称", "仕様", "区分", ...m.heads.map((h) => numTh(h.label)), ""];
   const partRows = m.items.filter((i) => i.role !== "product").map((i) => el("tr", {},
     el("td", {}, i.code, " ", inBom(i.code)), el("td", {}, i.name), el("td", {}, i.specification), el("td", {}, i.kind), ...itemCells(i)));
   const products = el("div", {},
@@ -873,7 +873,7 @@ async function drawGroups() {
   });
   const copy = (id) => () => { screenState.copyFrom = id; drawGroups(); };
   box.replaceChildren(
-    state.groups.length ? table(["開発番号", "名称", "検討内容", "流用元", "入っている表", numTh("②の製品"), "取り込んだ日時", "元のファイル",
+    state.groups.length ? table(["案件番号", "名称", "検討内容", "流用元", "入っている表", numTh("②の製品"), "取り込んだ日時", "元のファイル",
       numTh("警告"), ""], state.groups.map((g) => el("tr", {},
       el("td", {}, g.dev_number),
       el("td", {}, g.dev_name || ""),
@@ -935,7 +935,7 @@ function drawGroupForm() {
   const createButton = el("button", { type: "button", class: "primary", onclick: create }, "新しく作る");
   createButton.classList.toggle("primary", !screenState.contents);  // 中身を出している間は［絞り込む］が主ボタン
   document.getElementById("group-new").replaceChildren(
-    el("div", { class: "form-row" }, field("流用元 ", from), field("開発番号 ", devNumber), field("名称 ", devName),
+    el("div", { class: "form-row" }, field("流用元 ", from), field("案件番号 ", devNumber), field("名称 ", devName),
       field("検討内容 ", note)),
     source ? el("div", { class: "form-row" }, tables.map((t) => t.label), master.label, changes.label) : null,
     el("div", { class: "form-row" }, createButton),

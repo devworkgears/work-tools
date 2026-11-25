@@ -75,8 +75,8 @@ class MasterBook(DemoDbCase):
     def test_master_heads_are_formula_inputs(self) -> None:
         labels = [h["label"] for h in self.manual()["heads"]]
         self.assertEqual(labels[:3], ["材料費", "償却費", "直接費"])
-        self.assertEqual(SHEETS["製品"], ("品番", "名称", *labels, "記号・寸法"))
-        self.assertEqual(SHEETS["部品"], ("品番", "名称", "区分", *labels, "記号・寸法"))
+        self.assertEqual(SHEETS["製品"], ("品番", "名称", *labels, "仕様"))
+        self.assertEqual(SHEETS["部品"], ("品番", "名称", "区分", *labels, "仕様"))
         self.ok("PUT", "/api/manual/items", body={"group_id": "2026-10", "role": "part", "code": "MQ-4", "name": "部品4",
                                                   "costs": {"MATERIAL": "10", "AMORTIZATION": "3", "DIRECT": "2"}})
         items = {i["code"]: i for i in self.manual()["items"]}
@@ -147,7 +147,7 @@ class MasterBook(DemoDbCase):
         volumes = {v["product"]: v["annual"] for v in m["volumes"]}
         self.assertEqual((volumes["MP-1"], volumes["MP-9"]), ("2400", "500"))
         molds = {x["part"]: x for x in m["molds"]}
-        self.assertEqual((molds["MQ-1"]["years"], molds["MQ-9"]["years"]), ("3", "2"))
+        self.assertEqual((molds["MQ-1"]["years"], molds["MQ-9"]["years"]), ("3", "5"))
         reuse = {(t["part"], t["product"]): t for t in m["reuse"]}
         self.assertEqual(reuse[("MQ-1", "MP-1")]["replaced_part"], "F-600")
         self.assertEqual(reuse[("MQ-9", "MP-9")]["quantity"], "2")

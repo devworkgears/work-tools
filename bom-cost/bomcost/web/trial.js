@@ -513,7 +513,7 @@ function sortTh(key, label, num, cls = "") {
   return el("th", { class: `sortable ${num ? "num" : ""} ${cls}`, onclick: () => sortTrial(key) }, `${label}${mark}`);
 }
 
-const structureHeads = (cls = "") => [sortTh("balloon", "#", true, cls), sortTh("code", "品番"), sortTh("name", "名称"), "記号・寸法",
+const structureHeads = (cls = "") => [sortTh("balloon", "#", true, cls), sortTh("code", "品番"), sortTh("name", "名称"), "仕様",
   sortTh("quantity", "員数", true), "区分"];
 
 let trialLayout = "list"; // 開いた製品の構成の見せ方（list＝一覧・pair＝左右）。画面を開いている間は製品をまたいで覚える
@@ -568,7 +568,7 @@ function partCodeBlock(parts) {
     el("td", {}, changeButton(null, () => [bulkReplaceOp()], {
       label: "全部の場所を置換", send: (change) => trialReplaceCode(r.part, change),
     }))));
-  return [partTitle(parts), table(["品番", "名称", "記号・寸法", "製品数", "場所数", "置換先", ""],
+  return [partTitle(parts), table(["品番", "名称", "仕様", "製品数", "場所数", "置換先", ""],
     rows.length ? rows : [el("tr", {}, el("td", { colspan: 7 }, "なし"))])];
 }
 
@@ -611,7 +611,7 @@ function partBlock(parts) {
     changeButton(null, () => [bulkReplaceOp()], { label: "選んだ所を置換", send: (change) => trialBulk(parts.rows, change) })));
   return [
     partTitle(parts),
-    table([el("th", {}, all), "製品", "部品", "名称", "記号・寸法", numTh("使用数（個/台）"), "置換先", ""],
+    table([el("th", {}, all), "製品", "部品", "名称", "仕様", numTh("使用数（個/台）"), "置換先", ""],
       partRows.length ? [...partRows, bulk] : [el("tr", {}, el("td", { colspan: 8, class: "muted" }, "なし"))]),
   ];
 }
@@ -649,7 +649,7 @@ function headInput(product, head) {
   return input;
 }
 
-// 製品の表: 行ごとに差と、製品の費目（社内加工費・償却費・直接費）の現行・変更後・入力欄。行を押すと下にグループの構成が開く。
+// 製品の表: 行ごとに差と、製品の費目（加工費・償却費・直接費）の現行・変更後・入力欄。行を押すと下にグループの構成が開く。
 // 費目は打った所だけを製品ごとに1回の費目変更（まとめて取り消せる）で入れる
 async function productTable(t, p, changes, heads) {
   const byProduct = new Map();
@@ -804,7 +804,7 @@ function changeLog(changes, headLabel) {
       : c.kind === "SET_HEAD" ? "" : fmt(c.quantity)),
     el("td", { class: `num ${signClass(c.difference)}` }, fmt(c.difference, { sign: true, missing: "—", yen: true })),
     el("td", {}, changedButtons(c))));
-  const heads = ["製品", "操作", "部品", "名称", "記号・寸法", "置換先・費目の値", "置換先の名称", "置換先の記号・寸法",
+  const heads = ["製品", "操作", "部品", "名称", "仕様", "置換先・費目の値", "置換先の名称", `置換先の${label("仕様")}`,
     numTh("員数"), numTh(`差（${headLabel}）`), ""];
   const sum = changes.missing_count < changes.count ? changes.difference : null; // 全部未登録なら合計は出せない
   const total = el("tr", { class: "trial-total" },

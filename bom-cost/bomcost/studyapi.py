@@ -1,6 +1,5 @@
 """設計検討（/v2/）の API。検討は検討番号（number）と版（version: 空なら仮）で指す。"""
 
-import io
 import unicodedata
 from datetime import datetime
 from decimal import Decimal
@@ -18,6 +17,7 @@ from .importer import (
     VersionImport,
     guess_columns,
     load_openpyxl,
+    save_workbook,
     read_csv,
 )
 from .model import CostHead, Version
@@ -150,7 +150,7 @@ def _rates_json(ws: Workspace) -> dict[str, str]:
 
 
 def item_attributes(table: Table, column_map: ColumnMap, labels: Mapping[str, str] | None = None) -> Attributes:
-    """部品マスタの任意の列（代表・規格・組立図）を品番ごとに。無い列は空文字。
+    """部品マスタの任意の列（系列・タイプ・図面）を品番ごとに。無い列は空文字。
 
     labels に読み替えがある見出しは、読み替えた語の列を先に探し、無ければ元の語の列を使う。
     """
@@ -300,7 +300,7 @@ class StudyApi:
         return self._json({"tables": kinds, "warnings": warnings, "counts": self.store.bom_counts()})
 
     def lookup(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
-        """品番の右の列（名称・代表・規格・組立図・年間台数・材料費・製造原価）。無い品番は registered: false。
+        """品番の右の列（名称・系列・タイプ・図面・年間台数・材料費・製造原価）。無い品番は registered: false。
 
         number があればその検討の部品表（版の写し・仮品番を混ぜた物）で引き、仮品番は temp: true。
         """
@@ -338,9 +338,9 @@ class StudyApi:
         return self._json({"items": result})
 
     def products(self, params: dict[str, str]) -> "Response":
-        """品番検索: 製品（どこの子でもない親か、年間台数のある品目）のうち、品番・名称・代表に語を含み、規格が合う物。
+        """品番検索: 製品（どこの子でもない親か、年間台数のある品目）のうち、品番・名称・系列に語を含み、タイプが合う物。
 
-        product_specs は製品にある規格の一覧（条件の選択肢）。
+        product_specs は製品にあるタイプの一覧（条件の選択肢）。
         """
         bom = self.store.load_bom()
         attributes = self.store.load_attributes()
@@ -484,7 +484,7 @@ class StudyApi:
         self.store.revert_replace(_number(params), self._plan(params), body.get("part"))
         return self.after_parts({"number": _number(params), "plan": self._plan(params)})
 
-    # ⑤ グリッド画面 ---------------------------------------------------------------
+    # ⑤ 一覧入力 ---------------------------------------------------------------
 
     def grid(self, params: dict[str, str]) -> "Response":
         """列＝親品番（打った物＋変更のある製品）・行＝品番・セル＝その製品でのその品番の変えた後の数量（無い所は出さない）。
@@ -540,7 +540,7 @@ class StudyApi:
         return self._json({**data, "plan": plan})
 
     def locked_cells(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
-        """打ちかけの見出し（columns）・行（rows）のうち、グリッド画面で書けないセル（品番 → 親品番 → true）。保存しない。"""
+        """打ちかけの見出し（columns）・行（rows）のうち、一覧入力で書けないセル（品番 → 親品番 → true）。保存しない。"""
         ws = self._ws(params)
         plan = self._plan(params)
         columns = [input_code(c, name="親品番") for c in _list(body, "columns") if c is not None and str(c).strip()]
@@ -792,7 +792,7 @@ class StudyApi:
         rates = ws.use_rates()
         note = "版を取った時の率" if ws.rates else None
         rows: list[list[Any]] = [["単価の時点", None, None, None, "時点は持っていない（取り込んだ原価の表の値で計算する）"],
-                                 ["率", None, "調整費", rates.adjustment, note], ["率", None, "間接費", rates.indirect, note]]
+                                 ["率", None, "諸経費", rates.adjustment, note], ["率", None, "間接費", rates.indirect, note]]
         for p in ws.targets:
             volume = ws.bom.volume(p)
             given = ws.conditions.get(p)
@@ -819,9 +819,8 @@ class StudyApi:
                     if isinstance(cell.value, str):
                         cell.data_type = "s"  # 「=」で始まる文字を式にしない
             sheet.freeze_panes = "A2"
-        out = io.BytesIO()
-        wb.save(out)
-        return Response(200, out.getvalue(), XLSX_TYPE,
+        data = save_workbook(wb, {"まとめ": [1], "金額": [3], "計算条件": [1, 3]})
+        return Response(200, data, XLSX_TYPE,
                         {"Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}.xlsx"})
 
 

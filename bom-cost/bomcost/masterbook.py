@@ -11,9 +11,10 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable
 
+from . import settings
 from .api import MASTER_HEADS
 from .group import is_product_kind, part_kind
-from .importer import load_openpyxl
+from .importer import load_openpyxl, save_workbook
 from .model import MANUAL_VERSION_ID, CostHead, CostRow, Item, Version, Volume
 from .mold import MoldCost, ReuseTarget
 from .normalize import to_code, to_decimal, to_symbol
@@ -28,14 +29,13 @@ PART_MAP = "部品の対応表"
 
 HEAD_LABELS = tuple(h.value for h in MASTER_HEADS)
 SHEETS: dict[str, tuple[str, ...]] = {
-    PRODUCT: ("品番", "名称", *HEAD_LABELS, "記号・寸法"),
-    PART: ("品番", "名称", "区分", *HEAD_LABELS, "記号・寸法"),
+    PRODUCT: ("品番", "名称", *HEAD_LABELS, "仕様"),
+    PART: ("品番", "名称", "区分", *HEAD_LABELS, "仕様"),
     VOLUME: ("製品の品番", "年間台数"),
     MOLD: ("部品の品番", "型費（円）", "償却年数"),
     REUSE: ("部品", "流用先の製品", "使用数（個/台）", "置き換わる古い部品"),
     PART_MAP: ("元の製品", "新しい製品", "元の部品", "元の風船番号", "新しい部品", "新しい風船番号"),
 }
-DEFAULT_YEARS = Decimal(2)
 
 PartMapKey = tuple[str, str, str, str, str | None, str | None]
 
@@ -150,9 +150,7 @@ def book_bytes(store: Store, product_kind: str, group_id: str) -> bytes:
         ws.freeze_panes = "A2"
         for i, header in enumerate(headers):
             ws.column_dimensions[ws.cell(1, i + 1).column_letter].width = max(12, len(header) * 2 + 2)
-    out = io.BytesIO()
-    wb.save(out)
-    return out.getvalue()
+    return save_workbook(wb)
 
 
 def save_book(path: Path, data: bytes) -> None:
@@ -227,7 +225,7 @@ def plan_book(store: Store, product_kind: str, data: bytes, group_id: str) -> Ma
             plan.errors.append(BookError(sheet, None, "シートが無い"))
             continue
         rows = sheets[sheet]
-        head = [_text(v) for v in rows[0]] if rows else []
+        head = [settings.source_word(_text(v)) for v in rows[0]] if rows else []
         missing = [h for h in headers if h not in head]
         if missing:
             plan.errors.append(BookError(sheet, 1, f"列が無い: {'・'.join(missing)}"))
@@ -316,7 +314,7 @@ def _plan_row(
         new_cost = (CostRow(code, values, mbom_code=None if old_cost is None else old_cost.mbom_code)
                     if any(x is not None for x in values.values()) else None)
         item = Item(code, name, kind, "" if kept is None else kept.lifecycle,
-                    False if kept is None else kept.has_children, specification=_text(v.get("記号・寸法")))
+                    False if kept is None else kept.has_children, specification=_text(v.get("仕様")))
         if kept is None and old_cost is None:
             status = "added"
         elif (kept is not None and kept.name == name and kept.kind == kind
@@ -347,7 +345,7 @@ def _plan_row(
     if sheet == MOLD:
         part = _code(v["部品の品番"], "部品の品番")
         amount = _decimal(v["型費（円）"], "型費", True)
-        years = _decimal(v["償却年数"], "償却年数", False) or DEFAULT_YEARS
+        years = _decimal(v["償却年数"], "償却年数", settings.mold_years() is None) or settings.mold_years()
         assert amount is not None
         if amount < 0:
             raise _RowError("型費は 0 以上にする")

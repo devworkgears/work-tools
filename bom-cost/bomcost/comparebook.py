@@ -3,13 +3,13 @@
 数は数値のセルで入れ（金額は値を丸めず、表示の書式だけ円単位）、未登録は空のセルに印（塗りとコメント）を付ける。償却費を無視した列と、現行が 0 で出せない差% は「—」。
 """
 
-import io
 import re
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from .importer import load_openpyxl
+from . import settings
+from .importer import load_openpyxl, save_workbook
 
 SHEET = "比較"
 PREMISES = "前提"
@@ -131,12 +131,10 @@ def compare_workbook(table: dict[str, Any], group_text: str, query: str, now: da
         ("年間効果額", "差 × 年間台数"),
         ("未登録", "空欄（塗りとコメント）・計から除く"),
         ("一部未登録", "未登録の部品を除くか、償却費・直接費を 0 とした値（コメント）"),
-        ("調整費・間接費・製造原価", "材料費小計から式で計算"),
+        ("・".join(settings.word(x) for x in ("諸経費", "間接費", "製造原価")), "材料費小計から式で計算"),
         ("値の扱い", "参考値"),
         ("書き出した日時", now.strftime("%Y-%m-%d %H:%M")),
     ):
         premises.append([key, value])
 
-    out = io.BytesIO()
-    wb.save(out)
-    return out.getvalue()
+    return save_workbook(wb, {PREMISES: [1]})

@@ -3,6 +3,7 @@
 from typing import TYPE_CHECKING, Any, Callable
 
 from . import settings
+from .words import word_groups
 
 if TYPE_CHECKING:
     from .api import Api, Response
@@ -15,6 +16,7 @@ def settings_routes(api: "Api") -> list[tuple[str, str, Callable[..., "Response"
         path = settings.path_for(api.store.path)
         return _json_response({"settings": settings.current().to_json(), "file": None if path is None else str(path),
                                "exists": path is not None and path.is_file(),
+                               "words": [{"name": g.name, "words": list(g.words), "imports": g.imports} for g in word_groups()],
                                "defaults": {"product_kind": settings.PRODUCT_KIND, "part_kind": settings.PART_KIND}})
 
     def put(params: dict[str, str], body: dict[str, Any]) -> "Response":

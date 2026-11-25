@@ -16,7 +16,7 @@ class Contents(SampleDbCase):
     def test_four_tables_as_imported(self) -> None:
         item = self.contents("item")
         self.assertEqual([c["label"] for c in item["columns"]],
-                         ["品番", "名称", "記号・寸法", "区分", "状態", "子部品の有無"])
+                         ["品番", "名称", "仕様", "区分", "状態", "子部品の有無"])
         self.assertEqual([r["cells"]["code"] for r in item["rows"]],
                          ["A-100", "V-110", "K-200", "B-200", "C-300", "F-600"])
         self.assertEqual(item["rows"][0]["cells"]["has_children"], "有")

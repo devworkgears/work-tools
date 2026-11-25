@@ -36,7 +36,7 @@ class Parse(SettingsCase):
                                          "mold_years": "", "labels": {"a": "", " ": "b"}}), settings.Settings())
 
     def test_round_trip(self) -> None:
-        full = settings.Settings(D("2.5"), D(10), 9, 6, 2, "S", "T", D(4), {"代表": "型式"})
+        full = settings.Settings(D("2.5"), D(10), 9, 6, 2, "S", "T", D(4), {"系列": "型式"})
         self.assertEqual(settings.parse(json.loads(json.dumps(full.to_json()))), full)
 
     def test_wrong_values_are_refused(self) -> None:
@@ -48,7 +48,7 @@ class Parse(SettingsCase):
                            ({"code_total": 7, "code_base": 6, "code_branch": 2}, "合計以上"),
                            ({"code_total": 9.5, "code_base": 6, "code_branch": 2}, "整数"),
                            ({"product_kind": "X", "part_kind": "X"}, "別の物"), ({"product_kind": "部品"}, "別の物"),
-                           ({"mold_years": 0}, "正の数"), ({"labels": {"代表": 1}}, "読み替え"), ({"labels": ["a"]}, "読み替え")):
+                           ({"mold_years": 0}, "正の数"), ({"labels": {"系列": 1}}, "読み替え"), ({"labels": ["a"]}, "読み替え")):
             with self.subTest(data=data), self.assertRaisesRegex(ValueError, word):
                 settings.parse(data)
 
@@ -117,12 +117,12 @@ class SettingsApi(SettingsCase):
         return self.api.handle(method, path, "", b"" if body is None else json.dumps(body).encode("utf-8"))
 
     def test_put_writes_the_file_and_takes_effect(self) -> None:
-        new = {"adjustment_percent": "5", "indirect_percent": "10", "labels": {"代表": "型式"}}
+        new = {"adjustment_percent": "5", "indirect_percent": "10", "labels": {"系列": "型式"}}
         got = self.call("PUT", "/api/settings", {"settings": new}).json()
         self.assertEqual((got["settings"]["adjustment_percent"], got["exists"], got["file"]), ("5", True, str(self.file)))
-        self.assertEqual(json.loads(self.file.read_text(encoding="utf-8"))["labels"], {"代表": "型式"})
+        self.assertEqual(json.loads(self.file.read_text(encoding="utf-8"))["labels"], {"系列": "型式"})
         self.assertEqual(settings.rates(), settings.Rates(D("0.05"), D("0.1")))
-        self.assertEqual(self.call("GET", "/api/v2/labels").json(), {"labels": {"代表": "型式"}})
+        self.assertEqual(self.call("GET", "/api/v2/labels").json(), {"labels": {"系列": "型式"}})
 
     def test_check_and_wrong_values_change_nothing(self) -> None:
         self.assertEqual(self.call("PUT", "/api/settings", {"settings": {"product_kind": "Q"}, "check": True}).status, 200)

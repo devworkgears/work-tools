@@ -22,7 +22,7 @@ class SettingsMissing(RuntimeError):
 
 @dataclass(frozen=True)
 class Rates:
-    adjustment: Decimal  # 調整費の率
+    adjustment: Decimal  # 諸経費の率
     indirect: Decimal  # 間接費の率
 
     @property
@@ -52,7 +52,7 @@ class Settings:
         return out
 
 
-_PERCENTS = {"adjustment_percent": "調整費の率", "indirect_percent": "間接費の率"}
+_PERCENTS = {"adjustment_percent": "諸経費の率", "indirect_percent": "間接費の率"}
 _DIGITS = {"code_total": "原価の品番の桁数", "code_base": "基本の品番の桁数", "code_branch": "枝番の桁数"}
 
 
@@ -84,7 +84,7 @@ def parse(data: Any) -> Settings:
             if not 0 <= out[key] < 100:
                 raise ValueError(f"{name}は 0 以上 100 未満の % で入れてください（{data[key]}）")
     if ("adjustment_percent" in out) != ("indirect_percent" in out):
-        raise ValueError("調整費の率と間接費の率は両方入れてください")
+        raise ValueError("諸経費の率と間接費の率は両方入れてください")
     for key, name in _DIGITS.items():
         if not _blank(data.get(key)):
             number = _number(data[key], name)
@@ -108,7 +108,10 @@ def parse(data: Any) -> Settings:
     labels = data.get("labels") or {}
     if not isinstance(labels, dict) or not all(isinstance(v, str) for v in labels.values()):
         raise ValueError("語の読み替えの形が違います（元の語 → 使う語 の組で書く）")
-    out["labels"] = {k.strip(): v.strip() for k, v in labels.items() if k.strip() and v.strip()}
+    out["labels"] = {k.strip(): v.strip() for k, v in labels.items() if k.strip() and v.strip() and k.strip() != v.strip()}
+    from .words import check_labels  # 語の一覧は計算と取り込みの部品から作るので、ここで読む
+
+    check_labels(out["labels"])
     return Settings(**out)
 
 
@@ -162,7 +165,7 @@ def save(db_path: Path | None, settings: Settings) -> None:
 def rates() -> Rates:
     s = _current
     if s.adjustment_percent is None or s.indirect_percent is None:
-        raise SettingsMissing(f"調整費と間接費の率が設定にありません（{NAME} を DB と同じフォルダに置いて起動し直してください）")
+        raise SettingsMissing(f"{word('諸経費')}と{word('間接費')}の率が設定にありません（{NAME} を DB と同じフォルダに置いて起動し直してください）")
     return Rates(s.adjustment_percent / 100, s.indirect_percent / 100)
 
 
@@ -180,3 +183,16 @@ def mold_years() -> Decimal | None:
 
 def labels() -> Mapping[str, str]:
     return _current.labels
+
+
+def word(text: str) -> str:
+    """読み替えた語。語がまるごと同じか、後ろに「（…）」が付いた物だけ替える。"""
+    head, mark, rest = text.partition("（")
+    return _current.labels.get(text) or (_current.labels.get(head, head) + mark + rest)
+
+
+def source_word(text: str) -> str:
+    """読み替えた語を元の語に戻す（書き出した見出しを読む時）。読み替えの無い語はそのまま。"""
+    back = {use: source for source, use in _current.labels.items()}
+    head, mark, rest = text.partition("（")
+    return back.get(text) or (back.get(head, head) + mark + rest)

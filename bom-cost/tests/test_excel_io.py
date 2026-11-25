@@ -28,8 +28,8 @@ class ImportTables(EmptyDbCase):
         self.assertEqual([t["id"] for t in tables], ["item", "bom_line", "cost", "volume"])
         required = {t["id"]: [f["label"] for f in t["fields"] if f["required"]] for t in tables}
         self.assertEqual(required, {"item": ["品番", "名称"], "bom_line": ["親品番", "子品番", "数量"],
-                                    "cost": ["MBOM 品番"], "volume": ["製品の品番", "年間台数"]})
-        self.assertIn("記号・寸法", [f["label"] for f in tables[0]["fields"]])
+                                    "cost": ["原価の品番"], "volume": ["製品の品番", "年間台数"]})
+        self.assertIn("仕様", [f["label"] for f in tables[0]["fields"]])
 
     def test_screen_shows_fields_before_preview(self) -> None:
         index = static_response("/").body.decode("utf-8")
@@ -83,7 +83,7 @@ class HeadsBook(EmptyDbCase):
             self.assertEqual(wb.sheetnames, ["費目", "前提"])
         finally:
             wb.close()
-        self.assertEqual(rows, [["製品の品番", "名称", "社内加工費", "償却費", "直接費"],
+        self.assertEqual(rows, [["製品の品番", "名称", "加工費", "償却費", "直接費"],
                                 ["P-1", "製品1", 1, 20, 15], ["P-2", "製品2", 1, 8, None]])
         check = self.ok("POST", "/api/group/heads/book/check", body=self.body)
         self.assertEqual((check["changed"], check["unchanged"], check["errors"]), (0, 2, []))
@@ -119,7 +119,7 @@ class HeadsBook(EmptyDbCase):
         wb.save(path)
         check = self.ok("POST", "/api/group/heads/book/check", body=self.body)
         self.assertEqual([(e["row"], e["message"]) for e in check["errors"]], [
-            (2, "社内加工費を数として読めない: 'たくさん'"), (3, "社内加工費は 0 以上にする"),
+            (2, "加工費を数として読めない: 'たくさん'"), (3, "加工費は 0 以上にする"),
             (4, "製品 P-1 は 2 行目にもある"), (5, "製品 N-6 は②の変更に無い")])
         before = len(self.records())
         r = self.call("POST", "/api/group/heads/book/apply", body=self.body)
@@ -219,7 +219,7 @@ class AnalysisBook(EmptyDbCase):
                 # 構成の寄与の計は製品原価の材料費小計 × 係数（float のセルなので桁をそろえて比べる）
                 self.assertAlmostEqual(float(part), float(cost[(code, "材料費小計")] * settings.rates().factor), places=6)
             parts = sum((self.dec(r["製造原価への寄与"]) for r in structure), Decimal(0))
-            heads = sum(((cost[(c, "社内加工費")] + cost[(c, "償却費")]) * settings.rates().factor + cost[(c, "直接費")]
+            heads = sum(((cost[(c, "加工費")] + cost[(c, "償却費")]) * settings.rates().factor + cost[(c, "直接費")]
                          for c in products), Decimal(0))
             total = Decimal(series["total"])
             self.assertAlmostEqual(float(parts + heads), float(total), places=6)
@@ -233,12 +233,12 @@ class AnalysisBook(EmptyDbCase):
         self.assertIn("filename*=UTF-8''" + quote(f"原価分析_2026-11_{NAME}.xlsx"), self.disposition)
         # 試算は P-1・P-2 だけ（P-3 は試算なしなので範囲の外）
         self.assertEqual([p["品番"] for p in sheets["製品"]], ["P-1", "P-2"])
-        self.assertEqual(sheets["製品"][0], {"品番": "P-1", "名称": "製品1", "開発番号": "2026-11", "年間台数": 100})
+        self.assertEqual(sheets["製品"][0], {"品番": "P-1", "名称": "製品1", "案件番号": "2026-11", "年間台数": 100})
         self.assertEqual(len(sheets["製品原価"]), 2 * 2 * 8)
         self.assertEqual(sheets["検討案"], [{"案名": NAME, "グループ": "2026-11", "変更の件数": 5}])
         self.assertEqual([(r["製品"], r["種類"], r["場所"], r["元"], r["先"], r["値"]) for r in sheets["変更"]], [
             ("P-1", "置換", "P-1 #3", "N-8", "N-6B", 2), ("P-1", "置換", "S-1 #1", "N-6", "N-8", 4),
-            ("P-1", "追加", None, "S-2", None, 3), ("P-1", "費目変更", None, "社内加工費", None, 40),
+            ("P-1", "追加", None, "S-2", None, 3), ("P-1", "費目変更", None, "加工費", None, 40),
             ("P-2", "費目変更", None, "直接費", None, 7)])
         current = [r for r in sheets["構成"] if r["検討案"] == "現行" and r["製品"] == "P-1"]
         self.assertEqual([(r["親品番"], r["部品"], r["階層"], r["員数"], r["1台あたりの数"], r["材料費"]) for r in current], [

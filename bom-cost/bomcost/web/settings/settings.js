@@ -3,7 +3,7 @@
 
 const $ = (id) => document.getElementById(id);
 const FIELDS = [
-  ["adjustment_percent", "調整費の率", "%"],
+  ["adjustment_percent", "諸経費の率", "%"],
   ["indirect_percent", "間接費の率", "%"],
   ["code_total", "原価の品番の桁数", "基本＋枝番＋後ろの 0"],
   ["code_base", "基本の品番の桁数", ""],
@@ -13,6 +13,7 @@ const FIELDS = [
   ["mold_years", "型の償却年数", "年"],
 ];
 let defaults = {};
+let groups = []; // 読み替えられる語の組 { name, words, imports }
 
 function cell(tag, ...children) {
   const node = document.createElement(tag);
@@ -53,7 +54,20 @@ function draw(s) {
     mini.className = "mini";
     return cell("tr", cell("th", name), cell("td", node), mini);
   }));
-  $("labels").replaceChildren(...Object.entries(s.labels ?? {}).map(([a, b]) => labelRow(a, b)), labelRow());
+  const labels = s.labels ?? {};
+  const listed = new Set(groups.flatMap((g) => g.words));
+  $("words").replaceChildren(...groups.flatMap((g) => {
+    const title = cell("th", g.name);
+    title.colSpan = 2;
+    title.className = "group";
+    return [cell("tr", title), ...g.words.map((w) => {
+      const node = input(labels[w], `${w} の代わりに使う語`);
+      node.dataset.word = w;
+      node.placeholder = w;
+      return cell("tr", cell("th", w), cell("td", node));
+    })];
+  }));
+  $("labels").replaceChildren(...Object.entries(labels).filter(([a]) => !listed.has(a)).map(([a, b]) => labelRow(a, b)), labelRow());
 }
 
 // 画面の中身。読み替えの元の語が空・重なりなら止める
@@ -61,6 +75,9 @@ function read() {
   const s = {};
   for (const node of $("values").querySelectorAll("input")) s[node.dataset.key] = node.value.normalize("NFKC").trim();
   s.labels = {};
+  for (const node of $("words").querySelectorAll("input")) {
+    if (node.value.trim()) s.labels[node.dataset.word] = node.value.trim();
+  }
   for (const row of $("labels").children) {
     const [a, b] = [...row.querySelectorAll("input")].map((x) => x.value.trim());
     if (!a && !b) continue;
@@ -84,6 +101,7 @@ async function api(method, body) {
 
 function show(data) {
   defaults = data.defaults;
+  groups = data.words;
   $("file").textContent = data.file ? `${data.file}${data.exists ? "" : "（まだ無い）"}` : "";
   draw(data.settings);
 }

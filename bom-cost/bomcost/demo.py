@@ -20,7 +20,7 @@ PART = settings.PART_KIND
 # DB のフォルダに設定が無い時に置く、架空の率
 DEMO_SETTINGS = settings.Settings(adjustment_percent=Decimal(5), indirect_percent=Decimal(10), mold_years=Decimal(3))
 DEMO_SCENARIO_NAME = "V-110 検討"
-DEMO_DEV_NUMBER = "D-100"  # 2つのグループはこの開発番号
+DEMO_DEV_NUMBER = "D-100"  # 2つのグループはこの案件番号
 DEMO_DEV_NAME = "例のユニット"
 
 
@@ -96,7 +96,7 @@ def demo_policy() -> ScopePolicy:
 def build_demo(path: str | Path) -> int:
     """架空の例を入れた DB を path に作り、グループ 2026-10 の A-100 の試算（V-110）の ID を返す。path にファイルがあれば止める。
 
-    2つのグループは同じ開発番号で、どちらにも同じマスタ登録・型費・流用先を入れる（グループどうしは共有しない）。
+    2つのグループは同じ案件番号で、どちらにも同じマスタ登録・型費・流用先を入れる（グループどうしは共有しない）。
     同じフォルダに settings.json が無ければ、架空の率の物を置く（あれば触らない）。
     """
     path = Path(path)

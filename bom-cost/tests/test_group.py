@@ -45,7 +45,7 @@ class SampleDbCase(EmptyDbCase):
                                               "has_children": "子部品有無"}),
             sample("構成マスタ.csv", "bom_line", {"parent": "親品番", "level": "レベル", "balloon": "風船番号",
                                                 "child": "子品番", "quantity": "員数"}),
-            sample("原価.csv", "cost", {"mbom_code": "MBOM品番", "material": "材料費", "direct": "直接費"}),
+            sample("原価.csv", "cost", {"mbom_code": "原価の品番", "material": "材料費", "direct": "直接費"}),
             sample("年間台数.csv", "volume", {"product": "製品品番", "annual": "年間生産台数"}),
         ]})
         self.ok("PUT", "/api/manual/items", body={"code": "X-610", "name": "試作品", "costs": {"MATERIAL": "200"},
@@ -1003,7 +1003,7 @@ class CompareAnalysisManufacturing(EmptyDbCase):
         rows = {x["key"]: x for x in current["rows"]}
         self.assertEqual(Decimal(rows["B-1"]["amount"]), 500 * self.RATE)
         self.assertEqual([x["head"] for x in current["rows"] if x["kind"] == "head"], ["PROCESSING", "AMORTIZATION", "DIRECT"])
-        # 社内加工費・償却費は率を掛け、直接費はそのまま。values は 1台あたりの値
+        # 加工費・償却費は率を掛け、直接費はそのまま。values は 1台あたりの値
         self.assertEqual((Decimal(rows["head:PROCESSING"]["amount"]), Decimal(rows["head:AMORTIZATION"]["amount"]),
                           Decimal(rows["head:DIRECT"]["amount"]), rows["head:AMORTIZATION"]["values"]),
                          (Decimal(0), 20 * self.RATE, Decimal(15), {"P-1": "20"}))

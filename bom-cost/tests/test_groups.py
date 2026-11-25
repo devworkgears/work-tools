@@ -10,12 +10,12 @@ from test_screens import EmptyDbCase, csv_file
 # 製品 P-1 = #1 組立 S-1 ×1（S-1 = #1 B-2 ×3）・#2 B-1 ×2
 ITEMS = "品番,品名,区分\nP-1,製品,P\nS-1,組立,B\nB-1,部品1,B\nB-2,部品2,B\n"
 BOM = "親品番,風船番号,子品番,員数\nP-1,1,S-1,1\nP-1,2,B-1,2\nS-1,1,B-2,3\n"
-COSTS = "MBOM品番,材料費\nB-1,10\nB-2,20\n"
+COSTS = "原価の品番,材料費\nB-1,10\nB-2,20\n"
 VOLUMES = "製品品番,年間台数\nP-1,100\n"
 MAPS = {
     "item": {"code": "品番", "name": "品名", "kind": "区分"},
     "bom_line": {"parent": "親品番", "balloon": "風船番号", "child": "子品番", "quantity": "員数"},
-    "cost": {"mbom_code": "MBOM品番", "material": "材料費"},
+    "cost": {"mbom_code": "原価の品番", "material": "材料費"},
     "volume": {"product": "製品品番", "annual": "年間台数"},
 }
 ALL = {"item": ITEMS, "bom_line": BOM, "cost": COSTS, "volume": VOLUMES}
@@ -161,7 +161,7 @@ class Master(GroupCase):
         items = "品番,品名,区分\nP-1,製品,P\nS-1,組立,B\nB-1,部品1,B\n"
         bom = "親品番,風船番号,子品番,員数\nP-1,1,S-1,1\nP-1,2,B-1,2\nS-1,1,B-1,3\n"
         check = self.ok("POST", "/api/import/check", body=self.files(group, {"item": items, "bom_line": bom,
-                                                                             "cost": "MBOM品番,材料費\nB-1,10\n"}))
+                                                                             "cost": "原価の品番,材料費\nB-1,10\n"}))
         self.assertEqual(check["unused_master"], {"count": 1, "codes": ["B-2"]})
 
     def test_copy_without_master_or_changes_shares_nothing(self) -> None:
@@ -192,7 +192,7 @@ class Groups(GroupCase):
         self.assert_error(self.call("GET", "/api/groups/info", f"group={group}"), 404, group)
 
     def test_create_errors(self) -> None:
-        self.assert_error(self.call("POST", "/api/groups", body={}), 400, "開発番号")
+        self.assert_error(self.call("POST", "/api/groups", body={}), 400, "案件番号")
         self.assert_error(self.call("POST", "/api/groups", body={"dev_number": "D-1", "copy": {"master": True}}),
                           400, "流用元")
         self.assert_error(self.call("POST", "/api/groups", body={"from": "NOPE"}), 404, "NOPE")

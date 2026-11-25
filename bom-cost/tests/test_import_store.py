@@ -50,13 +50,13 @@ d = Decimal
 
 ITEM_HEADERS = ["品番", "名称", "区分", "状態", "子あり", "設計者", "備考"]
 BOM_HEADERS = ["親品番", "レベル", "子品番", "数量", "風船No", "図面"]
-COST_HEADERS = ["MBOM品番", "材料費", "直接費", "間接費", "調整費", "償却費", "製造原価", "登録日"]
+COST_HEADERS = ["原価の品番", "材料費", "直接費", "間接費", "諸経費", "償却費", "製造原価", "登録日"]
 
 ITEM_MAP = {"code": "品番", "name": "名称", "kind": "区分", "lifecycle": "状態", "has_children": "子あり"}
 BOM_MAP = {"parent": "親品番", "level": "レベル", "child": "子品番", "quantity": "数量", "balloon": "風船No"}
 COST_MAP = {
-    "mbom_code": "MBOM品番", "material": "材料費", "direct": "直接費", "indirect": "間接費",
-    "adjustment": "調整費", "amortization": "償却費", "manufacturing": "製造原価",
+    "mbom_code": "原価の品番", "material": "材料費", "direct": "直接費", "indirect": "間接費",
+    "adjustment": "諸経費", "amortization": "償却費", "manufacturing": "製造原価",
 }
 
 ITEM_ROWS = [
@@ -198,7 +198,7 @@ class ImportFiles(TempDir):
         self.assertEqual(v.cost_value("123400", M), d("0.1"))
         self.assertEqual(v.children("AB123401", by_balloon=True)[1].quantity, d(-1))
         self.assertEqual(v.source_name, "item.csv, bom.csv, cost.csv")
-        # 桁の合わない MBOM 品番は変換せずに取り込み、警告に出る
+        # 桁の合わない 原価の品番は変換せずに取り込み、警告に出る
         self.assertEqual(v.cost_value("XYZ-9", M), d(7))
         self.assertEqual(len(imp.warnings), 1)
         self.assertIn("XYZ-9", imp.warnings[0].message)
@@ -265,7 +265,7 @@ class ColumnMapping(TempDir):
         cm = ColumnMap("cost", COST_HEADERS, COST_MAP)
         with self.assertRaises(MissingColumnsError) as caught:
             cm.check(["材料費", "直接費"])
-        self.assertEqual(caught.exception.missing, ("MBOM 品番",))
+        self.assertEqual(caught.exception.missing, ("原価の品番",))
         with self.assertRaises(MissingColumnsError) as caught:
             ColumnMap("volume", ["x"], {})
         self.assertEqual(caught.exception.missing, ("製品の品番", "年間台数"))

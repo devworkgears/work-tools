@@ -56,7 +56,7 @@ TABLE_LABELS = {
 }
 SAMPLE_ROWS = 5
 MAX_CONTENT_ROWS = 500
-# グループの中身の表の列（保存している列。構成の「レベル」は保存しないので無い。原価は EBOM の品番も出す）
+# グループの中身の表の列（保存している列。構成の「レベル」は保存しないので無い。原価は 設計の品番も出す）
 CONTENT_COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
     "item": tuple((f.name, f.label) for f in TABLE_FIELDS["item"]),
     "bom_line": (("parent", "親品番"), ("balloon", "風船番号"), ("child", "子品番"), ("quantity", "数量")),
@@ -508,7 +508,7 @@ class Screens:
         """新しいグループを作る。from（流用元のグループ）を付けると、copy の tables（BOM の表）・master（マスタ登録・型費・
         流用先・対応表）・changes（②の変更）を写す。写した後は元とつながらない（copied_from に残すだけ）。
 
-        開発番号・名称を省けば流用元の値。写した変更は新しい構成で当て直し、効かない物は写さず dropped に並べる
+        案件番号・名称を省けば流用元の値。写した変更は新しい構成で当て直し、効かない物は写さず dropped に並べる
         （構成の表を外した時は、構成を取り込む時に当て直す）。
         """
         source_id = _optional_text(body, "from")
@@ -523,7 +523,7 @@ class Screens:
             raise ApiError(400, "流用元（from）が無いと写せない")
         dev_number = _optional_text(body, "dev_number") or ("" if source is None else source.dev_number)
         if not dev_number:
-            raise ApiError(400, "開発番号が空")
+            raise ApiError(400, "案件番号が空")
         dev_name = _optional_text(body, "dev_name") or ("" if source is None else source.dev_name)
         note = _optional_text(body, "note")
         group_id = self.store.new_group_id()

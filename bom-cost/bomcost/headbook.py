@@ -1,10 +1,9 @@
-"""②の費目（製品×社内加工費・償却費・直接費）を Excel のブックで書き出し、打ち替えたブックを取り込む。
+"""②の費目（製品×加工費・償却費・直接費）を Excel のブックで書き出し、打ち替えたブックを取り込む。
 
 流れはマスタ登録のブックと同じ（書き出す → 打ち込む → 確認 → 決定）。確認（plan_heads）は何も保存せず、
 決定は変わった値だけを②の費目変更（/api/group/heads/bulk と同じ記録）で入れる。値はグループの変更後の値。
 """
 
-import io
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -12,7 +11,8 @@ from decimal import Decimal
 from typing import Any
 
 from .formula import EDITABLE_HEADS, Head
-from .importer import load_openpyxl
+from . import settings
+from .importer import load_openpyxl, save_workbook
 from .masterbook import BookError, _read_sheets, _text
 from .normalize import to_code, to_decimal
 
@@ -84,9 +84,7 @@ def heads_book_bytes(rows: list[HeadValues], group: str, now: datetime) -> bytes
     for key, value in ((GROUP_KEY, group), ("値", "変更後（空は未登録）"),
                        ("書き出した日時", now.strftime("%Y-%m-%d %H:%M"))):
         premises.append([key, value])
-    out = io.BytesIO()
-    wb.save(out)
-    return out.getvalue()
+    return save_workbook(wb)
 
 
 def plan_heads(data: bytes, group: str, current: dict[str, HeadValues]) -> HeadPlan:
@@ -105,7 +103,7 @@ def plan_heads(data: bytes, group: str, current: dict[str, HeadValues]) -> HeadP
         plan.errors.append(BookError(SHEET, None, "シートが無い"))
         return plan
     rows = sheets[SHEET]
-    head = [_text(v) for v in rows[0]] if rows else []
+    head = [settings.source_word(_text(v)) for v in rows[0]] if rows else []
     missing = [h for h in HEADERS if h != NAME and h not in head]
     if missing:
         plan.errors.append(BookError(SHEET, 1, f"列が無い: {'・'.join(missing)}"))

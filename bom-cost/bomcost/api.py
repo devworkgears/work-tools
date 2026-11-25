@@ -15,7 +15,7 @@ from urllib.parse import parse_qs
 
 from .doublecount import Judgement, judge_double_counting
 from .formula import EDITABLE_HEADS, Breakdown, Head, OwnValues, breakdown, registered_own
-from .importer import load_openpyxl
+from .importer import load_openpyxl, save_workbook
 from .model import HEADS, MASTER_HEADS, BomLine, CostHead, Version
 from .mold import usage_per_unit
 from .normalize import to_code, to_decimal, to_optional_code
@@ -80,7 +80,7 @@ def group_text(dev_number: str, dev_name: str, note: str) -> str:
 
 
 def _specification(version: Version, code: str) -> str:
-    """品目の記号・寸法。品目が無ければ空。"""
+    """品目の仕様。品目が無ければ空。"""
     item = version.items.get(code)
     return item.specification if item is not None else ""
 
@@ -920,12 +920,10 @@ def _workbook(
         ("グループ", group_label(view.version)),
         ("費目（ツリー・合計）", view.head.value),
         ("値の扱い", "参考値"),
-        ("調整費・間接費・製造原価", "式で計算（取り込んだ値は使わない）"),
+        ("諸経費・間接費・製造原価", "式で計算（取り込んだ値は使わない）"),
         ("未登録", "あり（" + "・".join(view.missing) + "）" if view.missing else "なし"),
         ("合計", MISSING_TEXT if view.total is None else view.total),
     ):
         premises.append([label, value])
 
-    out = io.BytesIO()
-    wb.save(out)
-    return out.getvalue()
+    return save_workbook(wb)

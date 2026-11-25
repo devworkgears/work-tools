@@ -10,6 +10,7 @@
   .set th { text-align: left; font-weight: 400; padding: 4px 16px 4px 0; white-space: nowrap; }
   .set td { padding: 4px 8px 4px 0; }
   .set td.mini { white-space: normal; }
+  .set th.group { font-weight: 700; padding-top: 14px; }
   .card > .b { padding: 10px 12px; }
   .note { min-height: 1.5em; font-weight: 600; }
   .note.bad { color: var(--warn); }
@@ -27,7 +28,10 @@
   </div>
   <div class="note" id="msg" role="status"></div>
   <div class="card"><div class="h">値</div><div class="b"><table class="set" id="values"></table></div></div>
-  <div class="card"><div class="h">語の読み替え</div><div class="b"><table class="set" id="labels"></table></div></div>
+  <div class="card"><div class="h">語の読み替え<span class="mini">画面と Excel の見出し。空はそのまま</span></div>
+    <div class="b"><table class="set" id="words"></table></div></div>
+  <div class="card"><div class="h">ほかの語の読み替え<span class="mini">画面の文字とまるごと同じ語</span></div>
+    <div class="b"><table class="set" id="labels"></table></div></div>
 </div>
 <script src="settings.js"></script>
 </body>

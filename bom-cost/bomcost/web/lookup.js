@@ -41,7 +41,7 @@ async function drawLookup() {
     body.replaceChildren(
       title,
       el("h3", {}, `候補（${r.candidates.length}${r.truncated ? "+" : ""} 件）`),
-      table(["品番", "名称", "記号・寸法", numTh("材料費小計"), numTh("製造原価")], r.candidates.map((c) => el("tr", {}, el("td", {}, lookLink(c.code)), el("td", {}, c.name), el("td", {}, c.specification), numTd(c.material, { yen: true }), numTd(c.manufacturing, { yen: true })))),
+      table(["品番", "名称", "仕様", numTh("材料費小計"), numTh("製造原価")], r.candidates.map((c) => el("tr", {}, el("td", {}, lookLink(c.code)), el("td", {}, c.name), el("td", {}, c.specification), numTd(c.material, { yen: true }), numTd(c.manufacturing, { yen: true })))),
     );
   } else {
     const x = r.item;
@@ -64,7 +64,7 @@ function lookBasics(x) {
       "dl", { class: "kv" },
       el("dt", {}, "品番"), el("dd", {}, codeSpan(lookGroup(), x.code), x.in_bom ? null : el("span", { class: "tag warn look-only" }, "登録のみ")),
       el("dt", {}, "名称"), el("dd", {}, x.name || "—"),
-      el("dt", {}, "記号・寸法"), el("dd", {}, x.specification || "—"),
+      el("dt", {}, "仕様"), el("dd", {}, x.specification || "—"),
       el("dt", {}, "区分"), el("dd", {}, [x.kind, x.is_product ? "製品" : null].filter(Boolean).join("・") || "—"),
       el("dt", {}, "品目"), el("dd", {}, x.item_source_label || "—"),
     ),
@@ -105,7 +105,7 @@ function lookUsedIn(x) {
   return el(
     "section", { class: "look-section" },
     el("h3", {}, `使われ方（${x.used_in.length} 製品）`),
-    table(["製品", "名称", "記号・寸法", numTh("個/台"), "直の親"], rows.length ? rows : noneRow(5)),
+    table(["製品", "名称", "仕様", numTh("個/台"), "直の親"], rows.length ? rows : noneRow(5)),
   );
 }
 
@@ -121,7 +121,7 @@ function lookStructure(x) {
   return el(
     "section", { class: "look-section" },
     el("h3", {}, "構成"),
-    table(["品番", "名称", "記号・寸法", numTh("員数"), numTh(`個/${x.code}`)], rows),
+    table(["品番", "名称", "仕様", numTh("員数"), numTh(`個/${x.code}`)], rows),
   );
 }
 

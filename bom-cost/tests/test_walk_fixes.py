@@ -19,7 +19,7 @@ def js(name: str) -> str:
 
 
 class WalkCase(SampleDbCase):
-    """通しの②の手順: 費目変更（社内加工費）→ B-200 を F-600 へ品番ごとに置換 → 費目変更（直接費）→ F-600 ×2 を追加
+    """通しの②の手順: 費目変更（加工費）→ B-200 を F-600 へ品番ごとに置換 → 費目変更（直接費）→ F-600 ×2 を追加
     → C-300 を品番ごとに削除（V-110 の使用数 3 − 1 ＝ 2）→ V-110 直下の #2 F-600 を B-200 ×1 に置換。"""
 
     def walk(self) -> None:
@@ -209,7 +209,7 @@ class ColumnGuess(SampleDbCase):
                                        "has_children": "子部品有無"}),
             "構成マスタ.csv": ("bom_line", {"parent": "親品番", "level": "レベル", "child": "子品番", "quantity": "員数",
                                          "balloon": "風船番号"}),
-            "原価.csv": ("cost", {"mbom_code": "MBOM品番"}),
+            "原価.csv": ("cost", {"mbom_code": "原価の品番"}),
             "年間台数.csv": ("volume", {"product": "製品品番", "annual": "年間生産台数"}),
         }
         for name, (table, columns) in expected.items():
@@ -220,9 +220,10 @@ class ColumnGuess(SampleDbCase):
                 self.assertEqual(guess.get(field), header, (name, field))
 
     def test_width_and_spaces_ignored(self) -> None:
-        columns, score = guess_columns("cost", ["ＭＢＯＭ　品番", "材料費"])
-        self.assertEqual((columns["mbom_code"], columns["material"], score), ("ＭＢＯＭ　品番", "材料費", 4))
+        columns, score = guess_columns("cost", ["原価の　品番", "材料費"])
+        self.assertEqual((columns["mbom_code"], columns["material"], score), ("原価の　品番", "材料費", 4))
         self.assertEqual(guess_columns("item", ["製品品番", "年間生産台数"])[1], 1)  # 品番を含むだけの弱い当たり
+        self.assertEqual(guess_columns("bom_line", ["親品番", "子品番", "数量", "ﾚﾍﾞﾙ"])[0]["level"], "ﾚﾍﾞﾙ")
 
 
 if __name__ == "__main__":

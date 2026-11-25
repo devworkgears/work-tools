@@ -1,11 +1,11 @@
 """製造原価の式。足し上げるのは材料費小計だけで、ほかは計算の一番上の品目の値から1回だけ出す。
 
-調整費   ＝（材料費小計 ＋ 社内加工費 ＋ 償却費）× 調整費の率
-材料費合計 ＝ 材料費小計 ＋ 社内加工費 ＋ 償却費 ＋ 調整費
+諸経費   ＝（材料費小計 ＋ 加工費 ＋ 償却費）× 諸経費の率
+材料費合計 ＝ 材料費小計 ＋ 加工費 ＋ 償却費 ＋ 諸経費
 間接費   ＝ 材料費合計 × 間接費の率
 製造原価  ＝ 材料費合計 ＋ 間接費 ＋ 直接費
 
-率は設定（settings）から。空なら計算を断る。端数は丸めない。取り込んだ・登録した調整費・間接費・製造原価は使わない。
+率は設定（settings）から。空なら計算を断る。端数は丸めない。取り込んだ・登録した諸経費・間接費・製造原価は使わない。
 """
 
 from dataclasses import dataclass, replace
@@ -21,9 +21,9 @@ class Head(Enum):
     """式で出す費目（③の並び）。7つの id は CostHead と同じ。"""
 
     MATERIAL = "材料費小計"
-    PROCESSING = "社内加工費"
+    PROCESSING = "加工費"
     AMORTIZATION = "償却費"
-    ADJUSTMENT = "調整費"
+    ADJUSTMENT = "諸経費"
     MATERIAL_TOTAL = "材料費合計"
     INDIRECT = "間接費"
     DIRECT = "直接費"
@@ -54,7 +54,7 @@ class OwnValues:
 
 
 def registered_own(version: Version, code: Code) -> OwnValues:
-    """品目の登録値から。社内加工費の未登録は 0（未登録の印は付けない）。"""
+    """品目の登録値から。加工費の未登録は 0（未登録の印は付けない）。"""
     processing = version.cost_value(code, CostHead.PROCESSING)
     return OwnValues(Decimal(0) if processing is None else processing,
                      version.cost_value(code, CostHead.AMORTIZATION), version.cost_value(code, CostHead.DIRECT))

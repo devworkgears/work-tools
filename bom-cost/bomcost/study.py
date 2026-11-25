@@ -1,8 +1,8 @@
 """設計検討（/v2/）: 部品の差し替えを、対象の製品にまたがって案ごとに試算する。
 
 検討が持つのは「製品×親×風船番号×品番の数量の増減」（変更）だけで、部品表は計算のたびに今の物を読む。
-置換・グリッド画面・書き換えの3つの入力は同じ変更の集まりに書き、同じ箇所は後に書いた方が勝つ（足し算しない）。
-版数取得の時だけ、そのときの検討と部品表（対象にかかる分）を写して固める。
+置換・一覧入力・書き換えの3つの入力は同じ変更の集まりに書き、同じ箇所は後に書いた方が勝つ（足し算しない）。
+版を固めるの時だけ、そのときの検討と部品表（対象にかかる分）を写して固める。
 """
 
 import json
@@ -132,7 +132,7 @@ COST_COLUMNS: tuple[tuple[str, CostHead], ...] = (
 )
 BOM_TABLES = ("item", "bom_line", "cost", "volume")
 # 品目に付く属性（部品マスタの任意の列）。名前・見出し
-ATTRIBUTES: tuple[tuple[str, str], ...] = (("model", "代表"), ("product_spec", "規格"), ("drawing", "組立図"))
+ATTRIBUTES: tuple[tuple[str, str], ...] = (("model", "系列"), ("product_spec", "タイプ"), ("drawing", "図面"))
 Attributes = dict[str, dict[str, str]]  # 品番 → 属性の名前 → 値（無い列は空文字）
 
 REPLACE = "replace"
@@ -594,7 +594,7 @@ def own_rows(ws: Workspace, plan: str) -> list[dict[str, Any]]:
         values = {}
         for key, head in OWN_HEADS.items():
             now = own.value(head)
-            # 社内加工費は台帳に無ければ 0 で計算する（未登録の印を付けない）ので、今の値は台帳の値のまま見せる
+            # 加工費は台帳に無ければ 0 で計算する（未登録の印を付けない）ので、今の値は台帳の値のまま見せる
             if head is Head.PROCESSING:
                 now = ws.bom.cost_value(product, CostHead.PROCESSING)
             values[key] = {"now": now, "after": ws.owns.get(plan, {}).get((product, key))}
@@ -827,7 +827,7 @@ class StudyStore:
             self._touch(sid)
 
     def save_main(self, number: str, main_product: Any) -> None:
-        """⑤グリッド画面の並びの基準にする主対象を1つ選ぶ（空なら外す）。対象品番の中からだけ選べる。"""
+        """⑤一覧入力の並びの基準にする主対象を1つ選ぶ（空なら外す）。対象品番の中からだけ選べる。"""
         sid = self.study_id(number)
         main = input_optional_code(main_product, name="主対象")
         targets = [r[0] for r in self._conn.execute("SELECT product FROM v2_target WHERE study_id = ?", (sid,))]
@@ -933,11 +933,11 @@ class StudyStore:
                                 self._put(sid, plan, place, delta, REPLACE, pair_key(old, new, balloon))
             self._touch(sid)
 
-    # ⑤ グリッド画面 ---------------------------------------------------------------
+    # ⑤ 一覧入力 ---------------------------------------------------------------
 
     def save_grid(self, number: str, plan: str, columns: Sequence[Any], rows: Sequence[Any],
                 cells: Sequence[Mapping[str, Any]]) -> None:
-        """グリッド画面の見出し（親品番）・行（品番）と、書き換えたセル（product・part・value・row）を保存する。
+        """一覧入力の見出し（親品番）・行（品番）と、書き換えたセル（product・part・value・row）を保存する。
 
         セルの値はその製品でのその品番の変えた後の数量（空は今の部品表に戻す）。今の数量との差を変更にする。
         今ある箇所が分かればそこへ、無ければ同じ列の1つ上の行で
@@ -1186,7 +1186,7 @@ def _from_snapshot(data: dict[str, Any], version: int) -> Workspace:
 
 
 def replace_overridden(ws: Workspace, plan: str) -> dict[ReplaceRow, bool]:
-    """置換の行ごとに、その行が効く箇所を グリッド画面・書き換えで手で直した所があるか。
+    """置換の行ごとに、その行が効く箇所を 一覧入力・書き換えで手で直した所があるか。
 
     置換の後に足した製品のように、まだ置換を当てていないだけの箇所には印を付けない。
     """
@@ -1214,7 +1214,7 @@ def grid_places(ws: Workspace, plan: str, product: str, part: str) -> set[tuple[
 
 
 def grid_balloon(ws: Workspace, plan: str, product: str, part: str) -> str | None:
-    """グリッド画面の風船の行に出す、製品の中でのその品番の風船番号（無ければ None・風船番号の無い箇所は「－」・2か所以上は「複数」）。"""
+    """一覧入力の風船の行に出す、製品の中でのその品番の風船番号（無ければ None・風船番号の無い箇所は「－」・2か所以上は「複数」）。"""
     places = grid_places(ws, plan, product, part)
     if not places:
         return None
@@ -1224,5 +1224,5 @@ def grid_balloon(ws: Workspace, plan: str, product: str, part: str) -> str | Non
 
 
 def grid_locked(ws: Workspace, plan: str, product: str, part: str) -> bool:
-    """グリッド画面のセルは製品×品番の合計なので、箇所が2つ以上あると直した値をどこに書くか決まらない。"""
+    """一覧入力のセルは製品×品番の合計なので、箇所が2つ以上あると直した値をどこに書くか決まらない。"""
     return len(grid_places(ws, plan, product, part)) > 1

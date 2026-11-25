@@ -37,14 +37,14 @@ class LabelsCase(unittest.TestCase):
 
     def test_no_labels_by_default(self) -> None:
         self.assertEqual(self.call("GET", "/api/v2/labels").json(), {"labels": {}})
-        self.assertEqual(self.model_of("代表"), "ZZ")
+        self.assertEqual(self.model_of("系列"), "ZZ")
         self.assertEqual(self.model_of("型式"), "")
 
     def test_labels_rename_screen_words_and_import_headers(self) -> None:
-        self.write({"代表": "型式"})
-        self.assertEqual(self.call("GET", "/api/v2/labels").json(), {"labels": {"代表": "型式"}})
+        self.write({"系列": "型式"})
+        self.assertEqual(self.call("GET", "/api/v2/labels").json(), {"labels": {"系列": "型式"}})
         self.assertEqual(self.model_of("型式"), "ZZ")
-        self.assertEqual(self.model_of("代表"), "ZZ")  # 元の語の見出しも読める
+        self.assertEqual(self.model_of("系列"), "ZZ")  # 元の語の見出しも読める
 
 
 if __name__ == "__main__":
