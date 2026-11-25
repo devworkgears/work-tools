@@ -1235,7 +1235,7 @@ async function searchReplaceScreen(main, cur) {
 async function listScreen(main) {
   let cols = [];
   let rows = []; // 出している行 { balloon, part, name, specification, lifecycle, cells: 製品 → { quantity, now, changed, problem } }
-  let data = { rows: [], main_product: null };
+  let data = { rows: [], flat: [], main_product: null }; // rows＝風船番号と部品の行・flat＝部品ごとの行
   let balloons = true;
   let onlyChanged = false;
   const codeBox = el("input", { class: "in" });
@@ -1243,7 +1243,10 @@ async function listScreen(main) {
   const note = el("span", { class: "mini" });
   const body = el("div", { class: "listview" });
   const load = async () => {
-    if (S.number) data = await api("GET", "/api/v2/after-list", q({ plan: PLAN, balloon: balloons ? "1" : "0" }));
+    if (S.number) {
+      const [list, flat] = await Promise.all(["1", "0"].map((balloon) => api("GET", "/api/v2/after-list", q({ plan: PLAN, balloon }))));
+      data = { ...list, flat: flat.rows };
+    }
     await lookup([...S.targets, ...data.rows.map((r) => r.part)]);
   };
   await load();
@@ -1286,7 +1289,7 @@ async function listScreen(main) {
   const draw = () => {
     const c = norm(codeBox.value);
     const n = norm(nameBox.value);
-    const used = data.rows.filter((r) => cols.some((p) => r.cells[p]));
+    const used = (balloons ? data.rows : data.flat).filter((r) => cols.some((p) => r.cells[p]));
     rows = used.filter((r) => (!c || norm(r.part).includes(c)) && (!n || norm(r.name || "").includes(n))
       && (!onlyChanged || cols.some((p) => r.cells[p] && r.cells[p].changed)));
     note.textContent = rows.length === used.length ? `行 ${used.length}` : `行 ${rows.length} / ${used.length}`;
@@ -1300,14 +1303,9 @@ async function listScreen(main) {
   await pick.ready;
   cols = pick.ordered();
   const toggle = (text, get, set) => {
-    const button = el("button", { class: "chip" + (get() ? " on" : ""), onclick: async () => {
+    const button = el("button", { class: "chip" + (get() ? " on" : ""), onclick: () => {
       set(!get());
       button.classList.toggle("on", get());
-      try {
-        await load();
-      } catch (e) {
-        fail(e);
-      }
       draw();
     } }, text);
     return button;
