@@ -55,7 +55,7 @@ function query(params) {
 // 処理中の表示。通信でも work でも、長引いた時だけ上に帯を出し、3秒を超えたら経過の秒も出す
 const busy = {
   texts: [], // 動いている処理の文（後から始めた物が後ろ）
-  shown: 0, // 帯を出した時刻
+  shown: 0, // 帯を出している間、始めた時刻（出していなければ 0）
   timer: null,
   start(text) {
     const job = { text };
