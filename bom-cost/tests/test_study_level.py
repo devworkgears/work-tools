@@ -392,6 +392,14 @@ class Effects(LevelCase):
         self.store.save_owns(self.number, "A", [])
         self.assertEqual(self.effects(version), got)
 
+    def test_own_heads_of_a_product_without_a_value_are_not_added(self) -> None:
+        # 部品も材料費も無い製品は、結果の年間の影響に入らない。費目の書き換えの影響も足さない
+        self.store.replace_bom(bom_of([BomLine("P1", "1", "N", 1), BomLine("Z", "1", "P2", 1)]), ["item", "bom_line"])
+        self.store.save_owns(self.number, "A", [{"product": p, "head": "direct", "value": "5"} for p in ("P1", "P2")])
+        (own,) = self.effects()
+        self.assertEqual([(p["product"], p["unit"]) for p in own["products"]], [("P1", D(5)), ("P2", None)])
+        self.assertEqual((own["impact"], own["incomplete"]), (calculate(self.ws())["impact"]["A"], True))
+
     def test_unknown_price_annual_and_left_out_changes_are_marked(self) -> None:
         self.store.save_conditions(self.number, {"P1": "100"})  # P2 は年間台数が無い
         self.store.apply_replace(self.number, "A", "K", "N")

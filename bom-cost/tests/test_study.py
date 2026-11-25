@@ -425,6 +425,22 @@ class Checks(StudyCase):
         self.assertEqual([t.code for t in self.store.workspace(self.number).temps], ["T1"])
 
 
+class LostSettings(StudyCase):
+    def test_a_missing_settings_file_does_not_drop_the_bom(self) -> None:
+        # settings.json を置き忘れて起動しただけで、取り込んだ部品表が消えていた
+        self.addCleanup(settings.use, example_settings.EXAMPLE)
+        settings.use(example_settings.EXAMPLE)
+        self.store.drop_old_bom()
+        settings.use(settings.Settings())
+        self.assertFalse(self.store.drop_old_bom())
+        self.assertTrue(self.store.load_bom().lines)
+        settings.use(example_settings.EXAMPLE)
+        self.assertFalse(self.store.drop_old_bom())
+        settings.use(replace(example_settings.EXAMPLE, code_total=10))
+        self.assertTrue(self.store.drop_old_bom())
+        self.assertFalse(self.store.load_bom().lines)
+
+
 class Summary(unittest.TestCase):
     @staticmethod
     def row(kind: str, product: str, old: str | None, new: str | None, before: str | None, after: str, balloon: str | None = "1", **more) -> dict:
