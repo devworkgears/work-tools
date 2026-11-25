@@ -12,7 +12,7 @@ from bomcost.importer import load_openpyxl
 from bomcost.model import BomLine, CostHead, CostRow, Item, Version
 from bomcost.store import Store
 from bomcost.studyapi import StudyApi, change_effects
-from bomcost.study import DEEP, GRID, REPLACE, StudyStore, after_parts, after_places, calculate, check_changes, deep_parts
+from bomcost.study import DEEP, REPLACE, StudyStore, after_parts, after_places, after_table, calculate, check_changes, deep_parts
 
 ALL = ("item", "bom_line", "cost", "volume")
 D = Decimal
@@ -73,9 +73,9 @@ class FirstLevel(LevelCase):
         with self.assertRaisesRegex(ValueError, "直下"):
             self.store.apply_replace(self.number, "A", "B", "N")
 
-    def test_grid_counts_the_first_level_only(self) -> None:
-        self.store.save_grid(self.number, "A", ["P1"], ["K"], [{"product": "P1", "part": "K", "value": "5"}])
-        self.assertEqual(self.changes(), {("P1", "P1", "2", "K"): D(4)})
+    def test_list_counts_the_first_level_only(self) -> None:
+        cells = after_table(self.ws(), "A")["K"]
+        self.assertEqual({p: c.quantity for p, c in cells.items()}, {"P1": D(1), "P2": D(4)})
 
     def test_old_deep_changes_are_marked_left_out_and_kept(self) -> None:
         self.deep_change()
@@ -87,7 +87,7 @@ class FirstLevel(LevelCase):
         self.store.save_rewrite(self.number, "A", "P1", [{"balloon": "1", "part": "U", "quantity": "1"},
                                                           {"balloon": "2", "part": "K", "quantity": "3"},
                                                           {"balloon": "3", "part": "S", "quantity": "1"}])
-        self.store.save_grid(self.number, "A", ["P1"], ["N"], [{"product": "P1", "part": "N", "value": None}])
+        self.store.save_quantities(self.number, "A", [{"product": "P1", "balloon": "3", "part": "S", "quantity": "1"}])
         self.assertEqual(self.changes(), {("P1", "U", "11", "K"): D(-2), ("P1", "U", "11", "N"): D(2), ("P1", "P1", "2", "K"): D(2)})
         self.assertEqual(self.store.drop_deep_changes(self.number, "A"), 2)
         self.assertEqual(self.changes(), {("P1", "P1", "2", "K"): D(2)})
@@ -287,16 +287,16 @@ class LevelApi(unittest.TestCase):
     def test_after_parts_tells_places_and_deeper_parts(self) -> None:
         data = self.ok("GET", "/api/v2/after-parts")
         self.assertEqual([(d["code"], d["used"]) for d in data["deep"]], [("B", 2), ("V", 2)])
-        self.assertIn({"product": "P2", "balloon": "2", "part": "K", "quantity": "4", "was": []}, data["places"])
+        self.assertIn({"product": "P2", "balloon": "2", "part": "K", "quantity": "4", "was": [], "before": "4"}, data["places"])
         got = self.ok("POST", "/api/v2/replace/apply", {"rows": [{"product": "P2", "balloon": "2", "old": "K", "new": "N"}]})
         self.assertEqual({p["code"]: (p["used"], p["before"]) for p in got["parts"]}["K"], (1, 2))
         self.ok("POST", "/api/v2/replace/revert", {"part": "N", "product": "P2", "balloon": "2"})
         self.assertEqual(self.ok("GET", "/api/v2/changes")["rows"], [])
 
-    def test_grid_hides_old_deep_changes_and_the_list_can_drop_them(self) -> None:
+    def test_list_hides_old_deep_changes_and_the_list_can_drop_them(self) -> None:
         with self.store.connection as c:
-            c.execute("INSERT INTO v2_change VALUES (1, 'A', 'P1', 'U', '11', 'K', '1', ?, NULL, 1)", (GRID,))
-        self.assertEqual([r["part"] for r in self.ok("GET", "/api/v2/grid")["rows"]], [])
+            c.execute("INSERT INTO v2_change VALUES (1, 'A', 'P1', 'U', '11', 'K', '1', ?, NULL, 1)", (REPLACE,))
+        self.assertFalse(any(c["changed"] for r in self.ok("GET", "/api/v2/after-list")["rows"] for c in r["cells"].values()))
         self.assertEqual(self.ok("GET", "/api/v2/changes")["deep"], 1)
         self.assertEqual(self.ok("POST", "/api/v2/changes/drop-deep", {})["rows"], [])
 
@@ -315,7 +315,8 @@ class Effects(LevelCase):
 
     def test_sum_is_the_total_difference_of_every_product(self) -> None:
         self.store.apply_replace(self.number, "A", "K", "N")
-        self.store.save_grid(self.number, "A", ["P1"], ["S"], [{"product": "P1", "part": "S", "value": "2"}])
+        self.store.save_quantities(self.number, "A", [{"product": "P1", "balloon": "3", "part": "S", "quantity": "2"}])
+        self.store.add_part(self.number, "A", "B", "2", ["P1", "P2"])
         self.store.save_owns(self.number, "A", [{"product": "P1", "head": "processing", "value": "4"},
                                                 {"product": "P2", "head": "direct", "value": "50"}])
         got = self.effects()

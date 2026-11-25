@@ -13,14 +13,13 @@ from bomcost.api import Api
 from bomcost.model import BomLine, CostHead, CostRow, Item, Version, Volume
 from bomcost.store import Store
 from bomcost.study import (
-    GRID,
     OTHER_PART,
     PAIR_OUT,
     REPLACE,
+    REWRITE,
     StudyStore,
     calculate,
     check_changes,
-    grid_locked,
     input_amount,
     replace_overridden,
 )
@@ -65,9 +64,10 @@ class ReplaceAgain(FixCase):
     def test_a_rerun_keeps_the_untouched_side_of_a_hand_edited_pair(self) -> None:
         self.open(SIMPLE, ["X"])
         self.store.save_replaces(self.number, "A", [("OLD", "NEW")])
-        self.store.save_grid(self.number, "A", ["X"], ["NEW"], [{"product": "X", "part": "NEW", "value": "3", "row": 1}])
+        self.store.save_rewrite(self.number, "A", "X", [{"balloon": "1", "part": "NEW", "quantity": "3"},
+                                                        {"balloon": "2", "part": "S", "quantity": "1"}])
         self.store.save_replaces(self.number, "A", [("OLD", "NEW")])
-        self.assertEqual(self.changes(), {("X", "X", "1", "OLD"): ("-2", REPLACE), ("X", "X", "1", "NEW"): ("3", GRID)})
+        self.assertEqual(self.changes(), {("X", "X", "1", "OLD"): ("-2", REPLACE), ("X", "X", "1", "NEW"): ("3", REWRITE)})
         self.assertEqual(self.material()["plans"]["A"], Decimal(210 - 200 + 360))
 
     def test_f_same_old_part_twice_is_refused_with_rows(self) -> None:
@@ -81,7 +81,8 @@ class ReplaceAgain(FixCase):
         self.store.save_replaces(self.number, "A", [("OLD", "NEW")])
         self.store.save_targets(self.number, ["X", "Y"])
         self.assertEqual(replace_overridden(self.store.workspace(self.number), "A"), {("OLD", "NEW", None): False})
-        self.store.save_grid(self.number, "A", ["X"], ["NEW"], [{"product": "X", "part": "NEW", "value": "1"}])
+        self.store.save_rewrite(self.number, "A", "X", [{"balloon": "1", "part": "NEW", "quantity": "1"},
+                                                        {"balloon": "2", "part": "S", "quantity": "1"}])
         self.assertEqual(replace_overridden(self.store.workspace(self.number), "A"), {("OLD", "NEW", None): True})
 
 
@@ -102,67 +103,12 @@ class PairAndIncomplete(FixCase):
         self.assertFalse(self.material()["incomplete"]["A"])
 
 
-class GrPlaces(FixCase):
-    TWO_PLACES = [BomLine("X", "1", "B", 1), BomLine("X", "2", "B", 2)]
-
-    def test_d_part_at_two_places_is_locked_in_grid(self) -> None:
-        self.open(self.TWO_PLACES, ["X"])
-        self.store.save_replaces(self.number, "A", [("B", "NEW")])
-        self.assertTrue(grid_locked(self.store.workspace(self.number), "A", "X", "B"))
-        before = self.changes()
-        with self.assertRaisesRegex(ValueError, "書き換えで直してください"):
-            self.store.save_grid(self.number, "A", ["X"], ["B"], [{"product": "X", "part": "B", "value": "-3"}])
-        self.assertEqual(self.changes(), before)
-
-    def test_d_api_tells_which_cells_are_locked(self) -> None:
-        store = Store(":memory:")
-        self.addCleanup(store.close)
-        api = Api(store)
-        StudyStore(store.connection).replace_bom(version(self.TWO_PLACES, COSTS), ALL)
-        number = json.loads(api.handle("POST", "/api/v2/studies", "", b"{}").body)["header"]["number"]
-        api.handle("PUT", "/api/v2/targets", f"number={number}", json.dumps({"products": ["X"]}).encode())
-        api.handle("PUT", "/api/v2/replace", f"number={number}",
-                   json.dumps({"rows": [{"old": "B", "new": "NEW"}]}).encode())
-        rows = {r["part"]: r["locked"] for r in api.handle("GET", "/api/v2/grid", f"number={number}").json()["rows"]}
-        self.assertEqual(rows, {"B": {"X": True}, "NEW": {"X": True}})
-
-    def test_d_locked_cells_are_known_before_saving(self) -> None:
-        store = Store(":memory:")
-        self.addCleanup(store.close)
-        api = Api(store)
-        StudyStore(store.connection).replace_bom(version(self.TWO_PLACES + [BomLine("Y", "1", "B", 1)], COSTS), ALL)
-        number = json.loads(api.handle("POST", "/api/v2/studies", "", b"{}").body)["header"]["number"]
-        before = store.connection.total_changes
-        r = api.handle("POST", "/api/v2/grid/locked", f"number={number}&plan=A",
-                       json.dumps({"columns": ["X", "Ｙ", ""], "rows": ["B", "NEW"]}).encode())
-        self.assertEqual(r.status, 200, r.body)
-        # 風船番号: 2か所にある製品は「複数」・その製品に無い品番は出さない
-        self.assertEqual(r.json(), {"locked": {"B": {"X": True}}, "balloons": {"B": {"X": "複数", "Y": "1"}, "NEW": {}}})
-        self.assertEqual(store.connection.total_changes, before)
-
-    def test_e_new_part_alone_goes_under_the_product(self) -> None:
-        lines = [BomLine("X", "1", "A1", 3), BomLine("A1", "5", "OLD", 1), BomLine("X", "2", "S", 1)]
-        self.open(lines, ["X"])
-        self.store.save_replaces(self.number, "A", [("OLD", "NEW")])
-        self.store.save_grid(self.number, "A", ["X"], ["OLD", "NEW", "ADD"],
-                           [{"product": "X", "part": "ADD", "value": "1", "row": 2}])
-        self.assertEqual(self.changes()[("X", "X", None, "ADD")], ("1", GRID))
-
-    def test_e_new_part_right_below_a_minus_takes_its_place(self) -> None:
-        lines = [BomLine("X", "1", "A1", 3), BomLine("X", "5", "OLD", 1)]
-        self.open(lines, ["X"])
-        self.store.save_grid(self.number, "A", ["X"], ["OLD", "NEW"], [
-            {"product": "X", "part": "OLD", "value": "-1", "row": 0},
-            {"product": "X", "part": "NEW", "value": "1", "row": 1}])
-        self.assertEqual(self.changes()[("X", "X", "5", "NEW")], ("1", GRID))
-
-
 class Inputs(FixCase):
     def test_full_width_codes_and_numbers_are_folded(self) -> None:
         self.open(SIMPLE, ["X"])
-        self.store.save_grid(self.number, "A", ["Ｘ"], ["ＯＬＤ"], [{"product": "Ｘ", "part": "ＯＬＤ", "value": "１"}])
+        self.store.save_quantities(self.number, "A", [{"product": "Ｘ", "balloon": "１", "part": "ＯＬＤ", "quantity": "１"}])
         self.store.save_replaces(self.number, "B", [("Ｓ", "ＮＥＷ")])
-        self.assertEqual(self.changes(), {("X", "X", "1", "OLD"): ("-1", GRID)})
+        self.assertEqual(self.changes(), {("X", "X", "1", "OLD"): ("-1", "quantity")})
         self.assertIn(("X", "X", "2", "NEW"), {c.place for c in self.store.workspace(self.number).plan_changes("B")})
         self.store.save_targets(self.number, ["Ｘ"])
         self.assertEqual(self.store.workspace(self.number).targets, ["X"])
@@ -193,10 +139,12 @@ class ApiShapes(unittest.TestCase):
 
     def test_n_bad_shapes_and_huge_numbers_are_400_and_not_saved(self) -> None:
         for method, path, body in (
-            ("PUT", "/api/v2/grid", {"cells": [{"product": "X", "part": "S", "value": "1e400000000"}]}),
-            ("PUT", "/api/v2/grid", {"cells": ["x"]}),
-            ("PUT", "/api/v2/grid", {"cells": [], "columns": "PR"}),
-            ("PUT", "/api/v2/grid", {"cells": [{"product": "X", "part": "S", "value": "1", "row": "x"}]}),
+            ("POST", "/api/v2/quantity", {"rows": [{"product": "X", "balloon": "2", "part": "S", "quantity": "1e400000000"}]}),
+            ("POST", "/api/v2/quantity", {"rows": ["x"]}),
+            ("POST", "/api/v2/add-part", {"part": "ADD", "quantity": "1e400000000", "products": ["X"]}),
+            ("POST", "/api/v2/add-part", {"part": "ADD", "quantity": "1", "products": "X"}),
+            ("POST", "/api/v2/add-part", {"part": "ADD", "quantity": "1", "products": [{"code": "X"}]}),
+            ("POST", "/api/v2/add-part", {"part": "ADD", "products": ["X"]}),
             ("PUT", "/api/v2/replace", {"rows": ["a"]}),
             ("PUT", "/api/v2/replace", {"rows": {"old": "a"}}),
             ("PUT", "/api/v2/rewrite", {"product": "X", "rows": ["x"]}),
@@ -230,7 +178,7 @@ class ApiShapes(unittest.TestCase):
             ("PUT", "/api/v2/replace", {"rows": [{"old": "OLD", "new": ""}]}, "元品番と新品番を入力してください（1行目）"),
             ("PUT", "/api/v2/rewrite", {"product": "X", "rows": [{"parent": "A1", "part": "S", "quantity": "1"}]},
              "組立品の中はここでは変えられません。仮品番で流用して作り、直下で置き換えてください"),
-            ("PUT", "/api/v2/grid", {"cells": [{"product": "X", "part": "S", "value": "abc"}]}, "数量は数で入力してください（abc）"),
+            ("POST", "/api/v2/quantity", {"rows": [{"product": "X", "balloon": "2", "part": "S", "quantity": "abc"}]}, "数量は数で入力してください（abc）"),
         )
         for method, path, body, message in cases:
             with self.subTest(path=path):

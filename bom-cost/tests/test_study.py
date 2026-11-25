@@ -17,23 +17,27 @@ from bomcost.importer import load_openpyxl
 from bomcost.model import BomLine, CostHead, CostRow, Item, Version, Volume
 from bomcost.store import Store
 from bomcost.study import (
+    ADD,
     after_parts,
-    GRID,
+    after_places,
+    after_table,
+    calculate,
+    check_changes,
     HEADS,
     NEGATIVE,
     NO_PLACE,
     NOT_TARGET,
     OTHER_PART,
+    product_lines,
+    QUANTITY,
     REPLACE,
     replace_groups,
-    REWRITE,
-    UNREGISTERED,
-    StudyStore,
-    calculate,
-    check_changes,
-    product_lines,
     replace_overridden,
+    REWRITE,
+    StudyStore,
+    UNREGISTERED,
     where_used,
+    Workspace,
 )
 from bomcost.studyapi import changes_by_product, summarize_changes
 
@@ -118,7 +122,7 @@ class ReplaceInput(StudyCase):
             self.store.save_replaces(self.number, "A", [("K120", "K120")])
 
     def test_row_with_a_balloon_replaces_only_that_group(self) -> None:
-        # 置換は「元品番 × 風船番号」のまとまりで選ぶ（製品ごとに選ぶのは 一覧入力・書き換え）
+        # 置換は「元品番 × 風船番号」のまとまりで選ぶ（製品ごとに選ぶのは 置換の製品ごと・書き換え）
         self.assertEqual(replace_groups(self.store.workspace(self.number).bom, ["P1", "P2", "P3"], "K120"),
                          [("5", ["P3"]), ("12", ["P1", "P2"])])
         self.store.save_replaces(self.number, "A", [("K120", "K121", "12")])
@@ -136,11 +140,17 @@ class ReplaceInput(StudyCase):
 
 
 class LaterWriteWins(StudyCase):
-    def test_grid_over_replace_does_not_add_and_marks_the_replace_row(self) -> None:
+    def test_quantity_over_replace_does_not_add_and_stays_a_replace(self) -> None:
         self.store.save_replaces(self.number, "A", [("K120", "K121")])
-        self.store.save_grid(self.number, "A", ["P2"], ["K121"], [{"product": "P2", "part": "K121", "value": "1"}])
+        self.store.save_rewrite(self.number, "A", "P2", [
+            {"balloon": "10", "part": "U10", "quantity": "1"}, {"balloon": "20", "part": "S50", "quantity": "2"},
+            {"balloon": "12", "part": "K121", "quantity": "3"}])
+        self.store.save_quantities(self.number, "A", [{"product": "P1", "balloon": "12", "part": "K121", "quantity": "5"}])
         got = self.changes()
-        self.assertEqual(got[("P2", "P2", "12", "K121")], (Decimal(1), GRID))
+        self.assertEqual(got[("P2", "P2", "12", "K121")], (Decimal(3), REWRITE))
+        self.assertEqual(got[("P1", "P1", "12", "K121")], (Decimal(5), REPLACE))
+        self.store.save_quantities(self.number, "A", [{"product": "P1", "balloon": "12", "part": "K121", "quantity": "2"}])
+        got = self.changes()
         self.assertEqual(got[("P1", "P1", "12", "K121")], (Decimal(2), REPLACE))
         ws = self.store.workspace(self.number)
         self.assertEqual(replace_overridden(ws, "A"), {("K120", "K121", None): True})
@@ -151,12 +161,15 @@ class LaterWriteWins(StudyCase):
 
     def test_running_replace_again_keeps_hand_edits(self) -> None:
         self.store.save_replaces(self.number, "A", [("K120", "K121")])
-        self.store.save_grid(self.number, "A", ["P2"], ["K121"], [{"product": "P2", "part": "K121", "value": "1"}])
+        self.store.save_rewrite(self.number, "A", "P2", [
+            {"balloon": "10", "part": "U10", "quantity": "1"}, {"balloon": "20", "part": "S50", "quantity": "2"},
+            {"balloon": "12", "part": "K121", "quantity": "1"}])
         self.store.save_replaces(self.number, "A", [("K120", "K121")])
-        self.assertEqual(self.changes()[("P2", "P2", "12", "K121")], (Decimal(1), GRID))
+        self.assertEqual(self.changes()[("P2", "P2", "12", "K121")], (Decimal(1), REWRITE))
 
-    def test_rewrite_over_grid_replaces_the_amount(self) -> None:
-        self.store.save_grid(self.number, "A", ["P1"], ["S50"], [{"product": "P1", "part": "S50", "value": "-1"}])
+    def test_rewrite_over_quantity_replaces_the_amount(self) -> None:
+        self.store.save_quantities(self.number, "A", [{"product": "P1", "balloon": "20", "part": "S50", "quantity": "0"}])
+        self.assertEqual(self.changes(), {("P1", "P1", "20", "S50"): (Decimal(-1), QUANTITY)})
         rows = [{"parent": "P1", "balloon": "10", "part": "U10", "quantity": "1"},
                 {"parent": "P1", "balloon": "20", "part": "S50", "quantity": "3"},
                 {"parent": "P1", "balloon": "31", "part": "B1", "quantity": "4"},
@@ -176,23 +189,83 @@ class LaterWriteWins(StudyCase):
         self.store.save_rewrite(self.number, "A", "P3", rows)
         self.assertEqual(self.changes()[("P3", "P3", "5", "K121")], (Decimal(1), REPLACE))
 
-    def test_grid_empty_cell_deletes(self) -> None:
-        self.store.save_grid(self.number, "A", ["P1"], ["S50"], [{"product": "P1", "part": "S50", "value": "-1"}])
-        self.store.save_grid(self.number, "A", ["P1"], ["S50"], [{"product": "P1", "part": "S50", "value": None}])
+    def test_empty_quantity_goes_back_to_the_bom(self) -> None:
+        self.store.save_quantities(self.number, "A", [{"product": "P1", "balloon": "20", "part": "S50", "quantity": "4"}])
+        self.store.save_quantities(self.number, "A", [{"product": "P1", "balloon": "20", "part": "S50", "quantity": ""}])
         self.assertEqual(self.changes(), {})
 
-    def test_grid_new_part_goes_to_the_minus_place_above_in_the_same_column(self) -> None:
-        self.store.save_grid(self.number, "A", ["P1"], ["K120", "K121"], [
-            {"product": "P1", "part": "K121", "value": "2", "row": 1},
-            {"product": "P1", "part": "K120", "value": "0", "row": 0},  # 今 2 → 0
-        ])
-        self.assertEqual(self.changes(), {("P1", "P1", "12", "K120"): (Decimal(-2), GRID),
-                                          ("P1", "P1", "12", "K121"): (Decimal(2), GRID)})
+    def test_quantity_is_all_or_nothing(self) -> None:
+        good = {"product": "P1", "balloon": "20", "part": "S50", "quantity": "4"}
+        for bad in ({**good, "balloon": "99"}, {**good, "product": "Q9"}, {**good, "quantity": "-1"}, {**good, "quantity": "x"}):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                self.store.save_quantities(self.number, "A", [good, bad])
+            self.assertEqual(self.changes(), {})
 
-    def test_grid_stores_header_and_rows(self) -> None:
-        self.store.save_grid(self.number, "A", ["P1", "P2"], ["B1"], [])
-        info = self.store.workspace(self.number).plans[0]
-        self.assertEqual((info.grid_columns, info.grid_rows), (["P1", "P2"], ["B1"]))
+    def test_add_part_to_many_products_at_once(self) -> None:
+        self.store.add_part(self.number, "A", "K121", "2", ["P1", "P3"])
+        self.assertEqual(self.changes(), {("P1", "P1", None, "K121"): (Decimal(2), ADD),
+                                          ("P3", "P3", None, "K121"): (Decimal(2), ADD)})
+        # 数量を直しても追加のまま・0 で無くなる
+        self.store.save_quantities(self.number, "A", [{"product": "P1", "balloon": None, "part": "K121", "quantity": "3"},
+                                                      {"product": "P3", "balloon": None, "part": "K121", "quantity": "0"}])
+        self.assertEqual(self.changes(), {("P1", "P1", None, "K121"): (Decimal(3), ADD)})
+
+    def test_add_part_refuses_and_changes_nothing(self) -> None:
+        for part, quantity, products in (("B1", "1", ["P3", "P1"]), ("K121", "0", ["P1"]), ("K121", "1", []),
+                                         ("K121", "1", ["P1", "Q9"]), ("P1", "1", ["P1"])):
+            with self.subTest(part=part, products=products), self.assertRaises(ValueError):
+                self.store.add_part(self.number, "A", part, quantity, products)
+            self.assertEqual(self.changes(), {})
+
+    def test_added_part_is_not_taken_for_a_replacement_at_the_same_slot(self) -> None:
+        # 風船番号の無い部品表: 1つ消して、別の1つを足す
+        self.store.replace_bom(bom(lines=[BomLine("P1", None, "K120", 2), BomLine("P1", None, "S50", 1)]), ["bom_line"])
+        self.store.save_quantities(self.number, "A", [{"product": "P1", "balloon": None, "part": "K120", "quantity": "0"}])
+        self.store.add_part(self.number, "A", "B1", "4", ["P1"])
+        ws = self.store.workspace(self.number)
+        self.assertEqual([(p.part, p.quantity, p.was, p.before) for p in after_places(ws, "A") if p.product == "P1"], [
+            ("K120", Decimal(0), [], Decimal(2)), ("S50", Decimal(1), [], Decimal(1)), ("B1", Decimal(4), [], None)])
+        self.assertNotIn("K120", [p.code for p in after_parts(ws, "A")])
+        rows = change_rows(ws)
+        self.assertEqual([(s["kind"], s["old"], s["new"]) for s in summarize_changes(rows)], [("削除", "K120", None), ("追加", None, "B1")])
+        # 同じ所で置き換えた組は、足した部品があっても組のまま・戻しても足した部品は残る
+        self.store.save_quantities(self.number, "A", [{"product": "P1", "balloon": None, "part": "K120", "quantity": ""}])
+        self.store.apply_replace(self.number, "A", "S50", "K121")
+        kinds = [(s["kind"], s["old"], s["new"]) for s in summarize_changes(change_rows(self.store.workspace(self.number)))]
+        self.assertEqual(sorted(kinds, key=str), sorted([("置き換え", "S50", "K121"), ("追加", None, "B1")], key=str))
+        self.store.revert_replace(self.number, "A", "K121")
+        self.assertEqual(self.changes(), {("P1", "P1", None, "B1"): (Decimal(4), ADD)})
+
+
+def change_rows(ws: Workspace) -> list[dict]:
+    """⑥ の行（summarize_changes に渡す形）。"""
+    return [{"product": c.change.product, "parent": c.change.parent, "balloon": c.change.balloon, "part": c.change.part, "name": None,
+             "before": str(c.before), "after": str(c.after), "delta": str(c.change.delta), "added": c.added,
+             "problems": list(c.problems), "source": c.change.source} for c in check_changes(ws)]
+
+
+class ListTable(StudyCase):
+    """⑤ 一覧表示。"""
+
+    def test_every_direct_part_is_listed_with_changed_cells(self) -> None:
+        table = after_table(self.store.workspace(self.number), "A")
+        self.assertEqual({p: sorted(c) for p, c in table.items()},
+                         {"U10": ["P1", "P2"], "S50": ["P1", "P2"], "B1": ["P1"], "K120": ["P1", "P2", "P3"]})
+        self.assertFalse(any(c.changed for cells in table.values() for c in cells.values()))
+        self.store.apply_places(self.number, "A", [{"product": "P1", "balloon": "12", "old": "K120", "new": "K121"}])
+        self.store.save_quantities(self.number, "A", [{"product": "P2", "balloon": "20", "part": "S50", "quantity": "5"}])
+        table = after_table(self.store.workspace(self.number), "A")
+        self.assertEqual(table["K120"]["P1"], (["12"], Decimal(0), Decimal(2), True, False))
+        self.assertEqual(table["K120"]["P2"], (["12"], Decimal(2), Decimal(2), False, False))
+        self.assertEqual(table["K121"], {"P1": (["12"], Decimal(2), Decimal(0), True, False)})
+        self.assertEqual(table["S50"]["P2"], (["20"], Decimal(5), Decimal(2), True, False))
+
+    def test_two_places_are_summed_and_problems_are_marked(self) -> None:
+        self.store.add_part(self.number, "A", "ZZ1", "1", ["P1"])
+        self.store.replace_bom(bom(lines=[BomLine("P1", "1", "B1", 1), BomLine("P1", "2", "B1", 2)]), ["bom_line"])
+        table = after_table(self.store.workspace(self.number), "A")
+        self.assertEqual(table["B1"]["P1"], (["1", "2"], Decimal(3), Decimal(3), False, False))
+        self.assertEqual(table["ZZ1"]["P1"], ([None], Decimal(1), Decimal(0), True, True))  # 未登録
 
 
 class Checks(StudyCase):
@@ -206,24 +279,22 @@ class Checks(StudyCase):
         return found[0]
 
     def test_same_checks_whichever_input_wrote(self) -> None:
-        self.store.save_grid(self.number, "A", ["P1", "Q9"], ["S50", "X1", "K120"], [
-            {"product": "P1", "part": "S50", "value": "-1"},  # 1 個しか無い所を -1 個に
-            {"product": "P1", "part": "X1", "value": "1"},  # 品目に無い
-            {"product": "Q9", "part": "K120", "value": "2"},  # 対象品番でない列（今 3 → 2）
-        ])
+        self.store.add_part(self.number, "A", "X1", "1", ["P1"])  # 品目に無い
+        self.store.save_targets(self.number, ["Q9", "P2"], None)
+        self.store.save_quantities(self.number, "A", [{"product": "Q9", "balloon": "1", "part": "K120", "quantity": "2"}])
+        self.store.save_targets(self.number, ["P1", "P2", "P3"], "P1")  # Q9 は対象品番でない製品になる
         self.store.save_rewrite(self.number, "A", "P2", [
             {"parent": "P2", "balloon": "10", "part": "U10", "quantity": "1"},
             {"parent": "P2", "balloon": "20", "part": "S50", "quantity": "-1"},
             {"balloon": "12", "part": "K120", "quantity": "2"}])
         got = self.problems()
-        self.assertEqual(got[("P1", "P1", "20", "S50")], (NEGATIVE,))
         self.assertEqual(self.by_part("P1", "X1"), (UNREGISTERED,))
         self.assertEqual(got[("Q9", "Q9", "1", "K120")], (NOT_TARGET,))
         self.assertEqual(got[("P2", "P2", "20", "S50")], (NEGATIVE,))
 
     def test_reading_the_bom_again_finds_lost_and_changed_places(self) -> None:
         self.store.save_replaces(self.number, "A", [("K120", "K121")])
-        self.store.save_grid(self.number, "A", ["P1"], ["S50"], [{"product": "P1", "part": "S50", "value": "-1"}])
+        self.store.save_quantities(self.number, "A", [{"product": "P1", "balloon": "20", "part": "S50", "quantity": "0"}])
         changed = [BomLine("P1", "10", "U10", 1), BomLine("P1", "31", "B1", 4),
                    BomLine("P1", "12", "K125", 2), BomLine("P2", "12", "K120", 2), BomLine("U10", "13", "B1", 4),
                    BomLine("P2", "10", "U10", 1), BomLine("P2", "20", "S50", 2), BomLine("P3", "5", "K120", 1)]
@@ -257,7 +328,7 @@ class ApplyReplace(StudyCase):
         self.assertEqual(parts["K121"], (["P1", "P2", "P3"], ["K120"]))
         self.assertNotIn("K120", parts)
         # 後から直した数量も、そのまま置き換えに乗る（変えた後の構成で動く）
-        self.store.save_grid(self.number, "A", ["P1"], ["K121"], [{"product": "P1", "part": "K121", "value": "3"}])
+        self.store.save_quantities(self.number, "A", [{"product": "P1", "balloon": "12", "part": "K121", "quantity": "3"}])
         self.store.apply_replace(self.number, "A", "K121", "K120")
         self.assertEqual(self.changes(), {("P1", "P1", "12", "K120"): (Decimal(1), REPLACE)})
         with self.assertRaises(ValueError):
@@ -279,7 +350,7 @@ class Summary(unittest.TestCase):
     @staticmethod
     def row(product: str, part: str, before: str | None, after: str, delta: str, balloon: str | None = "1", **more) -> dict:
         return {"product": product, "parent": "U", "balloon": balloon, "part": part, "name": part, "before": before,
-                "after": after, "delta": delta, "added": before == "0", "problems": [], "source": GRID, **more}
+                "after": after, "delta": delta, "added": before == "0", "problems": [], "source": QUANTITY, **more}
 
     def test_same_replacement_in_many_products_is_one_row(self) -> None:
         rows = [r for p, n in (("P1", "2"), ("P2", "2"), ("P3", "4")) for r in (
@@ -314,7 +385,7 @@ class Summary(unittest.TestCase):
 class Calculation(StudyCase):
     def test_now_and_plans_and_annual_impact(self) -> None:
         self.store.save_replaces(self.number, "A", [("K120", "K121")])
-        self.store.save_grid(self.number, "B", ["P2"], ["S50"], [{"product": "P2", "part": "S50", "value": "1"}])
+        self.store.save_quantities(self.number, "B", [{"product": "P2", "balloon": "20", "part": "S50", "quantity": "1"}])
         result = calculate(self.store.workspace(self.number), CostHead.MATERIAL)
         rows = {r["product"]: r for r in result["rows"]}
         self.assertEqual(result["plans"], ["A", "B"])
@@ -343,7 +414,7 @@ class Calculation(StudyCase):
 
     def test_unregistered_cost_marks_incomplete(self) -> None:
         self.store.save_targets(self.number, ["P1"])
-        self.store.save_grid(self.number, "A", ["P1"], ["X1"], [{"product": "P1", "part": "X1", "value": "1"}])
+        self.store.add_part(self.number, "A", "X1", "1", ["P1"])
         result = calculate(self.store.workspace(self.number), CostHead.MATERIAL)
         self.assertTrue(result["rows"][0]["incomplete"]["A"])
 
@@ -438,12 +509,12 @@ class StudyApiFlow(unittest.TestCase):
         number = made["header"]["number"]
         self.assertEqual(self.ok("GET", "/api/v2/targets", f"number={number}")["main_product"], P2)
 
-    def test_main_product_is_chosen_on_the_grid_and_kept_by_the_target_list(self) -> None:
+    def test_main_product_is_chosen_on_the_list_and_kept_by_the_target_list(self) -> None:
         self.ok("POST", "/api/v2/bom/import", body={"sample": True})
         number = self.ok("POST", "/api/v2/studies", body={"products": [P1, P2]})["header"]["number"]
         q = f"number={number}"
         self.assertEqual(self.ok("PUT", "/api/v2/main-product", q, {"main_product": P2})["main_product"], P2)
-        self.assertEqual(self.ok("GET", "/api/v2/grid", q + "&plan=A")["main_product"], P2)
+        self.assertEqual(self.ok("GET", "/api/v2/after-list", q + "&plan=A")["main_product"], P2)
         # ③で対象品番を直しても、主対象は残る（主対象を外した時だけ消える）
         self.ok("PUT", "/api/v2/targets", q, {"products": [P2, P1]})
         self.assertEqual(self.ok("GET", "/api/v2/targets", q)["main_product"], P2)
@@ -571,16 +642,15 @@ class StudyApiFlow(unittest.TestCase):
         groups = self.ok("GET", "/api/v2/replace/groups", q + f"&code={OLD}")["groups"]
         self.assertEqual(sorted({p for g in groups for p in g["products"]}), [P1, P2])
         self.assertTrue(all(g["count"] == len(g["products"]) for g in groups))
-        grid = self.ok("PUT", "/api/v2/grid", q + "&plan=A",
-                     {"columns": [P1], "rows": ["ST0050-001"], "cells": [{"product": P1, "part": "ST0050-001",
-                                                                          "value": "0"}]})
-        # セルは変えた後の数量（列の製品で使っていなければ出さない）
-        self.assertEqual(grid["rows"][0]["cells"], {P1: "0", P2: "2"})
-        self.assertIn({"part": OLD, "origin": 1, "cells": {P1: "0", P2: "0"}, "problems": {}, "locked": {}},
-                      [{k: v for k, v in r.items() if k not in ("balloons", "now")} for r in grid["rows"]])
-        self.assertEqual(next(r for r in grid["rows"] if r["part"] == OLD)["now"], {P1: "1", P2: "1"})
-        # 風船の行: 列の製品ごとに、その製品でのその品番の風船番号
-        self.assertEqual(sorted(next(r for r in grid["rows"] if r["part"] == OLD)["balloons"]), [P1, P2])
+        stay = next(p for p in self.ok("GET", "/api/v2/after-parts", q)["places"] if p["part"] == "ST0050-001" and p["product"] == P1)
+        self.ok("POST", "/api/v2/quantity", q + "&plan=A", {"rows": [{**{k: stay[k] for k in ("product", "balloon", "part")}, "quantity": "0"}]})
+        self.ok("POST", "/api/v2/add-part", q + "&plan=A", {"part": "PL0030-001", "quantity": "1", "products": [P2]})
+        rows = {r["part"]: r["cells"] for r in self.ok("GET", "/api/v2/after-list", q + "&plan=A")["rows"]}
+        # セルは変えた後の数量（製品で使っていなければ出さない）
+        self.assertEqual({p: (c["quantity"], c["changed"]) for p, c in rows["ST0050-001"].items()}, {P1: ("0", True), P2: ("2", False)})
+        self.assertEqual({p: (c["quantity"], c["now"]) for p, c in rows[OLD].items()}, {P1: ("0", "1"), P2: ("0", "1")})
+        self.assertEqual(rows["PL0030-001"], {P2: {"balloon": "－", "quantity": "1", "now": "0", "changed": True, "problem": False}})
+        self.assertEqual(list(rows)[0], "FR0010-001")  # 主対象の風船番号の順
         changes = self.ok("GET", "/api/v2/changes", q + "&plan=A")["rows"]
         self.assertTrue(any(r["part"] == NEW and r["added"] for r in changes))
         before = self.store.connection.total_changes
@@ -613,8 +683,8 @@ class StudyApiFlow(unittest.TestCase):
         by_product = self.ok("GET", "/api/v2/changes", q + "&plan=A")["by_product"]
         self.assertEqual([(r[0], r[2]) for r in book["構成の明細"].iter_rows(min_row=2, values_only=True)],
                          [(r["product"], r["kind"]) for r in by_product])
-        self.assertEqual([r["kind"] for r in self.ok("GET", "/api/v2/changes", q + f"&product={P2}")["by_product"]],
-                         [r["kind"] for r in by_product if r["product"] == P2])
+        self.assertEqual(sorted(r["kind"] for r in self.ok("GET", "/api/v2/changes", q + f"&product={P2}")["by_product"]),
+                         sorted(r["kind"] for r in by_product if r["product"] == P2))
 
     def test_replacing_the_common_part_keeps_every_product_positive(self) -> None:
         self.ok("POST", "/api/v2/bom/import", body={"sample": True})

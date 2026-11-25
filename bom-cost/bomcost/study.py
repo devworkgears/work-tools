@@ -1,7 +1,7 @@
 """設計検討（/v2/）: 部品の差し替えを、対象の製品にまたがって案ごとに試算する。
 
 検討が持つのは「製品×親×風船番号×品番の数量の増減」（変更）だけで、部品表は計算のたびに今の物を読む。
-置換・一覧入力・書き換えの3つの入力は同じ変更の集まりに書き、同じ箇所は後に書いた方が勝つ（足し算しない）。
+置換（品番・数量・部品を足す）と書き換えは同じ変更の集まりに書き、同じ箇所は後に書いた方が勝つ（足し算しない）。
 変えられるのは製品の直下（1階層目）だけ。組立品の中を替える時は、組立品を流用した仮品番を作り、直下で置き換える。
 版を固めるの時だけ、そのときの検討と部品表（対象にかかる分）を写して固める。
 """
@@ -66,8 +66,6 @@ CREATE TABLE IF NOT EXISTS v2_target (
 CREATE TABLE IF NOT EXISTS v2_plan (
     study_id INTEGER NOT NULL REFERENCES v2_study(study_id) ON DELETE CASCADE,
     plan TEXT NOT NULL,
-    grid_columns TEXT NOT NULL DEFAULT '[]',
-    grid_rows TEXT NOT NULL DEFAULT '[]',
     PRIMARY KEY (study_id, plan)
 );
 CREATE TABLE IF NOT EXISTS v2_replace (
@@ -147,7 +145,8 @@ ATTRIBUTES: tuple[tuple[str, str], ...] = (("model", "系列"), ("product_spec",
 Attributes = dict[str, dict[str, str]]  # 品番 → 属性の名前 → 値（無い列は空文字）
 
 REPLACE = "replace"
-GRID = "grid"
+QUANTITY = "quantity"
+ADD = "add"
 KEEP = object()  # save_targets で主対象を今のまま持つ印
 REWRITE = "rewrite"
 
@@ -246,8 +245,6 @@ class CheckedChange:
 @dataclass
 class PlanInfo:
     plan: str
-    grid_columns: list[str] = field(default_factory=list)
-    grid_rows: list[str] = field(default_factory=list)
 
 
 # 置換の行（元品番, 新品番, 風船番号）。風船番号 None は全部の箇所・"" は風船番号の無い箇所
@@ -558,13 +555,17 @@ def after_lines(ws: Workspace, plan: str, product: str) -> tuple[dict[LineKey, D
 
 
 class PartPlace(NamedTuple):
-    """変えた後の構成で、部品がある製品の直下の箇所。was は置き換える前の品番（その箇所で減った品番）。"""
+    """変えた後の構成で、部品がある製品の直下の箇所。was は置き換える前の品番（その箇所で減った品番）。
+
+    before は今の数量（置き換えた箇所は元の品番の数量・足した箇所は None）。quantity 0 は、置き換えずに消した箇所。
+    """
 
     product: str
     balloon: str | None
     part: str
     quantity: Decimal
     was: list[str]
+    before: Decimal | None
 
 
 def after_places(ws: Workspace, plan: str) -> list[PartPlace]:
@@ -572,15 +573,51 @@ def after_places(ws: Workspace, plan: str) -> list[PartPlace]:
     found = []
     for product in ws.targets:
         now, after = after_lines(ws, plan, product)
+        # 足した部品は、同じ風船番号（無い時も）で減った品番の置き換えとは見ない
+        extra = {c.place[1:] for c in ws.plan_changes(plan) if c.product == product and c.source == ADD}
         down: dict[str | None, list[str]] = {}
+        up: set[str | None] = set()
         for key, qty in after.items():
             if qty < now.get(key, Decimal(0)):
                 down.setdefault(key[1], []).append(key[2])
+            elif qty > now.get(key, Decimal(0)) and key not in extra:
+                up.add(key[1])
         for key, qty in after.items():
-            if qty != 0:
-                was = sorted(down.get(key[1], [])) if qty > now.get(key, Decimal(0)) else []
-                found.append(PartPlace(product, key[1], key[2], qty, was))
+            if qty == 0 and (key not in now or key[1] in up):
+                continue
+            was = sorted(down.get(key[1], [])) if qty > now.get(key, Decimal(0)) and key not in extra else []
+            before = now.get(key, now.get((key[0], key[1], was[0])) if len(was) == 1 else None)
+            found.append(PartPlace(product, key[1], key[2], qty, was, before))
     return found
+
+
+class ListCell(NamedTuple):
+    """⑤の1マス（部品×製品）: 変えた後の数量と風船番号（2か所以上なら全部）・今の数量・変えたか・要確認か。"""
+
+    balloons: list[str | None]
+    quantity: Decimal
+    now: Decimal
+    changed: bool
+    problem: bool
+
+
+def after_table(ws: Workspace, plan: str) -> dict[str, dict[str, ListCell]]:
+    """対象品番の直下の部品 → 製品 → マス。変えた後に無くなった部品も、今あれば入れる。"""
+    bad = {c.change.place for c in check_changes(ws, ws.plan_changes(plan)) if c.problems}
+    table: dict[str, dict[str, ListCell]] = {}
+    for product in ws.targets:
+        now, after = after_lines(ws, plan, product)
+        by_part: dict[str, list[LineKey]] = {}
+        for key, qty in after.items():
+            if qty != 0 or now.get(key, Decimal(0)) != 0:
+                by_part.setdefault(key[2], []).append(key)
+        for part, keys in by_part.items():
+            live = [k for k in keys if after[k] != 0] or keys
+            table.setdefault(part, {})[product] = ListCell(
+                [k[1] for k in live], sum((after[k] for k in keys), Decimal(0)),
+                sum((now.get(k, Decimal(0)) for k in keys), Decimal(0)),
+                any(after[k] != now.get(k, Decimal(0)) for k in keys), any((product, *k) in bad for k in keys))
+    return table
 
 
 class AfterPart(NamedTuple):
@@ -595,6 +632,8 @@ def after_parts(ws: Workspace, plan: str) -> list[AfterPart]:
     before = dict(parts_of(ws.bom, ws.targets))
     found: dict[str, tuple[dict[str, None], set[str]]] = {}
     for p in after_places(ws, plan):
+        if p.quantity == 0:
+            continue
         users, was = found.setdefault(p.part, ({}, set()))
         users[p.product] = None
         was.update(p.was)
@@ -926,8 +965,8 @@ class StudyStore:
         header = {"number": n, "title": title, "owner": owner, "approver": approver, "dev_number": dev_number,
                   "updated_at": updated}
         targets = [r[0] for r in q("SELECT product FROM v2_target WHERE study_id = ? ORDER BY position", (sid,))]
-        plans = [PlanInfo(p, json.loads(c), json.loads(r)) for p, c, r in q(
-            "SELECT plan, grid_columns, grid_rows FROM v2_plan WHERE study_id = ? ORDER BY plan", (sid,))]
+        plans = [PlanInfo(p) for (p,) in q(
+            "SELECT plan FROM v2_plan WHERE study_id = ? ORDER BY plan", (sid,))]
         replaces: dict[str, list[ReplaceRow]] = {}
         for plan, old, new, balloon in q("SELECT plan, old_part, new_part, balloon FROM v2_replace WHERE study_id = ? "
                                          "ORDER BY plan, position", (sid,)):
@@ -1011,7 +1050,7 @@ class StudyStore:
             self._touch(sid)
 
     def save_main(self, number: str, main_product: Any) -> None:
-        """⑤一覧入力の並びの基準にする主対象を1つ選ぶ（空なら外す）。対象品番の中からだけ選べる。"""
+        """⑤一覧表示の並びの基準にする主対象を1つ選ぶ（空なら外す）。対象品番の中からだけ選べる。"""
         sid = self.study_id(number)
         main = input_optional_code(main_product, name="主対象")
         targets = [r[0] for r in self._conn.execute("SELECT product FROM v2_target WHERE study_id = ?", (sid,))]
@@ -1091,6 +1130,7 @@ class StudyStore:
                 if c.product == product and c.parent == product and (only is None or only == (product, c.balloon)):
                     slots.setdefault(c.balloon, []).append(c)
             for members in slots.values():
+                members = [c for c in members if c.source != ADD]  # 足した部品は置き換えではない
                 mine = next((c for c in members if c.part == code and c.delta > 0), None)
                 if mine is None:
                     continue
@@ -1106,6 +1146,62 @@ class StudyStore:
         with self._conn:
             for place in gone:
                 self._delete(sid, plan, place)
+            self._touch(sid)
+
+    def save_quantities(self, number: str, plan: str, rows: Sequence[Mapping[str, Any]]) -> None:
+        """箇所（product・balloon・part）ごとに、変えた後の数量を入れる（0 は消す・空は今の部品表に戻す）。1行でも当たらなければ、どれも変えない。"""
+        ws = self.workspace(number)
+        sid = self.study_id(number)
+        current = {c.place: c for c in ws.plan_changes(plan)}
+        work: dict[Place, Decimal] = {}
+        for r in rows:
+            product, part = input_code(r.get("product"), name="製品"), input_code(r.get("part"))
+            if product not in ws.targets:
+                raise ValueError(f"{product} は対象品番にありません")
+            now, after = after_lines(ws, plan, product)
+            key = (product, input_optional_code(r.get("balloon"), name="風船"), part)
+            if key not in after:
+                raise ValueError(f"{part} は {product} の直下にありません（画面を開き直してください）")
+            value = r.get("quantity")
+            before = now.get(key, Decimal(0))
+            amount = before if value is None or str(value).strip() == "" else input_amount(value)
+            if amount < 0:
+                raise ValueError(f"数量は0以上で入力してください（{value}）")
+            work[(product, *key)] = amount - before
+        with self._conn:
+            self._ensure_plan(sid, plan)
+            for place, delta in work.items():
+                # 置き換えた・足した箇所の数量を直しても、置き換え・追加のまま
+                kept = current.get(place)
+                self._put(sid, plan, place, delta, QUANTITY if kept is None else kept.source,
+                          None if kept is None else kept.origin)
+            self._touch(sid)
+
+    def add_part(self, number: str, plan: str, part: Any, quantity: Any, products: Sequence[Any]) -> None:
+        """部品を、製品たちの直下に足す（風船番号は無し）。もう直下にある製品が混ざれば、どれも変えない。"""
+        ws = self.workspace(number)
+        sid = self.study_id(number)
+        code, amount = input_code(part), input_amount(quantity)
+        if amount <= 0:
+            raise ValueError(f"数量は0より大きい数で入力してください（{quantity}）")
+        codes = list(dict.fromkeys(input_code(p, name="製品") for p in products))
+        if not codes:
+            raise ValueError("足す製品を選んでください")
+        work: dict[Place, Decimal] = {}
+        for product in codes:
+            if product not in ws.targets:
+                raise ValueError(f"{product} は対象品番にありません")
+            if product == code:
+                raise ValueError(f"{code} を自分の中には足せません")
+            now, after = after_lines(ws, plan, product)
+            if any(k[2] == code and q != 0 for k, q in after.items()):
+                raise ValueError(f"{code} は {product} にもうあります。数量は「製品ごと」で変えてください")
+            key = (product, None, code)
+            work[(product, *key)] = amount - now.get(key, Decimal(0))
+        with self._conn:
+            self._ensure_plan(sid, plan)
+            for place, delta in work.items():
+                self._put(sid, plan, place, delta, ADD)
             self._touch(sid)
 
     def save_replaces(self, number: str, plan: str, rows: Sequence[Sequence[Any]]) -> None:
@@ -1153,71 +1249,6 @@ class StudyStore:
                             if place not in manual:
                                 self._put(sid, plan, place, delta, REPLACE, pair_key(old, new, balloon))
             self._touch(sid)
-
-    # ⑤ 一覧入力 ---------------------------------------------------------------
-
-    def save_grid(self, number: str, plan: str, columns: Sequence[Any], rows: Sequence[Any],
-                cells: Sequence[Mapping[str, Any]]) -> None:
-        """一覧入力の見出し（親品番）・行（品番）と、書き換えたセル（product・part・value・row）を保存する。
-
-        セルの値はその製品でのその品番の変えた後の数量（空は今の部品表に戻す）。今の数量との差を変更にする。
-        今ある箇所が分かればそこへ、無ければ同じ列の1つ上の行で
-        この回に書いたマイナスの箇所（置き換えの相手）へ、それも無ければ製品の直下に置く。
-        製品の中で箇所が2つ以上ある品番のセルは、1つに潰れるので受けない（書き換えで直す）。
-        """
-        ws = self.workspace(number)
-        sid = self.study_id(number)
-        col_codes = list(dict.fromkeys(input_code(c, name="親品番") for c in columns if c is not None and str(c).strip()))
-        row_codes = list(dict.fromkeys(input_code(r, name="品番") for r in rows if r is not None and str(r).strip()))
-        parsed = []
-        for cell in cells:
-            value = cell.get("value")
-            amount = None if value is None or str(value).strip() == "" else input_amount(value)
-            product, part = input_code(cell.get("product"), name="親品番"), input_code(cell.get("part"))
-            if grid_locked(ws, plan, product, part):
-                raise ValueError(f"{part} は {product} の中で複数の箇所にあります。書き換えで直してください")
-            row = cell.get("row") or 0
-            if not isinstance(row, int) or isinstance(row, bool):
-                raise ValueError("送る形が違います（行の番号）")
-            now = sum((line.quantity for line in occurrences(ws.bom, product, part)), Decimal(0))
-            parsed.append((product, part, None if amount is None else amount - now, row))
-        # マイナスを先に書き、プラスの置き場の相手にする
-        parsed.sort(key=lambda p: (p[2] is None or p[2] >= 0, p[3]))
-        with self._conn:
-            self._ensure_plan(sid, plan)
-            self._conn.execute("UPDATE v2_plan SET grid_columns = ?, grid_rows = ? WHERE study_id = ? AND plan = ?",
-                               (json.dumps(col_codes, ensure_ascii=False), json.dumps(row_codes, ensure_ascii=False),
-                                sid, plan))
-            current = {c.place: c for c in ws.plan_changes(plan)}
-            written: list[tuple[int, Place]] = []  # (行, この回に書いたマイナスの箇所)
-            for product, part, amount, row in parsed:
-                mine = [c for c in current.values() if c.product == product and c.parent == product and c.part == part]
-                if amount is None or amount == 0:
-                    for c in mine:
-                        self._delete(sid, plan, c.place)
-                        current.pop(c.place, None)
-                    continue
-                if mine:
-                    place = mine[0].place
-                else:
-                    place = self._grid_place(ws, product, part, amount, row, written)
-                self._put(sid, plan, place, amount, GRID)
-                current[place] = StoredChange(plan, *place, amount, GRID, None, 1 << 62)
-                if amount < 0:
-                    written.append((row, place))
-            self._touch(sid)
-
-    @staticmethod
-    def _grid_place(ws: Workspace, product: str, part: str, amount: Decimal, row: int,
-                  written: list[tuple[int, Place]]) -> Place:
-        found = occurrences(ws.bom, product, part)
-        if found:
-            return (product, found[0].parent, found[0].balloon, part)
-        if amount > 0:
-            pair = [p for r, p in written if p[0] == product and r == row - 1]
-            if pair:
-                return (product, pair[0][1], pair[0][2], part)
-        return (product, product, None, part)
 
     # ⑧ 書き換え -------------------------------------------------------------
 
@@ -1423,7 +1454,7 @@ def _snapshot(ws: Workspace) -> dict[str, Any]:
         "targets": ws.targets,
         "main_product": ws.main_product,
         "rates": _rates_snapshot(ws.use_rates()),
-        "plans": [{"plan": p.plan, "grid_columns": p.grid_columns, "grid_rows": p.grid_rows} for p in ws.plans],
+        "plans": [{"plan": p.plan} for p in ws.plans],
         "replaces": ws.replaces,
         "changes": [[c.plan, c.product, c.parent, c.balloon, c.part, str(c.delta), c.source, c.origin, c.seq]
                     for c in ws.changes],
@@ -1463,7 +1494,7 @@ def _from_snapshot(data: dict[str, Any], version: int) -> Workspace:
         header=data["header"],
         targets=list(data["targets"]),
         main_product=data.get("main_product"),
-        plans=[PlanInfo(p["plan"], p["grid_columns"], p["grid_rows"]) for p in data["plans"]],
+        plans=[PlanInfo(p["plan"]) for p in data["plans"]],
         # 風船番号の列を足す前に固めた版は (元品番, 新品番) の2つ。全部の箇所として読む
         replaces={k: [(x[0], x[1], x[2] if len(x) > 2 else None) for x in v] for k, v in data["replaces"].items()},
         changes=[StoredChange(p, pr, pa, bl, pt, Decimal(d), s, o, seq) for p, pr, pa, bl, pt, d, s, o, seq
@@ -1483,7 +1514,7 @@ def _from_snapshot(data: dict[str, Any], version: int) -> Workspace:
 
 
 def replace_overridden(ws: Workspace, plan: str) -> dict[ReplaceRow, bool]:
-    """置換の行ごとに、その行が効く箇所を 一覧入力・書き換えで手で直した所があるか。
+    """置換の行ごとに、その行が効く箇所を 手で直した所があるか。
 
     置換の後に足した製品のように、まだ置換を当てていないだけの箇所には印を付けない。
     """
@@ -1501,26 +1532,3 @@ def replace_overridden(ws: Workspace, plan: str) -> dict[ReplaceRow, bool]:
                         hit = True
         result[(old, new, balloon)] = hit
     return result
-
-
-def grid_places(ws: Workspace, plan: str, product: str, part: str) -> set[tuple[str, str | None]]:
-    """製品の直下でその品番がある箇所（親・風船番号）。部品表の行と、案の変更の両方から。"""
-    places = {(l.parent, l.balloon) for l in occurrences(ws.bom, product, part)}
-    places |= {(c.parent, c.balloon) for c in ws.plan_changes(plan)
-               if c.product == product and c.parent == product and c.part == part}
-    return places
-
-
-def grid_balloon(ws: Workspace, plan: str, product: str, part: str) -> str | None:
-    """一覧入力の風船の行に出す、製品の中でのその品番の風船番号（無ければ None・風船番号の無い箇所は「－」・2か所以上は「複数」）。"""
-    places = grid_places(ws, plan, product, part)
-    if not places:
-        return None
-    if len(places) > 1:
-        return "複数"
-    return next(iter(places))[1] or "－"
-
-
-def grid_locked(ws: Workspace, plan: str, product: str, part: str) -> bool:
-    """一覧入力のセルは製品×品番の合計なので、箇所が2つ以上あると直した値をどこに書くか決まらない。"""
-    return len(grid_places(ws, plan, product, part)) > 1
