@@ -1034,7 +1034,7 @@ async function searchReplaceScreen(main, cur) {
     hits = hits.map((g, i) => [g, i]).sort(([x, i], [y, j]) => (x.now === "") - (y.now === "") || x.now.localeCompare(y.now) || x.at[0].localeCompare(y.at[0])
       || (grain === "product" ? rank.get(x.at[1]) - rank.get(y.at[1]) || x.at[2].localeCompare(y.at[2], "ja", { numeric: true }) : 0) || i - j).map(([g]) => g);
     shown = hits.slice(0, MAX_PART_ROWS);
-    note.textContent = `${searched ? `検索に当たる行 ${hits.length}・` : ""}変えた行 ${hits.filter((g) => g.moved).length}${hits.length > shown.length ? `・先頭の ${MAX_PART_ROWS} 行を出しています` : ""}`;
+    note.textContent = `${searched ? `該当行 ${hits.length}・` : ""}変更行 ${hits.filter((g) => g.moved).length}${hits.length > shown.length ? `・先頭の ${MAX_PART_ROWS} 行を出しています` : ""}`;
     await lookup(shown.flatMap((g) => [...g.codes, g.parent, g.parentAfter]));
     grid.render();
   };
