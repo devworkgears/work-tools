@@ -1695,8 +1695,8 @@ async function rewriteScreen(main, cur) {
     if (Grid.active) Grid.active.commit();
     run();
   } }, text);
-  const rowBack = button("行復元", () => backRow().catch(fail));
-  const allBack = button("全復元", () => backAll().catch(fail));
+  const rowBack = button("戻す", () => backRow().catch(fail));
+  const allBack = button("全て戻す", () => backAll().catch(fail));
   rowBack.title = "選択行の品番と数量を現行に戻す";
   allBack.title = "表示中の全部を現行に戻す";
   const zeroButton = el("button", { class: "chip on", onclick: () => {
