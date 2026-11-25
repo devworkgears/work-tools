@@ -1354,6 +1354,7 @@ async function structureView(key, redraw) {
   const me = {
     child, view, base, only: false, note: el("span", { class: "mini" }),
     get data() { return data; },
+    get parents() { return parents; },
     // 打ち替えが効く製品
     range: () => data.products.filter((p) => (child ? !child.range[1] || p === child.range[1] : !view.parent || p === view.parent)),
     columns: () => parents.filter((p) => !view.parent || p === view.parent),
@@ -1667,7 +1668,7 @@ async function rewriteScreen(main, cur) {
       if (!row) return { text: "", editable: !ro, cls: "r q" + edge };
       if (row.draft) return { text: row.amounts.get(parent) ?? "", editable: !ro, cls: "r q" + edge };
       const s = row.cells.get(parent);
-      if (row.lost) return { text: s ? fmt(s.quantity) : "", lock: true, cls: "r q bad" + edge };
+      if (row.lost) return { text: s ? fmt(s.quantity) : "", lock: true, cls: "r q" + (s ? " bad" : "") + edge };
       if (!s) return { text: "", editable: !ro, cls: "r q" + edge };
       const changed = !same(s.before, s.quantity);
       const shown = zero || Number(s.quantity) !== 0;
@@ -1796,13 +1797,26 @@ async function rewriteScreen(main, cur) {
   const later = sendQueue(cur, () => drafts.some((d) => d.part || d.balloon || d.amounts.size));
   const renamed = new Map(); // 品番の替わった組立品 → 新しい品番（送っている間に打った物を、新しい品番の親に入れる）
   const newest = (parent) => (renamed.has(parent) ? newest(renamed.get(parent)) : parent);
-  const follow = (from, to) => {
-    if (from === to || newest(to) === from) renamed.delete(to);
-    if (from !== to) renamed.set(from, to);
+  const carry = (from, to) => {
     for (const d of drafts) {
       if (!d.amounts.has(from)) continue;
       if (!d.amounts.has(to)) d.amounts.set(to, d.amounts.get(from));
       d.amounts.delete(from);
+    }
+  };
+  const follow = (from, to) => {
+    if (newest(to) === from) renamed.delete(to);
+    if (from !== to) renamed.set(from, to);
+    carry(from, to);
+  };
+  const origins = new Map(); // 今までに出た仮品番 → 流用元
+  // 出ている親の品番が替わっていたら（中を現行に戻して流用元に戻った時など）、足しかけの数量を移す
+  const settle = () => {
+    for (const [code, from] of Object.entries(me.data.bases)) origins.set(code, from);
+    const origin = (code) => origins.get(code) ?? code;
+    for (const lost of new Set(drafts.flatMap((d) => [...d.amounts.keys()]).filter((code) => !me.parents.includes(code)))) {
+      const found = me.parents.filter((code) => origin(code) === origin(lost));
+      if (found.length === 1) carry(lost, found[0]);
     }
   };
   const send = async (path, payload, text) => {
@@ -1816,7 +1830,8 @@ async function rewriteScreen(main, cur) {
     items.clear(); // 仮品番の品番・名称が変わる
     await lookup(drafts.map((d) => d.part));
     if (await me.load(() => !!grid.editing)) {
-      if (!grid.editing) renamed.clear();
+      renamed.clear();
+      settle();
       draw();
     } else late = true;
   };
