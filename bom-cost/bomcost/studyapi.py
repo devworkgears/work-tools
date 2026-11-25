@@ -25,12 +25,12 @@ from .inside import Rebuild, input_edits, inside_rows
 from .model import CostHead, Version
 from .normalize import to_code, to_optional_code
 from .rollup import CostCalculator
+from .structure import structure
 from .study import (
     ADD,
     ATTRIBUTES,
     DEEP,
     HEADS,
-    ListCell,
     NEGATIVE,
     OWN_HEADS,
     NO_PLACE,
@@ -48,12 +48,10 @@ from .study import (
     own_rows,
     after_parts,
     after_places,
-    after_table,
     annual_of,
     direct_lines,
     input_code,
     input_optional_code,
-    inside_lines,
     material_effects,
     nfkc,
     parts_of,
@@ -309,14 +307,12 @@ class StudyApi:
             ("PUT", r"/api/v2/replace", self.put_replace),
             ("POST", r"/api/v2/quantity", self.put_quantity),
             ("POST", r"/api/v2/add-part", self.add_part),
-            ("GET", r"/api/v2/after-list", self.after_list),
             ("POST", r"/api/v2/plans", self.add_plan),
-            ("GET", r"/api/v2/rewrite", self.rewrite),
-            ("PUT", r"/api/v2/rewrite", self.put_rewrite),
+            ("GET", r"/api/v2/structure", self.structure),
+            ("POST", r"/api/v2/structure", self.edit_structure),
             ("GET", r"/api/v2/changes", self.changes),
             ("GET", r"/api/v2/own", self.own),
             ("PUT", r"/api/v2/own", self.put_own),
-            ("GET", r"/api/v2/inside", self.inside),
             ("POST", r"/api/v2/changes/drop-deep", self.drop_deep),
             ("GET", r"/api/v2/temp-inside", self.temp_inside),
             ("PUT", r"/api/v2/temp-inside", self.put_temp_inside),
@@ -606,14 +602,17 @@ class StudyApi:
     def replace_inside(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
         """組立品の中の置き換え。新しい品番が要る組立品には、自動で品番を付ける（made）。"""
         number, plan = _number(params), self._plan(params)
+        result = self._edit_inside(number, plan, _objects(body, "rows"))
+        return self._json({**self.after_parts({"number": number, "plan": plan}).json(), **result})
+
+    def _edit_inside(self, number: str, plan: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
         ws = self.store.workspace(number)
-        rebuild = Rebuild(ws, plan, input_edits(_objects(body, "rows")))
+        rebuild = Rebuild(ws, plan, input_edits(rows))
         made = [{"code": n["code"], "new": n["suggested"], "name": n["name"]} for n in rebuild.needs()]
         change = rebuild.change(made)
         self.store.save_inside(ws, plan, change.added, change.lines, change.picks)
         # 材料費を打ってある仮品番は、中を替えても金額が変わらない
-        typed = [t.code for t in ws.temps if t.code in change.lines and t.material is not None]
-        return self._json({**self.after_parts({"number": number, "plan": plan}).json(), "typed": typed, "made": made})
+        return {"made": made, "typed": [t.code for t in ws.temps if t.code in change.lines and t.material is not None]}
 
     def rename_temp(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
         """仮品番の品番を替える。使っている所（変更・ほかの仮品番の中）も一緒に替わる。"""
@@ -630,64 +629,59 @@ class StudyApi:
         self.store.add_part(_number(params), self._plan(params), body.get("part"), body.get("quantity"), _list(body, "products"))
         return self.after_parts({"number": _number(params), "plan": self._plan(params)})
 
-    # ⑤ 構成一覧 ---------------------------------------------------------------
+    # ⑤ 構成一覧・⑧ 構成変更 -------------------------------------------------------
 
-    def after_list(self, params: dict[str, str]) -> "Response":
-        """行＝対象品番の直下の（風船番号, 部品）・セル＝製品ごとの変えた後の数量。balloon=0 は部品ごとの行。読むだけ。"""
+    def structure(self, params: dict[str, str]) -> "Response":
+        """図面が同じ対象品番の構成: 製品ごとの直下の箇所・組立品の中の箇所（全階層）・出てくる品番の名称など。
+
+        drawing が無ければ主対象（無ければ先頭の製品）の図面、blank=1 なら図面の無い製品、all=1 なら対象品番の全部。
+        """
         ws = self._ws(params)
+        drawings = {p: ws.attribute(p, "drawing") for p in ws.targets}
+        first = ws.main_product if ws.main_product in drawings else next(iter(ws.targets), None)
+        drawing = params.get("drawing") or ("" if params.get("blank") == "1" else drawings.get(first or "", ""))
+        if params.get("all") == "1":
+            drawing = None
+        products = [p for p in ws.targets if drawing in (None, drawings[p])]
+        found = structure(ws, self._plan(params), products)
         items = ws.bom.items
-        by_balloon = params.get("balloon") != "0"
-        # 風船番号の順（同じ風船番号の中は、主対象で使う部品が先）。部品ごとの時は、主対象（無ければ先頭の製品）の風船番号の順で、
-        # そこに無い部品は、対象品番の順に最初に使う製品の風船番号の順で後ろ
-        lead = list(dict.fromkeys([*([ws.main_product] if ws.main_product else []), *ws.targets]))
 
-        def order(row: tuple[SlotKey, dict[str, ListCell]]) -> tuple[Any, ...]:
-            (balloon, part), cells = row
-            at = next(i for i, p in enumerate(lead) if p in cells)
-            if by_balloon:
-                return (_balloon_order(balloon), at, part)
-            return (at, min(_balloon_order(b) for b in cells[lead[at]].balloons), part)
+        def rows(code: str | None, lines: list[Any]) -> list[dict[str, Any]]:
+            return [{"balloon": s.balloon, "now": s.now, "part": s.part, "before": _s(s.before), "quantity": _s(s.quantity),
+                     **({"problem": True} if code is not None and any((code, s.balloon, x) in found.bad for x in (s.now, s.part)) else {})}
+                    for s in lines]
 
-        return self._json({"targets": ws.targets, "main_product": ws.main_product, "rows": [
-            {"balloon": balloon, "part": part, "name": items[part].name if part in items else None,
-             "specification": items[part].specification if part in items else "",
-             "lifecycle": items[part].lifecycle if part in items else "",
-             "cells": {p: {"quantity": _s(c.quantity), "now": _s(c.now), "changed": c.changed, "problem": c.problem}
-                       for p, c in cells.items()}}
-            for (balloon, part), cells in sorted(after_table(ws, self._plan(params), by_balloon).items(), key=order)]})
+        everything = [s for lines in (*found.direct.values(), *found.inside.values()) for s in lines]
+        codes = dict.fromkeys([*products, *(c for s in everything for c in (s.now, s.part) if c is not None)])
+        return self._json({
+            "drawing": drawing, "drawings": [{"drawing": d, "count": n} for d, n in Counter(drawings.values()).items()],
+            "products": products, "main_product": ws.main_product,
+            "direct": {p: rows(p, lines) for p, lines in found.direct.items()},
+            "inside": {code: rows(None, lines) for code, lines in found.inside.items()},
+            "bases": {t.code: t.base for t in ws.temps if t.base is not None and t.code in ws.temp_merged},
+            "items": {c: {"name": items[c].name, "specification": items[c].specification, "lifecycle": items[c].lifecycle,
+                          "temp": c in ws.temp_merged} for c in codes if c in items},
+        })
+
+    def edit_structure(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
+        """構成変更の打ち替え。直下の quantity・replace・add、組立品の中の inside の順に入れる（後で断られても、前の分は残る）。"""
+        number, plan = _number(params), self._plan(params)
+        result: dict[str, Any] = {"made": [], "typed": []}
+        if quantity := _objects(body, "quantity"):
+            self.store.save_quantities(number, plan, quantity)
+        if places := _objects(body, "replace"):
+            self.store.apply_places(number, plan, places)
+        if added := _objects(body, "add"):
+            self.store.add_places(number, plan, added)
+        if inside := _objects(body, "inside"):
+            result = self._edit_inside(number, plan, inside)
+        return self._json(result)
 
     def add_plan(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
         """［＋］で空の案を足す。足した案の名前（plan）と検討（案の一覧つき）を返す。"""
         plan = self.store.add_plan(_number(params))
         data = self._study_json(self.store.workspace(_number(params))).json()
         return self._json({**data, "plan": plan})
-
-    # ⑧ 構成変更 -------------------------------------------------------------
-
-    def rewrite(self, params: dict[str, str]) -> "Response":
-        """1製品の直下に案の変更を当てた行。置き換えた箇所は元の行の位置に新しい品番を出す。assembly は中を見られる組立品。"""
-        ws = self._ws(params)
-        plan = self._plan(params)
-        product = input_code(params.get("product") or (ws.targets[0] if ws.targets else ""), name="対象品番")
-        deltas = {(c.balloon, c.part): c.delta for c in ws.plan_changes(plan) if c.product == product and c.parent == product}
-        rows = [{**r, "parent": product, "assembly": bool(inside_lines(ws, r["part"]))}
-                for r in _slot_rows(direct_lines(ws.bom, product), deltas)]
-        return self._json({"product": product, "targets": ws.targets, "rows": rows})
-
-    def put_rewrite(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
-        product = input_code(body.get("product") or "", name="対象品番")
-        self.store.save_rewrite(_number(params), self._plan(params), product, _objects(body, "rows"))
-        return self.rewrite({"number": _number(params), "plan": self._plan(params), "product": product})
-
-    def inside(self, params: dict[str, str]) -> "Response":
-        """組立品の中（直下）を見る。保存しない。"""
-        ws = self._ws(params)
-        code = input_code(params.get("code", ""))
-        items = ws.bom.items
-        rows = [{"balloon": b, "part": part, "name": items[part].name if part in items else None, "quantity": _s(qty),
-                 "assembly": bool(inside_lines(ws, part))} for (b, part), qty in inside_lines(ws, code).items()]
-        rows.sort(key=lambda r: _balloon_order(r["balloon"]))
-        return self._json({"code": code, "name": items[code].name if code in items else None, "rows": rows})
 
     # ⑥ 変更一覧 -------------------------------------------------------------
 

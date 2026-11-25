@@ -24,6 +24,8 @@ class Grid {
     this.model = model;
     this.sel = { r: 0, c: 0 };
     this.editing = null; // { r, c, input }
+    this.heads = 0; // 見出しの段数
+    this.drawn = []; // 出している行の中身（変わった行だけ作り直すため）
     this.wrap = document.createElement("div");
     this.wrap.className = "gridwrap";
     this.sink = document.createElement("textarea");
@@ -100,28 +102,45 @@ class Grid {
       }
       rows.push(tr);
     }
+    // 見出しは毎回作り直し、中身の行は変わった物だけ作り直す（列の多い表で、1つ打つたびに全部を描くと遅い）
+    const old = [...this.table.children].slice(this.heads);
+    const drawn = [];
     for (let r = 0; r < nr; r++) {
-      const tr = document.createElement("tr");
+      const cells = [];
+      const marks = [];
       for (let c = 0; c < nc; c++) {
         const cell = this.model.cell(r, c);
+        cells.push(cell);
+        marks.push(cell.text ?? "", cell.cls || "", cell.editable ? 1 : 0, cell.th ? 1 : 0, cell.title || "");
+      }
+      drawn.push(marks.join("\u0001"));
+      if (old[r] && drawn[r] === this.drawn[r]) continue;
+      const tr = document.createElement("tr");
+      cells.forEach((cell, c) => {
         const td = document.createElement(cell.th ? "th" : "td");
         td.dataset.r = r;
         td.dataset.c = c;
         td.textContent = cell.text ?? "";
-        const cls = [cell.cls || ""];
-        if (cell.editable) cls.push("in");
-        if (r === this.sel.r && c === this.sel.c) cls.push("cur");
-        td.className = cls.join(" ").trim();
+        td.className = `${cell.cls || ""}${cell.editable ? " in" : ""}`.trim();
         if (cell.title) td.title = cell.title;
         tr.append(td);
-      }
-      rows.push(tr);
+      });
+      if (old[r]) old[r].replaceWith(tr);
+      else this.table.append(tr);
     }
-    this.table.replaceChildren(...rows);
+    for (const tr of old.slice(nr)) tr.remove();
+    for (const tr of [...this.table.children].slice(0, this.heads)) tr.remove();
+    this.table.prepend(...rows);
+    this.heads = rows.length;
+    this.drawn = drawn;
+    for (const td of this.table.querySelectorAll(".cur")) td.classList.remove("cur");
+    const at = this.td(this.sel.r, this.sel.c);
+    if (at) at.classList.add("cur");
   }
 
   td(r, c) {
-    return this.table.querySelector(`[data-r="${r}"][data-c="${c}"]`);
+    const tr = this.table.children[this.heads + r];
+    return (tr && tr.children[c]) || null;
   }
 
   focus() {
@@ -189,6 +208,7 @@ class Grid {
     input.value = keep ? this.model.cell(r, c).text ?? "" : initial;
     td.textContent = "";
     td.append(input);
+    this.drawn[r] = null; // 入力欄を出した行は、次に必ず作り直す
     this.editing = { r, c, input };
     input.addEventListener("keydown", (e) => this.onEditKey(e));
     // 後回しにすると、打ったまま押したボタン・×が書き換えより先に動き、打った物が落ちる

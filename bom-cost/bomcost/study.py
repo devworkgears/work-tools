@@ -619,35 +619,6 @@ def after_places(ws: Workspace, plan: str) -> list[PartPlace]:
     return found
 
 
-class ListCell(NamedTuple):
-    """⑤の1マス（行×製品）: 変えた後の数量と風船番号（2か所以上なら全部）・今の数量・変えたか・要確認か。"""
-
-    balloons: list[str | None]
-    quantity: Decimal
-    now: Decimal
-    changed: bool
-    problem: bool
-
-
-def after_table(ws: Workspace, plan: str, by_balloon: bool = True) -> dict[SlotKey, dict[str, ListCell]]:
-    """対象品番の直下の（風船番号, 部品）→ 製品 → マス。by_balloon が偽なら部品ごと（風船番号は None）。変えた後に無くなった部品も、今あれば入れる。"""
-    bad = {c.change.place for c in check_changes(ws, ws.plan_changes(plan)) if c.problems}
-    table: dict[SlotKey, dict[str, ListCell]] = {}
-    for product in ws.targets:
-        now, after = after_lines(ws, plan, product)
-        rows: dict[SlotKey, list[LineKey]] = {}
-        for key, qty in after.items():
-            if qty != 0 or now.get(key, Decimal(0)) != 0:
-                rows.setdefault((key[1] if by_balloon else None, key[2]), []).append(key)
-        for row, keys in rows.items():
-            live = [k for k in keys if after[k] != 0] or keys
-            table.setdefault(row, {})[product] = ListCell(
-                [k[1] for k in live], sum((after[k] for k in keys), Decimal(0)),
-                sum((now.get(k, Decimal(0)) for k in keys), Decimal(0)),
-                any(after[k] != now.get(k, Decimal(0)) for k in keys), any((product, *k) in bad for k in keys))
-    return table
-
-
 class AfterPart(NamedTuple):
     code: str
     users: list[str]  # 変えた後に直下で使う対象品番
@@ -1266,6 +1237,32 @@ class StudyStore:
                 raise ValueError(f"{code} は {product} にもうあります。数量は「製品ごと」で変えてください")
             key = (product, None, code)
             work[(product, *key)] = amount - now.get(key, Decimal(0))
+        with self._conn:
+            self._ensure_plan(sid, plan)
+            for place, delta in work.items():
+                self._put(sid, plan, place, delta, ADD)
+            self._touch(sid)
+
+    def add_places(self, number: str, plan: str, rows: Sequence[Mapping[str, Any]]) -> None:
+        """部品を、製品の直下の箇所（product・balloon・part・quantity）に足す。同じ箇所にもうあれば、どれも変えない。"""
+        ws = self.workspace(number)
+        sid = self.study_id(number)
+        work: dict[Place, Decimal] = {}
+        for r in rows:
+            product, part = input_code(r.get("product"), name="製品"), input_code(r.get("part"))
+            amount = input_amount(r.get("quantity"))
+            if product not in ws.targets:
+                raise ValueError(f"{product} は対象品番にありません")
+            if product == part:
+                raise ValueError(f"{part} を自分の中には足せません")
+            if amount <= 0:
+                raise ValueError(f"数量は0より大きい数で入力してください（{amount}）")
+            now, after = after_lines(ws, plan, product)
+            key = (product, input_optional_code(r.get("balloon"), name="風船"), part)
+            if (product, *key) in work or after.get(key, Decimal(0)) != 0:
+                raise ValueError(f"{part} は {product} の同じ風船番号にもうあります")
+            work[(product, *key)] = amount - now.get(key, Decimal(0))
+        refuse_unregistered(ws.bom, [place[3] for place in work])
         with self._conn:
             self._ensure_plan(sid, plan)
             for place, delta in work.items():

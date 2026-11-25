@@ -19,7 +19,7 @@ class InsideCase(LevelCase):
         return Rebuild(self.ws(), "A", input_edits(rows))
 
     def needs(self, *rows: dict) -> list[tuple]:
-        return [(n["code"], n["suggested"], n["changes"], n["products"]) for n in self.rebuild(*rows).needs()]
+        return [(n["code"], n["suggested"]) for n in self.rebuild(*rows).needs()]
 
     def apply(self, *rows: dict, codes: dict[str, str] | None = None) -> None:
         """codes は 組立品 → 新しい品番（無ければ案のまま）。"""
@@ -38,7 +38,7 @@ class InsideCase(LevelCase):
 class ReplaceInside(InsideCase):
     def test_one_level_makes_one_new_assembly_in_every_product(self) -> None:
         row = {"path": ["U"], "old": "K", "new": "N"}
-        self.assertEqual(self.needs(row), [("U", "U-K1", ["K → N"], ["P1", "P2", "P3"])])
+        self.assertEqual(self.needs(row), [("U", "U-K1")])
         self.assertEqual(self.changes(), {})  # 確かめるだけでは何も変わらない
         self.apply(row)
         self.assertEqual(self.tops(), {"P1": ["U-K1"], "P2": ["U-K1"], "P3": ["U-K1"]})
@@ -48,7 +48,7 @@ class ReplaceInside(InsideCase):
 
     def test_two_levels_make_a_new_code_for_each_assembly_above(self) -> None:
         row = {"path": ["U", "V"], "old": "B", "new": "N"}
-        self.assertEqual(self.needs(row), [("V", "V-K1", ["B → N"], ["P1", "P2", "P3"]), ("U", "U-K1", ["V の中"], ["P1", "P2", "P3"])])
+        self.assertEqual(self.needs(row), [("V", "V-K1"), ("U", "U-K1")])
         self.apply(row, codes={"U": "X1", "V": "X2"})
         self.assertEqual(self.inside("X1"), {("11", "K"): D(2), ("12", "X2"): D(1)})
         self.assertEqual(self.inside("X2"), {("21", "N"): D(3)})
@@ -58,7 +58,7 @@ class ReplaceInside(InsideCase):
         self.apply({"path": ["U"], "old": "K", "new": "N"})
         row = {"path": ["U-K1", "V"], "old": "B", "new": "N"}
         # V はまだ部品表の品番なので新しい品番が要る。U-K1 はそのまま中を直す
-        self.assertEqual(self.needs(row), [("V", "V-K1", ["B → N"], ["P1", "P2", "P3"])])
+        self.assertEqual(self.needs(row), [("V", "V-K1")])
         self.apply(row)
         again = {"path": ["U-K1", "V-K1"], "old": "N", "new": "S"}
         self.assertEqual(self.needs(again), [])
@@ -74,7 +74,7 @@ class ReplaceInside(InsideCase):
     def test_a_temp_shared_by_other_products_is_not_changed_in_place(self) -> None:
         self.apply({"path": ["U"], "old": "K", "new": "N"})
         row = {"path": ["U-K1"], "old": "N", "new": "S", "product": "P2", "top": "1"}
-        self.assertEqual(self.needs(row), [("U-K1", "U-K2", ["N → S"], ["P2"])])
+        self.assertEqual(self.needs(row), [("U-K1", "U-K2")])
         self.apply(row)
         self.assertEqual(self.tops(), {"P1": ["U-K1"], "P2": ["U-K2"], "P3": ["U-K1"]})
         self.assertEqual(self.inside("U-K1")[("11", "N")], D(2))
@@ -87,13 +87,13 @@ class ReplaceInside(InsideCase):
         self.apply({"path": ["U"], "old": "K", "new": "N"})
         self.store.add_plan(self.number)
         self.store.apply_replace(self.number, "B", "U", "U-K1")
-        self.assertEqual(self.needs({"path": ["U-K1"], "old": "N", "new": "S"})[0][:2], ("U-K1", "U-K2"))
+        self.assertEqual(self.needs({"path": ["U-K1"], "old": "N", "new": "S"})[0], ("U-K1", "U-K2"))
 
     def test_different_changes_by_product_get_different_codes(self) -> None:
         rows = ({"path": ["U"], "old": "K", "new": "N", "product": "P1", "top": "1"},
                 {"path": ["U"], "old": "K", "new": "S", "product": "P2", "top": "1"},
                 {"path": ["U"], "old": "K", "new": "N", "product": "P3", "top": "1"})
-        self.assertEqual(self.needs(*rows), [("U", "U-K1", ["K → N"], ["P1", "P3"]), ("U", "U-K2", ["K → S"], ["P2"])])
+        self.assertEqual(self.needs(*rows), [("U", "U-K1"), ("U", "U-K2")])
         self.apply_each(rows)
         self.assertEqual(self.tops(), {"P1": ["U-K1"], "P2": ["U-K2"], "P3": ["U-K1"]})
 
@@ -212,6 +212,38 @@ class ReplaceInside(InsideCase):
             c.execute("UPDATE v2_temp_item SET material = '99'")
         data = call("/api/v2/inside/replace", {"rows": [{"path": ["T9"], "old": "N", "new": "S"}]})
         self.assertEqual((data["typed"], data["made"]), (["T9"], []))
+
+    def test_quantity_and_added_part_inside(self) -> None:
+        tops = [{"product": "P1", "balloon": "1"}, {"product": "P3", "balloon": "1"}]
+        self.apply({"path": ["U"], "tops": tops, "old": "K", "balloon": "11", "new": "N", "quantity": "5"},
+                   {"path": ["U"], "tops": tops, "old": None, "balloon": "15", "new": "S", "quantity": "2"})
+        self.assertEqual(self.tops(), {"P1": ["U-K1"], "P2": ["U"], "P3": ["U-K1"]})
+        self.assertEqual(self.inside("U-K1"), {("11", "N"): D(5), ("12", "V"): D(1), ("15", "S"): D(2)})
+        # 材料費: N 7×5 + S 30×2 − K 10×2
+        self.assertEqual({p: after - now for p, (now, after, _) in self.material().items()}, {"P1": D(75), "P2": D(0), "P3": D(75)})
+        # 数量だけ・消す・戻す（0 の箇所は足すのと同じ）
+        self.apply({"path": ["U-K1"], "old": "S", "balloon": "15", "quantity": "0"}, {"path": ["U-K1", "V"], "old": "B", "balloon": "21", "quantity": "4"})
+        self.assertEqual(self.inside("U-K1"), {("11", "N"): D(5), ("12", "V-K1"): D(1)})
+        self.assertEqual(self.inside("V-K1"), {("21", "B"): D(4)})
+        self.apply({"path": ["U-K1", "V-K1"], "old": "B", "balloon": "21", "quantity": "3"},
+                   {"path": ["U-K1"], "old": "N", "balloon": "11", "new": "K", "quantity": "2"})
+        self.assertEqual(self.tops(), {"P1": ["U"], "P2": ["U"], "P3": ["U"]})
+
+    def test_quantity_and_added_part_refusals(self) -> None:
+        top = {"tops": [{"product": "P1", "balloon": "1"}]}
+        for rows, text in [
+            (({"path": ["U"], "old": None, "balloon": "11", "new": "K", "quantity": "1"},), "もうあります"),
+            (({"path": ["U"], "old": None, "balloon": "15", "new": "無い", "quantity": "1"},), "部品表にも仮品番にもありません"),
+            (({"path": ["U"], "old": "K", "balloon": "11", "quantity": "-1"},), "0以上"),
+            (({"path": ["U"], "old": None, "balloon": "15", "new": "S"},), "入力してください"),
+            (({"path": ["U"], "tops": [], "old": "K", "new": "N"},), "tops は配列"),
+            (({"path": ["U"], "tops": [{"product": "P1", "balloon": "9"}], "old": "K", "new": "N"},), "直下にありません"),
+            (({"path": ["U"], "tops": [*top["tops"], {"product": "P2", "balloon": "9"}], "old": "K", "new": "N"},), "直下にありません"),
+            (({"path": ["U"], **top, "old": "K", "quantity": "1"}, {"path": ["U"], **top, "old": "K", "quantity": "3"}), "2行あります"),
+        ]:
+            with self.subTest(text), self.assertRaisesRegex(ValueError, text):
+                self.rebuild(*rows).needs()
+        self.assertEqual(self.changes(), {})
 
     def test_stale_codes_are_refused(self) -> None:
         rebuild = self.rebuild({"path": ["U"], "old": "K", "new": "N"})

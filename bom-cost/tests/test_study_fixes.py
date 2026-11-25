@@ -147,9 +147,10 @@ class ApiShapes(unittest.TestCase):
             ("POST", "/api/v2/add-part", {"part": "ADD", "products": ["X"]}),
             ("PUT", "/api/v2/replace", {"rows": ["a"]}),
             ("PUT", "/api/v2/replace", {"rows": {"old": "a"}}),
-            ("PUT", "/api/v2/rewrite", {"product": "X", "rows": ["x"]}),
-            ("PUT", "/api/v2/rewrite", {"product": "X", "rows": [{"parent": "X", "balloon": "2", "part": "S",
-                                                                   "quantity": "1e400000000"}]}),
+            ("POST", "/api/v2/structure", {"add": ["x"]}),
+            ("POST", "/api/v2/structure", {"add": [{"product": "X", "balloon": "2", "part": "S", "quantity": "1e400000000"}]}),
+            ("POST", "/api/v2/structure", {"inside": [{"path": "A1", "old": "S", "new": "NEW"}]}),
+            ("POST", "/api/v2/structure", {"inside": [{"path": ["A1"], "tops": ["X"], "old": "S", "new": "NEW"}]}),
             ("PUT", "/api/v2/conditions", {"annual": {"X": "1e400000000"}}),
             ("POST", "/api/v2/lookup", {"codes": "ab"}),
         ):
@@ -176,8 +177,6 @@ class ApiShapes(unittest.TestCase):
     def test_messages_are_polite(self) -> None:
         cases = (
             ("PUT", "/api/v2/replace", {"rows": [{"old": "OLD", "new": ""}]}, "元品番と新品番を入力してください（1行目）"),
-            ("PUT", "/api/v2/rewrite", {"product": "X", "rows": [{"parent": "A1", "part": "S", "quantity": "1"}]},
-             "組立品の中はここでは変えられません。仮品番で流用して作り、直下で置き換えてください"),
             ("POST", "/api/v2/quantity", {"rows": [{"product": "X", "balloon": "2", "part": "S", "quantity": "abc"}]}, "数量は数で入力してください（abc）"),
         )
         for method, path, body, message in cases:

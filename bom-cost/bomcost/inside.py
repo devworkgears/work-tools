@@ -1,4 +1,4 @@
-"""組立品の中の部品の置き換え（/v2/ の ⑪）。
+"""組立品の中の部品の置き換え・数量・追加（/v2/ の ⑪ と ⑧）。
 
 組立品の中が変わると、組立品も別の品番になる。中の部品を替えると、その上の組立品を流用した仮品番を下から順に作り、
 製品の直下の組立品を仮品番に置き換える。もう仮品番になっている組立品は、使っている所が全部同じ中身になる時だけ、その仮品番の中を直す。
@@ -17,6 +17,7 @@ from .study import (
     direct_lines,
     input_code,
     input_optional_code,
+    input_amount,
     inside_lines,
     refuse_unregistered,
     temp_cycle,
@@ -40,13 +41,17 @@ Content = dict[tuple[str | None, Ref], Decimal]
 
 
 class Edit(NamedTuple):
-    """path の一番下の組立品の中の old を new に。balloons が None なら全部の箇所、top が None なら直下に path[0] がある全部の製品。"""
+    """path の一番下の組立品の中の old を new に（old が None なら new を足す）。quantity があれば、その数量にする（0 は消す）。
+
+    balloons が None なら全部の箇所、tops（製品, 風船番号）が None なら直下に path[0] がある全部の製品。
+    """
 
     path: Path
-    old: str
+    old: str | None
     new: str
     balloons: tuple[str | None, ...] | None
-    top: tuple[str, str | None] | None
+    tops: frozenset[tuple[str, str | None]] | None
+    quantity: Decimal | None = None
 
 
 class InsideLine(NamedTuple):
@@ -118,21 +123,39 @@ def _swaps(ws: Workspace, code: str) -> dict[SlotKey, list[str]]:
 
 
 def input_edits(rows: Sequence[Mapping[str, Any]]) -> list[Edit]:
-    """送られた行（path・old・new、任意で balloon、任意で product と top）。"""
+    """送られた行（path・old・new、任意で balloon・quantity、任意で product と top か、tops）。
+
+    old の無い行は new を足す（quantity が要る）。new の無い行は old の数量だけを変える。
+    """
     edits: list[Edit] = []
     for r in rows:
         path = r.get("path")
         if not isinstance(path, list) or not path:
             raise ValueError("送る形が違います（path は配列）")
-        old, new = input_code(r.get("old"), name="元品番"), input_code(r.get("new"), name="新品番")
+        quantity = None if r.get("quantity") is None else input_amount(r["quantity"])
+        if quantity is not None and quantity < 0:
+            raise ValueError(f"数量は0以上で入力してください（{quantity}）")
+        adding = r.get("old") is None and quantity is not None
+        old = None if adding else input_code(r.get("old"), name="元品番")
+        new = old if r.get("new") is None and old is not None and quantity is not None else input_code(r.get("new"), name="新品番")
         edit = Edit(tuple(input_code(c) for c in path), old, new,
-                    (input_optional_code(r["balloon"], name="風船"),) if "balloon" in r else None,
-                    (input_code(r["product"], name="製品"), input_optional_code(r.get("top"), name="風船")) if "product" in r else None)
-        if any(e[:2] == edit[:2] and e[3:] == edit[3:] for e in edits):
-            raise ValueError(f"{path[-1]} の中の {old} が2行あります")
-        if old != new:
+                    (input_optional_code(r["balloon"], name="風船"),) if "balloon" in r else (None,) if adding else None,
+                    _input_tops(r), quantity)
+        if any((e.path, e.old, e.balloons, e.tops) == (edit.path, edit.old, edit.balloons, edit.tops)
+               and (old is not None or e.new == new) for e in edits):
+            raise ValueError(f"{path[-1]} の中の {old or new} が2行あります")
+        if old != new or quantity is not None:
             edits.append(edit)
     return edits
+
+
+def _input_tops(row: Mapping[str, Any]) -> frozenset[tuple[str, str | None]] | None:
+    places = row["tops"] if "tops" in row else [{"product": row["product"], "balloon": row.get("top")}] if "product" in row else None
+    if places is None:
+        return None
+    if not isinstance(places, list) or not places or not all(isinstance(p, dict) for p in places):
+        raise ValueError("送る形が違います（tops は配列）")
+    return frozenset((input_code(p.get("product"), name="製品"), input_optional_code(p.get("balloon"), name="風船")) for p in places)
 
 
 @dataclass
@@ -154,16 +177,19 @@ class Rebuild:
         self._lines: dict[str, dict[SlotKey, Decimal]] = {}
         self._contents: dict[tuple[tuple[int, ...], Path], Content] = {}
         self._in_place: dict[str, bool] = {}
-        refuse_unregistered(ws.bom, [e.new for e in self.edits])
+        refuse_unregistered(ws.bom, [e.new for e in self.edits if e.new != e.old])
         self.tops: list[Top] = [(p.plan, *place, code) for p in ws.plans
                                 for code, places in _tops(ws, p.plan).items() for place in places]
         # 直下の箇所 → 当たる edits の番号
         self.at: dict[Top, tuple[int, ...]] = {
             top: tuple(i for i, e in enumerate(self.edits)
-                       if top[0] == plan and e.path[0] == top[3] and e.top in (None, top[1:3])) for top in self.tops}
-        used = {i for ids in self.at.values() for i in ids}
+                       if top[0] == plan and e.path[0] == top[3] and (e.tops is None or top[1:3] in e.tops)) for top in self.tops}
+        used: dict[int, set[tuple[str, str | None]]] = {}
+        for top, ids in self.at.items():
+            for i in ids:
+                used.setdefault(i, set()).add((top[1], top[2]))
         for i, e in enumerate(self.edits):
-            if i not in used:
+            if i not in used or (e.tops is not None and used[i] != e.tops):
                 raise ValueError(f"{e.path[0]} は対象品番の直下にありません（画面を開き直してください）")
         self.occurrences: dict[str, list[tuple[Top, Path]]] = {}
         temps = {t.code for t in ws.temps if t.base is not None and t.code in ws.temp_merged}
@@ -203,24 +229,24 @@ class Rebuild:
 
         moved: set[SlotKey] = set()
 
-        def move(slot: SlotKey, new: Ref) -> None:
+        def move(slot: SlotKey, new: Ref, quantity: Decimal | None = None) -> None:
             if slot in moved:
                 raise ValueError(f"{path[-1]} の中の {slot[1]} が2行あります")
             moved.add(slot)
             after[slot] = after.get(slot, Decimal(0)) - now[slot]
-            after[(slot[0], new)] = after.get((slot[0], new), Decimal(0)) + now[slot]
+            after[(slot[0], new)] = after.get((slot[0], new), Decimal(0)) + (now[slot] if quantity is None else quantity)
 
         below = {e.path[len(path)] for e in edits if e.path[:len(path)] == path and len(e.path) > len(path)}
         for e in edits:
-            if e.path != path:
+            if e.path != path or e.old is None:
                 continue
-            if e.old in below:
+            if e.old in below and e.old != e.new:
                 raise ValueError(f"{e.old} を置き換える行と、{e.old} の中を変える行は、一緒に入れられません")
             slots = [k for k in now if k[1] == e.old and (e.balloons is None or k[0] in e.balloons)]
             if not slots:
                 raise ValueError(f"{e.old} は {path[-1]} の中にありません（画面を開き直してください）")
             for slot in slots:
-                move(slot, e.new)
+                move(slot, e.new, e.quantity)
         for child in sorted(below):
             slots = [k for k in now if k[1] == child]
             if not slots:
@@ -228,6 +254,12 @@ class Rebuild:
             ref = self.ref(top, (*path, child))
             for slot in slots if ref != child else ():
                 move(slot, ref)
+        for e in edits:
+            if e.path == path and e.old is None and e.quantity is not None and e.balloons is not None:
+                slot = (e.balloons[0], e.new)
+                if after.get(slot, Decimal(0)) != 0:
+                    raise ValueError(f"{e.new} は {path[-1]} の中の同じ風船番号にもうあります")
+                after[slot] = e.quantity
         self._contents[key] = {k: q for k, q in after.items() if q != 0}
         return self._contents[key]
 
@@ -264,7 +296,7 @@ class Rebuild:
         return code if temp is None or temp.base is None else temp.base
 
     def needs(self) -> list[dict[str, Any]]:
-        """新しい品番が要る組立品: 品番・名称・変わる中身・替わる製品・入れておく品番の案。"""
+        """新しい品番が要る組立品: 品番・名称・付ける品番。"""
         taken = {*self.ws.bom.items, *(t.code for t in self.ws.temps)}
         found = []
         given: dict[tuple[str, frozenset[Any]], str] = {}  # 流用元も中身も同じ物は、同じ品番
@@ -276,34 +308,8 @@ class Rebuild:
                 taken.add(code)
             given[(base, node.lines)] = code
             item = self.ws.bom.items.get(node.code)
-            found.append({"code": node.code, "name": item.name if item else "", "suggested": code, "changes": self._changes(node),
-                          "products": list(dict.fromkeys(top[1] for top in self.changed if self._holds(top, node)))})
+            found.append({"code": node.code, "name": item.name if item else "", "suggested": code})
         return found
-
-    def _holds(self, top: Top, node: Node) -> bool:
-        """変えた後の、その直下の箇所の中に node があるか。"""
-        stack: list[Ref] = [self.ref(top, (top[3],))]
-        while stack:
-            at = stack.pop()
-            if at == node:
-                return True
-            if isinstance(at, Node):
-                stack += [k[1] for k, _ in at.lines]
-            else:
-                stack += [k[1] for k in self.fixed.get(at, {})]
-        return False
-
-    def _changes(self, node: Node) -> list[str]:
-        now = self.lines(node.code)
-        after = dict(node.lines)
-        texts = []
-        for (balloon, part), qty in now.items():
-            if after.get((balloon, part), Decimal(0)) >= qty:
-                continue
-            new = [k[1] for k in after if k[0] == balloon and after[k] > now.get(k, Decimal(0))]  # type: ignore[call-overload]
-            inner = [x for x in new if isinstance(x, Node) and x.code == part]
-            texts.append(f"{part} の中" if inner else f"{part} → {'・'.join(x if isinstance(x, str) else x.code for x in new)}")
-        return list(dict.fromkeys(texts))
 
     def _same_temp(self, node: Node) -> str | None:
         """流用元も中身も同じ仮品番（材料費を打った物は除く）がもうあれば、その品番。"""

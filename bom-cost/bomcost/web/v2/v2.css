@@ -104,6 +104,9 @@ table.grid th.split, table.grid td.split { border-left: 2px solid var(--accent);
 /* ⑤: 縦に長いので、製品の見出しを残して送る */
 .listview { max-height: 74vh; overflow: auto; }
 .listview table.grid tr:first-child th { position: sticky; top: 0; z-index: 1; }
+.listview table.grid tr:nth-child(2) th { position: sticky; top: 25px; z-index: 1; }
+.listview table.grid tr:first-child th:not(.vh) { height: 22px; }
+.listview table.grid th { vertical-align: bottom; }
 table.grid td.n { color: var(--sub); text-align: right; min-width: 32px; background: var(--head); }
 table.grid td.in { background: #fff; min-width: 100px; }
 table.grid td.q { min-width: 44px; }
@@ -143,15 +146,3 @@ table.list td.r { text-align: right; }
 table.list tr.pick { cursor: pointer; }
 table.list tr.pick:hover td { background: var(--soft); }
 .msg { color: var(--warn); font-size: 12px; white-space: pre-wrap; }
-
-/* ⑤⑧: 左＝対象品番・右＝表 */
-.chooser { display: grid; grid-template-columns: 210px 320px minmax(0, 1fr); gap: 10px; align-items: start; }
-.chooser.two { grid-template-columns: 210px minmax(0, 1fr); }
-.pane { border: 1px solid var(--line); min-width: 0; background: var(--panel); }
-.pane > .t { background: var(--head); padding: 4px 8px; font-weight: 600; display: flex; gap: 6px; align-items: center; }
-.pane .scroll { max-height: 62vh; overflow: auto; }
-.pane table.list { width: 100%; }
-.pane tr.on td { background: var(--soft); }
-.pane .row { margin: 6px; }
-.work { min-width: 0; overflow: auto; }
-.chooser.parts { grid-template-columns: 320px minmax(0, 1fr); }

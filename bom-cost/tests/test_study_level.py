@@ -12,7 +12,8 @@ from bomcost.importer import load_openpyxl
 from bomcost.model import BomLine, CostHead, CostRow, Item, Version
 from bomcost.store import Store
 from bomcost.studyapi import StudyApi, change_effects
-from bomcost.study import DEEP, REPLACE, StudyStore, after_parts, after_places, after_table, calculate, check_changes
+from bomcost.structure import structure
+from bomcost.study import DEEP, REPLACE, StudyStore, after_parts, after_places, calculate, check_changes
 
 ALL = ("item", "bom_line", "cost", "volume")
 D = Decimal
@@ -72,9 +73,11 @@ class FirstLevel(LevelCase):
         with self.assertRaisesRegex(ValueError, "直下"):
             self.store.apply_replace(self.number, "A", "B", "N")
 
-    def test_list_counts_the_first_level_only(self) -> None:
-        cells = after_table(self.ws(), "A")[("2", "K")]
-        self.assertEqual({p: c.quantity for p, c in cells.items()}, {"P1": D(1), "P2": D(4)})
+    def test_structure_has_direct_places_and_the_insides_once(self) -> None:
+        found = structure(self.ws(), "A", ["P1", "P2"])
+        self.assertEqual([(s.balloon, s.part, s.quantity) for s in found.direct["P2"]], [("1", "U", D(2)), ("2", "K", D(4)), ("3", "S", D(1))])
+        self.assertEqual({c: [(s.now, s.part, s.quantity) for s in lines] for c, lines in found.inside.items()},
+                         {"U": [("K", "K", D(2)), ("V", "V", D(1))], "V": [("B", "B", D(3))]})
 
     def test_old_deep_changes_are_marked_left_out_and_kept(self) -> None:
         self.deep_change()
@@ -261,8 +264,10 @@ class LevelApi(unittest.TestCase):
         self.assertEqual([(s["kind"], s["old"], s["new"], s["products"]) for s in data["summary"]], [("置き換え", "U", "T1", ["P2"])])
         self.assertEqual([(s["kind"], s["old"], s["new"], s["quantity"]) for s in data["temps"]["T1"]["changes"]], [("置き換え", "K", "N", "2")])
         self.assertEqual(data["deep"], 0)
-        # ⑧ の中を見るは、仮品番の変えた後の中身
-        self.assertEqual([r["part"] for r in self.ok("GET", "/api/v2/inside", query=self.q + "&code=T1")["rows"]], ["N", "V"])
+        # ⑤⑧ は、仮品番の中を流用元と変えた後の組で出す
+        got = self.ok("GET", "/api/v2/structure")
+        self.assertEqual([(r["now"], r["part"]) for r in got["inside"]["T1"]], [("K", "N"), ("V", "V")])
+        self.assertEqual((got["bases"], got["items"]["T1"]["temp"]), ({"T1": "U"}, True))
         # 数の合わない行（同じ風船に2つ足す）も落とさない
         self.ok("PUT", "/api/v2/temp-inside", {"code": "T1", "rows": [
             {"balloon": "11", "part": "N", "quantity": "1"}, {"balloon": "11", "part": "S", "quantity": "1"},
@@ -296,10 +301,25 @@ class LevelApi(unittest.TestCase):
         self.ok("POST", "/api/v2/replace/revert", {"part": "N", "product": "P2", "balloon": "2"})
         self.assertEqual(self.ok("GET", "/api/v2/changes")["rows"], [])
 
+    def test_structure_edits_direct_places_and_insides_in_one_call(self) -> None:
+        tops = [{"product": "P1", "balloon": "1"}, {"product": "P2", "balloon": "1"}]
+        got = self.ok("POST", "/api/v2/structure", {
+            "quantity": [{"product": "P1", "balloon": "3", "part": "S", "quantity": "0"}],
+            "replace": [{"product": "P2", "balloon": "2", "old": "K", "new": "N"}],
+            "add": [{"product": "P1", "balloon": "9", "part": "N", "quantity": "2"}],
+            "inside": [{"path": ["U"], "tops": tops, "balloon": "11", "old": "K", "quantity": "3"}]})
+        self.assertEqual(got, {"made": [{"code": "U", "new": "U-K1", "name": "U の名称"}], "typed": []})
+        data = self.ok("GET", "/api/v2/structure")
+        self.assertEqual([(r["balloon"], r["now"], r["part"], r["quantity"]) for r in data["direct"]["P1"]],
+                         [("1", "U", "U-K1", "1"), ("2", "K", "K", "1"), ("3", "S", "S", "0"), ("9", None, "N", "2")])
+        self.assertEqual([(r["now"], r["part"], r["quantity"]) for r in data["direct"]["P2"]], [("U", "U-K1", "2"), ("K", "N", "4"), ("S", "S", "1")])
+        self.assertEqual([(r["part"], r["before"], r["quantity"]) for r in data["inside"]["U-K1"]], [("K", "2", "3"), ("V", "1", "1")])
+
     def test_list_hides_old_deep_changes_and_the_list_can_drop_them(self) -> None:
         with self.store.connection as c:
             c.execute("INSERT INTO v2_change VALUES (1, 'A', 'P1', 'U', '11', 'K', '1', ?, NULL, 1)", (REPLACE,))
-        self.assertFalse(any(c["changed"] for r in self.ok("GET", "/api/v2/after-list")["rows"] for c in r["cells"].values()))
+        data = self.ok("GET", "/api/v2/structure")
+        self.assertFalse(any(r["before"] != r["quantity"] or r.get("problem") for rows in data["direct"].values() for r in rows))
         self.assertEqual(self.ok("GET", "/api/v2/changes")["deep"], 1)
         self.assertEqual(self.ok("POST", "/api/v2/changes/drop-deep", {})["rows"], [])
 
