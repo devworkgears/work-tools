@@ -203,7 +203,15 @@ class StudyApi:
         # 表は最初の要求で作る。Api は DB の接続と別のスレッドで作られ、sqlite3 の接続は作ったスレッドでしか使えない
         if self._store is None:
             self._store = StudyStore(self.api.store.connection)
+            self.drop_old_bom()  # settings.json を置き換えて起動し直した時
         return self._store
+
+    def drop_old_bom(self) -> bool:
+        """設定が変わっていれば部品表を消す。列の対応づけも、前の語で当てた物が残らないように消す。"""
+        dropped = self.store.drop_old_bom()
+        if dropped:
+            self.api.store.clear_column_maps()
+        return dropped
 
     def routes(self) -> list[tuple[str, str, Callable[..., "Response"]]]:
         return [

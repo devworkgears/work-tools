@@ -700,6 +700,10 @@ class Store:
             return None
         return ColumnMap(row[0], tuple(json.loads(key)), json.loads(row[1]))
 
+    def clear_column_maps(self) -> None:
+        with self._conn:
+            self._conn.execute("DELETE FROM column_map")
+
     def set_label(self, column: str, symbol: str, meaning: str) -> None:
         with self._conn:
             self._conn.execute("INSERT OR REPLACE INTO label VALUES (?, ?, ?)", (column, symbol, meaning))

@@ -9,7 +9,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import example_settings
-from bomcost import Store, settings
+from bomcost import ColumnMap, Store, settings
 from bomcost.api import Api
 from bomcost.app import main, static_response
 from bomcost.demo import DEMO_SETTINGS, build_demo
@@ -146,6 +146,69 @@ class SettingsApi(SettingsCase):
         r = self.call("PUT", "/api/molds", body)
         self.assertEqual(r.status, 400)
         self.assertIn("償却年数", r.json()["error"])
+
+    def counts(self, api: Api | None = None) -> int:
+        r = (api or self.api).handle("GET", "/api/v2/bom", "", b"")
+        return sum(r.json()["counts"].values())
+
+    def save(self, **changes: object) -> bool:
+        r = self.call("PUT", "/api/settings", {"settings": {**settings.current().to_json(), **changes}})
+        self.assertEqual(r.status, 200)
+        return r.json()["bom_dropped"]
+
+    def test_changed_settings_drop_the_imported_parts(self) -> None:
+        self.call("POST", "/api/v2/bom/import", {"sample": True})
+        full = self.counts()
+        self.assertGreater(full, 0)
+        self.store.save_column_map(ColumnMap("volume", ("a", "b"), {"product": "a", "annual": "b"}))
+        self.assertFalse(self.save())  # 同じ中身の保存では消さない
+        self.assertEqual(self.counts(), full)
+        self.assertIsNotNone(self.store.find_column_map(("a", "b")))
+        self.assertTrue(self.save(labels={"系列": "型式"}))
+        self.assertEqual(self.counts(), 0)
+        self.assertIsNone(self.store.find_column_map(("a", "b")))
+
+    def test_studies_and_versions_survive_the_drop(self) -> None:
+        self.call("POST", "/api/v2/bom/import", {"sample": True})
+        number = self.call("POST", "/api/v2/studies", {"products": ["PR1001-001"]}).json()["header"]["number"]
+        own = {"rows": [{"product": "PR1001-001", "head": "processing", "value": "999"}]}
+
+        def call(method: str, path: str, body: object = None, query: str = "") -> dict:
+            r = self.api.handle(method, path, f"number={number}{query}", b"" if body is None else json.dumps(body).encode())
+            self.assertEqual(r.status, 200, r.body)
+            return r.json()
+
+        def calc(query: str = "") -> list:
+            return call("GET", "/api/v2/calc", None, "&head=total" + query)["rows"]
+
+        call("PUT", "/api/v2/own", own)
+        before = calc()
+        self.assertNotEqual(before[0]["now"], before[0]["plans"]["A"])
+        call("POST", "/api/v2/release", {})
+        self.assertTrue(self.save(mold_years="4"))
+        self.assertEqual(calc("&version=1"), before)
+        self.assertNotEqual(calc(), before)
+        self.call("POST", "/api/v2/bom/import", {"sample": True})
+        self.assertEqual(calc(), before)
+
+    def test_replaced_file_drops_the_parts_at_the_next_start(self) -> None:
+        self.save(mold_years="4")
+        self.call("POST", "/api/v2/bom/import", {"sample": True})
+        full = self.counts()
+        settings.load(self.db)
+        self.assertEqual(self.counts(Api(self.store)), full)  # 同じ設定で起動し直す
+        settings.write(self.file, settings.parse({**settings.current().to_json(), "code_total": 9, "code_base": 6, "code_branch": 3}))
+        settings.load(self.db)
+        self.assertEqual(self.counts(Api(self.store)), 0)
+
+    def test_db_made_before_this_keeps_its_parts(self) -> None:
+        self.call("POST", "/api/v2/bom/import", {"sample": True})
+        full = self.counts()
+        self.store.connection.execute("DELETE FROM v2_bom_settings")
+        self.store.connection.commit()
+        self.assertEqual(self.counts(Api(self.store)), full)
+        self.assertTrue(self.save(mold_years="4"))
+        self.assertEqual(self.counts(), 0)
 
     def test_release_keeps_the_rates_it_was_taken_with(self) -> None:
         settings.use(settings.Settings(D(10), D(20)))

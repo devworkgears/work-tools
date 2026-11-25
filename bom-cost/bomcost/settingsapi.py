@@ -11,6 +11,9 @@ if TYPE_CHECKING:
 
 def settings_routes(api: "Api") -> list[tuple[str, str, Callable[..., "Response"]]]:
     from .api import _json_response
+    from .studyapi import StudyApi
+
+    study = StudyApi(api)
 
     def get(params: dict[str, str]) -> "Response":
         path = settings.path_for(api.store.path)
@@ -20,11 +23,15 @@ def settings_routes(api: "Api") -> list[tuple[str, str, Callable[..., "Response"
                                "defaults": {"product_kind": settings.PRODUCT_KIND, "part_kind": settings.PART_KIND}})
 
     def put(params: dict[str, str], body: dict[str, Any]) -> "Response":
-        """settings の中身で書き換える。check: true は形を確かめて整えた中身を返すだけで、何も保存しない。"""
+        """settings の中身で書き換える。check: true は形を確かめて整えた中身を返すだけで、何も保存しない。
+
+        設定が変わったら、取り込んだ部品表（/v2/）を消す（bom_dropped）。
+        """
         new = settings.parse(body.get("settings"))
         if body.get("check"):
             return _json_response({"settings": new.to_json()})
+        study.store  # 保存する前の設定を部品表の設定として覚えさせる
         settings.save(api.store.path, new)
-        return get(params)
+        return _json_response({**get(params).json(), "bom_dropped": study.drop_old_bom()})
 
     return [("GET", r"/api/settings", get), ("PUT", r"/api/settings", put)]

@@ -115,8 +115,9 @@ const act = (work) => async () => {
 };
 
 $("save").addEventListener("click", act(async () => {
-  show(await api("PUT", { settings: read() }));
-  say("保存しました");
+  const data = await api("PUT", { settings: read() });
+  show(data);
+  say(data.bom_dropped ? "保存しました。部品表は消えているので、取り込み直してください" : "保存しました");
 }));
 
 $("export").addEventListener("click", act(async () => {

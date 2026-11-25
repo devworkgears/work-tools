@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS v2_volume (
     product TEXT PRIMARY KEY,
     annual TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS v2_bom_settings (settings TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS v2_study (
     study_id INTEGER PRIMARY KEY,
     number TEXT NOT NULL UNIQUE,
@@ -670,6 +671,22 @@ class StudyStore:
                 c.execute("DELETE FROM v2_volume")
                 c.executemany("INSERT INTO v2_volume VALUES (?, ?)",
                               [(v.product, str(v.annual)) for v in version.volumes.values()])
+
+    def drop_old_bom(self) -> bool:
+        """前に見た設定と今の設定が違えば、取り込んだ部品表を消す（前の設定で読んだ値が残らないように）。違えば True。
+
+        空の項目は比べない（設定の項目が増えた版に替えただけでは消さない）。
+        """
+        now = json.dumps({k: v for k, v in settings.current().to_json().items() if v}, ensure_ascii=False, sort_keys=True)
+        row = self._conn.execute("SELECT settings FROM v2_bom_settings").fetchone()
+        if row is not None and row[0] == now:
+            return False
+        with self._conn:
+            if row is not None:
+                for table in ("v2_item", "v2_line", "v2_cost", "v2_volume", "v2_bom_settings"):
+                    self._conn.execute(f"DELETE FROM {table}")
+            self._conn.execute("INSERT INTO v2_bom_settings VALUES (?)", (now,))
+        return row is not None
 
     def load_bom(self) -> Version:
         v = Version("v2")
