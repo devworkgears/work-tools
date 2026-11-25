@@ -136,6 +136,7 @@ class Grid {
     for (const td of this.table.querySelectorAll(".cur")) td.classList.remove("cur");
     const at = this.td(this.sel.r, this.sel.c);
     if (at) at.classList.add("cur");
+    if (this.model.selected) this.model.selected(this.sel.r);
   }
 
   td(r, c) {
@@ -160,6 +161,7 @@ class Grid {
       td.classList.add("cur");
       td.scrollIntoView({ block: "nearest", inline: "nearest" });
     }
+    if (this.model.selected) this.model.selected(r);
   }
 
   onMouseDown(e) {

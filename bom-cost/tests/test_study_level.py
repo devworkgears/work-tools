@@ -289,6 +289,29 @@ class LevelApi(unittest.TestCase):
         self.assertEqual((effects[0][:6], len(effects)), (("変更", "元品番", "元の名称", "新品番", "新の名称", "製品の数"), 1))
         self.assertIn(("仮品番", "T1", "組立改", 29, "流用元 U から計算"), list(book()["計算条件"].iter_rows(values_only=True)))
 
+    def test_moved_places_go_back_to_the_current_side_in_one_call(self) -> None:
+        # ⑧ の［行を現行に戻す］［全部を現行に戻す］の送り方
+        before = self.ok("GET", "/api/v2/structure")
+        self.ok("POST", "/api/v2/structure", {
+            "quantity": [{"product": "P1", "balloon": "3", "part": "S", "quantity": "0"}, {"product": "P2", "balloon": "2", "part": "K", "quantity": "9"}],
+            "add": [{"product": "P1", "balloon": "9", "part": "N", "quantity": "2"}]})
+        self.ok("POST", "/api/v2/structure", {"replace": [{"product": "P2", "balloon": "2", "old": "K", "new": "N"}]})
+        places = [("P1", "3", "S"), ("P2", "2", "K"), ("P2", "2", "N"), ("P1", "9", "N")]
+        self.ok("POST", "/api/v2/structure", {"quantity": [{"product": p, "balloon": b, "part": c, "quantity": ""} for p, b, c in places]})
+        self.assertEqual(self.ok("GET", "/api/v2/changes")["rows"], [])
+        # 組立品の中: 置き換え＋数量・追加・削除
+        at = {"parent": "U", "products": ["P1", "P2"]}
+        self.ok("POST", "/api/v2/structure", {"inside": [
+            {**at, "balloon": "11", "old": "K", "new": "N", "quantity": "5"}, {**at, "balloon": "12", "old": "V", "quantity": "0"},
+            {**at, "balloon": "13", "old": None, "new": "S", "quantity": "1"}]})
+        self.assertEqual({r["part"] for r in self.ok("GET", "/api/v2/structure")["direct"]["P1"] if r["balloon"] == "1"}, {"U-K1"})
+        at["parent"] = "U-K1"
+        self.ok("POST", "/api/v2/structure", {"inside": [
+            {**at, "balloon": "11", "old": "N", "new": "K", "quantity": "2"}, {**at, "balloon": "12", "old": None, "new": "V", "quantity": "1"},
+            {**at, "balloon": "13", "old": "S", "quantity": "0"}]})
+        after = self.ok("GET", "/api/v2/structure")
+        self.assertEqual((after["direct"], after["inside"]), (before["direct"], before["inside"]))
+
     def test_after_parts_tells_places_and_deeper_parts(self) -> None:
         data = self.ok("GET", "/api/v2/after-parts")
         self.assertEqual([(r["path"], r["part"], r["lines"]) for r in data["inside"]], [
