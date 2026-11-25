@@ -21,7 +21,7 @@ from .importer import (
     save_workbook,
     read_csv,
 )
-from .inside import Rebuild, input_edits, inside_rows
+from .inside import Rebuild, expand_parents, input_edits, inside_rows
 from .model import CostHead, Version
 from .normalize import to_code, to_optional_code
 from .rollup import CostCalculator
@@ -664,7 +664,7 @@ class StudyApi:
         })
 
     def edit_structure(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
-        """構成変更の打ち替え。直下の quantity・replace・add、組立品の中の inside の順に入れる（後で断られても、前の分は残る）。"""
+        """構成変更の打ち替え。直下の quantity・replace・add、組立品の中の inside（parent・products・balloon・old・new・quantity）の順に入れる（後で断られても、前の分は残る）。"""
         number, plan = _number(params), self._plan(params)
         result: dict[str, Any] = {"made": [], "typed": []}
         if quantity := _objects(body, "quantity"):
@@ -674,7 +674,7 @@ class StudyApi:
         if added := _objects(body, "add"):
             self.store.add_places(number, plan, added)
         if inside := _objects(body, "inside"):
-            result = self._edit_inside(number, plan, inside)
+            result = self._edit_inside(number, plan, expand_parents(self.store.workspace(number), plan, inside))
         return self._json(result)
 
     def add_plan(self, params: dict[str, str], body: dict[str, Any]) -> "Response":

@@ -5,7 +5,7 @@ import unittest
 from decimal import Decimal
 
 from bomcost.api import Api
-from bomcost.inside import Rebuild, input_edits, inside_rows
+from bomcost.inside import Rebuild, expand_parents, input_edits, inside_rows
 from bomcost.model import BomLine
 from bomcost.store import Store
 from bomcost.study import StudyStore, after_places, inside_lines
@@ -228,6 +228,18 @@ class ReplaceInside(InsideCase):
         self.apply({"path": ["U-K1", "V-K1"], "old": "B", "balloon": "21", "quantity": "3"},
                    {"path": ["U-K1"], "old": "N", "balloon": "11", "new": "K", "quantity": "2"})
         self.assertEqual(self.tops(), {"P1": ["U"], "P2": ["U"], "P3": ["U"]})
+
+    def test_a_row_for_a_parent_reaches_every_place_of_it_in_the_products(self) -> None:
+        # V を直下にも持つ P1（U の中と直下）と、U の中だけの P2・P3。P1・P2 だけを変える
+        self.store.add_places(self.number, "A", [{"product": "P1", "balloon": "8", "part": "V", "quantity": "1"}])
+        rows = expand_parents(self.ws(), "A", [{"parent": "V", "products": ["P1", "P2"], "balloon": "21", "old": "B", "new": "N"}])
+        self.assertEqual([(r["path"], [t["product"] for t in r["tops"]]) for r in rows], [(["U", "V"], ["P1", "P2"]), (["V"], ["P1"])])
+        self.apply(*rows)
+        self.assertEqual(self.tops(), {"P1": ["U-K1"], "P2": ["U-K1"], "P3": ["U"]})
+        self.assertEqual(self.inside("U-K1")[("12", "V-K1")], D(1))
+        self.assertEqual([p.part for p in after_places(self.ws(), "A") if p.product == "P1" and p.balloon == "8"], ["V-K1"])
+        with self.assertRaisesRegex(ValueError, "下にありません"):
+            expand_parents(self.ws(), "A", [{"parent": "V", "products": ["P1"], "old": "B", "new": "S"}])
 
     def test_quantity_and_added_part_refusals(self) -> None:
         top = {"tops": [{"product": "P1", "balloon": "1"}]}

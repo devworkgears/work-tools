@@ -302,12 +302,11 @@ class LevelApi(unittest.TestCase):
         self.assertEqual(self.ok("GET", "/api/v2/changes")["rows"], [])
 
     def test_structure_edits_direct_places_and_insides_in_one_call(self) -> None:
-        tops = [{"product": "P1", "balloon": "1"}, {"product": "P2", "balloon": "1"}]
         got = self.ok("POST", "/api/v2/structure", {
             "quantity": [{"product": "P1", "balloon": "3", "part": "S", "quantity": "0"}],
             "replace": [{"product": "P2", "balloon": "2", "old": "K", "new": "N"}],
             "add": [{"product": "P1", "balloon": "9", "part": "N", "quantity": "2"}],
-            "inside": [{"path": ["U"], "tops": tops, "balloon": "11", "old": "K", "quantity": "3"}]})
+            "inside": [{"parent": "U", "products": ["P1", "P2"], "balloon": "11", "old": "K", "quantity": "3"}]})
         self.assertEqual(got, {"made": [{"code": "U", "new": "U-K1", "name": "U の名称"}], "typed": []})
         data = self.ok("GET", "/api/v2/structure")
         self.assertEqual([(r["balloon"], r["now"], r["part"], r["quantity"]) for r in data["direct"]["P1"]],

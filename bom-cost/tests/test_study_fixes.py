@@ -149,8 +149,8 @@ class ApiShapes(unittest.TestCase):
             ("PUT", "/api/v2/replace", {"rows": {"old": "a"}}),
             ("POST", "/api/v2/structure", {"add": ["x"]}),
             ("POST", "/api/v2/structure", {"add": [{"product": "X", "balloon": "2", "part": "S", "quantity": "1e400000000"}]}),
-            ("POST", "/api/v2/structure", {"inside": [{"path": "A1", "old": "S", "new": "NEW"}]}),
-            ("POST", "/api/v2/structure", {"inside": [{"path": ["A1"], "tops": ["X"], "old": "S", "new": "NEW"}]}),
+            ("POST", "/api/v2/structure", {"inside": [{"parent": "A1", "products": "X", "old": "S", "new": "NEW"}]}),
+            ("POST", "/api/v2/structure", {"inside": [{"parent": "無い", "products": ["X"], "old": "S", "new": "NEW"}]}),
             ("PUT", "/api/v2/conditions", {"annual": {"X": "1e400000000"}}),
             ("POST", "/api/v2/lookup", {"codes": "ab"}),
         ):

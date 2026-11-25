@@ -315,9 +315,9 @@ function tell(type) {
 }
 
 // 同じ名前の窓が同じ検討の同じ画面を出していれば前に出すだけ（読み直すと打ちかけが消えるため）
-function openWindow(key) {
-  const url = location.pathname + query({ screen: key, number: S.number, version: S.version ?? "", mode: S.mode, draft: S.draft ? S.draft.id : "" });
-  const w = window.open("", `bomcost-${key}`, "popup,width=1280,height=820");
+function openWindow(key, extra = {}, name = "") {
+  const url = location.pathname + query({ screen: key, number: S.number, version: S.version ?? "", mode: S.mode, draft: S.draft ? S.draft.id : "", ...extra });
+  const w = window.open("", `bomcost-${key}${name}`, "popup,width=1280,height=820");
   if (!w) return false;
   let same = false;
   try {
@@ -1272,25 +1272,34 @@ async function searchReplaceScreen(main, cur) {
 }
 
 // ⑤ 構成一覧・⑧ 構成変更 ---------------------------------------------------
-// どちらも、図面が同じ製品を横に並べ、組立品の中はレベルを付けて下に続ける。⑧ は変えた後の構成をそのまま打ち替える画面、
-// ⑤ は左に現行・右に変更後を並べて見るだけの画面
+// どちらも、親を横に並べて、その直下の1階層だけを出す。最初の親は図面が同じ製品で、組立品の行の［開く］で、同じ風船番号の組立品を
+// 親にした同じ画面を別の窓で開く。⑧ は変えた後の構成をそのまま打ち替える画面、⑤ は左に現行・右に変更後を並べて見るだけの画面
 
 const MAX_STRUCTURE_ROWS = 1000;
-const MAX_STRUCTURE_CELLS = 20000; // 最初から全部のレベルを出すのは、このマス数まで
 
 function balloonOrder(a, b) {
   return (a === null) - (b === null) || (a ?? "").localeCompare(b ?? "", "ja", { numeric: true });
 }
 
-// 選んでいる図面・製品・レベルは、ほかの窓の保存で描き直しても残す
+function movedSlot(s) {
+  return s.now !== s.part || !same(s.before, s.quantity);
+}
+
+// 組立品の中の窓は、親（流用元の品番）と、開いた時に出していた製品の範囲（図面・製品）を URL に持つ
 async function structureView(key, redraw) {
-  const view = (S.structure ??= {})[key] ??= { drawing: null, product: "", level: null };
+  const child = PARAMS.has("parents") ? { bases: PARAMS.get("parents").split(","), range: JSON.parse(PARAMS.get("range")) } : null;
+  // 選んでいる図面・親は、ほかの窓の保存で描き直しても残す
+  const view = (S.structure ??= {})[key] ??= { drawing: child ? child.range[0] : null, parent: "" };
   let data = { drawing: null, drawings: [], products: [], main_product: null, direct: {}, inside: {}, bases: {}, items: {} };
+  let parents = [];
+  const base = (code) => data.bases[code] ?? code;
   const me = {
-    view, only: false, note: el("span", { class: "mini" }),
+    child, view, base, only: false, note: el("span", { class: "mini" }),
     get data() { return data; },
-    products: () => data.products.filter((p) => !view.product || p === view.product),
-    info: (code) => data.items[code],
+    // 打ち替えが効く製品
+    range: () => data.products.filter((p) => (child ? !child.range[1] || p === child.range[1] : !view.parent || p === view.parent)),
+    columns: () => parents.filter((p) => !view.parent || p === view.parent),
+    slots: (parent) => (child ? data.inside[parent] : data.direct[parent]) || [],
     name: (code) => (data.items[code] ? data.items[code].name + (data.items[code].temp ? "（仮）" : "") : ""),
     nameCell: (code) => (!code ? { text: "" } : data.items[code] ? { text: me.name(code), cls: "auto" } : { text: "未登録", cls: "bad" }),
     spec: (code) => ({ text: data.items[code] ? data.items[code].specification : "", cls: "auto" }),
@@ -1298,69 +1307,35 @@ async function structureView(key, redraw) {
     async load() {
       if (!S.number) return;
       data = await api("GET", "/api/v2/structure", q({ plan: PLAN, ...(view.drawing === null ? {} : view.drawing === "*" ? { all: "1" } : view.drawing === "" ? { blank: "1" } : { drawing: view.drawing }) }));
-      if (!data.products.length && view.drawing !== null) { // 対象品番から外れた図面
+      if (!data.products.length && view.drawing !== null && !child) { // 対象品番から外れた図面
         view.drawing = null;
         return me.load();
       }
       if (view.drawing === null) view.drawing = data.drawing ?? "";
-      if (view.product && !data.products.includes(view.product)) view.product = "";
-      const deepest = me.depth();
-      if (view.level === null) view.level = me.rows({ level: Infinity }).length * me.products().length > MAX_STRUCTURE_CELLS ? 1 : Infinity;
+      parents = child ? inRange() : data.products;
+      // 中を変えた組立品は品番が替わるので、流用元が同じ物を選び直す
+      if (view.parent && !parents.includes(view.parent)) view.parent = parents.find((p) => base(p) === base(view.parent)) || "";
       fill(drawingPick, data.drawings.map((d) => el("option", { value: d.drawing, selected: d.drawing === view.drawing }, `${d.drawing || "（なし）"}（${d.count} 製品）`)),
         data.drawings.length > 1 ? el("option", { value: "*", selected: view.drawing === "*" }, `全部（${S.targets.length} 製品）`) : null);
-      fill(productPick, el("option", { value: "" }, "全部"), data.products.map((p) => el("option", { value: p, selected: p === view.product }, `${p} ${me.name(p)}`)));
-      fill(levelPick, Array.from({ length: Math.max(0, deepest - 1) }, (_, i) => el("option", { value: String(i + 1), selected: view.level === i + 1 }, `${i + 1} まで`)),
-        el("option", { value: "", selected: view.level === Infinity || view.level >= deepest }, "全部"));
+      fill(parentPick, el("option", { value: "" }, "全部"), parents.map((p) => el("option", { value: p, selected: p === view.parent }, `${p} ${me.name(p)}`)));
+      if (child) users.textContent = `使う製品 ${usedBy()}`;
     },
-    depth() {
-      const known = {};
-      const at = (code) => {
-        if (code in known) return known[code];
-        known[code] = 1;
-        for (const s of data.inside[code] || []) known[code] = Math.max(known[code], 1 + at(s.part));
-        return known[code];
-      };
-      return Math.max(1, ...Object.values(data.direct).flatMap((lines) => lines.map((s) => at(s.part))));
-    },
-    // 出す製品の構成を行にする。compare なら現行の品番も行の組に入れ、balloons が偽なら風船番号をまとめる。
-    // 行 { level, balloon, part, now, cells: 製品 → 箇所, path: 上の組立品, tops: 直下の（製品, 風船番号）, derived: 現行と比べられるか, children }
-    rows({ level = view.level, compare = false, balloons = true, sort = null } = {}) {
-      const lead = [...new Set([...(data.main_product ? [data.main_product] : []), ...data.products])];
+    // 行 { balloon, first, part, now, cells: 親 → 箇所 }。compare なら現行の品番も行の組に入れ、balloons が偽なら風船番号をまとめる
+    rows({ compare = false, balloons = true, sort = null } = {}) {
+      const lead = child ? parents : [...new Set([...(data.main_product ? [data.main_product] : []), ...parents])];
       const order = sort || ((a, b) => (balloons ? balloonOrder(a.balloon, b.balloon) || a.rank - b.rank : a.rank - b.rank || balloonOrder(a.first, b.first)) || a.part.localeCompare(b.part));
-      const key = (s) => JSON.stringify([balloons ? s.balloon : "", compare ? s.now : "", s.part]);
       const add = (s, p) => (p ? { ...s, before: s.before === null ? p.before : String(Number(p.before ?? 0) + Number(s.before)), quantity: String(Number(p.quantity) + Number(s.quantity)), problem: s.problem || p.problem } : s);
-      const open = (row) => {
-        const live = [...row.cells].filter(([, s]) => Number(s.quantity) !== 0);
-        const path = [...row.path, row.part];
-        if (row.level >= level || !live.length || row.path.includes(row.part) || !data.inside[row.part]) return;
-        const derived = row.derived && row.now !== null && (row.part === row.now || data.bases[row.part] === row.now);
-        const tops = row.level === 1 ? live.map(([product]) => ({ product, balloon: row.balloon })) : row.tops;
-        const found = new Map();
-        for (const s of data.inside[row.part]) {
-          const k = key(s);
-          const line = add(s, found.get(k) && found.get(k).line);
-          if (!found.has(k)) found.set(k, { level: row.level + 1, balloon: balloons ? s.balloon : null, first: s.balloon, part: s.part, now: s.now, rank: 0, path, tops, derived });
-          found.get(k).line = line;
-        }
-        for (const child of found.values()) {
-          child.cells = new Map(live.map(([p]) => [p, child.line]));
-          open(child);
-        }
-        row.children = [...found.values()].sort(order);
-      };
-      const tops = new Map();
-      for (const p of me.products()) {
-        for (const s of data.direct[p] || []) {
-          const k = key(s);
-          if (!tops.has(k)) tops.set(k, { level: 1, balloon: balloons ? s.balloon : null, first: s.balloon, part: s.part, now: s.now, rank: lead.indexOf(p), cells: new Map(), path: [], tops: null, derived: true });
-          const row = tops.get(k);
+      const found = new Map();
+      for (const p of me.columns()) {
+        for (const s of me.slots(p)) {
+          const k = JSON.stringify([balloons ? s.balloon : "", compare ? s.now : "", s.part]);
+          if (!found.has(k)) found.set(k, { balloon: balloons ? s.balloon : null, first: s.balloon, part: s.part, now: s.now, rank: Infinity, cells: new Map() });
+          const row = found.get(k);
           row.rank = Math.min(row.rank, lead.indexOf(p));
           row.cells.set(p, add(s, row.cells.get(p)));
         }
       }
-      for (const row of tops.values()) open(row);
-      const flat = (list) => list.flatMap((row) => [row, ...flat(row.children || [])]);
-      return flat([...tops.values()].sort(order));
+      return [...found.values()].sort(order);
     },
     // 絞り込みと「変えた所だけ」
     shown(rows) {
@@ -1371,29 +1346,55 @@ async function structureView(key, redraw) {
       me.note.textContent = `${found.length === rows.length ? `行 ${rows.length}` : `行 ${found.length} / ${rows.length}`}${found.length > MAX_STRUCTURE_ROWS ? `・先頭の ${MAX_STRUCTURE_ROWS} 行を出しています` : ""}`;
       return found.slice(0, MAX_STRUCTURE_ROWS);
     },
-    productHead(code) {
-      const star = code === data.main_product ? "★ " : "";
+    head(code) {
+      const star = !child && code === data.main_product ? "★ " : "";
       return { text: `${star}${code}\n${me.name(code) || "未登録"}`, cls: "vh" + (data.items[code] ? "" : " bad"), title: `${star}${code} ${me.name(code)}` };
     },
+    opens: (row) => !row.draft && !!data.inside[row.part],
+    openCell: (row) => (row && me.opens(row) ? { text: "開く", cls: "link", title: "組立品の中（同じ風船番号の組立品を並べて開く）" } : { text: "" }),
+    // 同じ風船番号の組立品を、まとめて開く（風船番号の無い行は、その組立品だけ）
+    open(row) {
+      const bases = new Set([base(row.part)]);
+      if (row.balloon !== null) {
+        for (const p of me.columns()) for (const s of me.slots(p)) if (s.balloon === row.balloon && data.inside[s.part] && Number(s.quantity) !== 0) bases.add(base(s.part));
+      }
+      const list = [...bases].sort();
+      const range = child ? child.range : [view.drawing, view.parent];
+      if (!openWindow(key, { parents: list.join(","), range: JSON.stringify(range) }, `-${list.join("-").replace(/[^A-Za-z0-9-]/g, "_")}`)) alert("窓を開けませんでした（ブラウザの設定で、別の窓を許してください）");
+    },
   };
+  // 範囲の製品の下にある組立品のうち、流用元が親の品番の物
+  const reach = (products) => {
+    const seen = new Set();
+    const stack = products.flatMap((p) => data.direct[p] || []);
+    while (stack.length) {
+      const s = stack.pop();
+      if (Number(s.quantity) === 0 || seen.has(s.part) || !data.inside[s.part]) continue;
+      seen.add(s.part);
+      stack.push(...data.inside[s.part]);
+    }
+    return seen;
+  };
+  const inRange = () => [...reach(me.range())].filter((c) => child.bases.includes(base(c)))
+    .sort((a, b) => child.bases.indexOf(base(a)) - child.bases.indexOf(base(b)) || a.localeCompare(b, "ja", { numeric: true }));
+  const usedBy = () => me.range().filter((p) => {
+    const found = reach([p]);
+    return parents.some((c) => found.has(c));
+  }).length;
   const norm = (s) => clean(s).toLowerCase();
-  const reload = () => work("読み込んでいます", async () => {
-    await me.load();
-    redraw();
-  }).catch(fail);
   const drawingPick = el("select", { class: "in", onchange: () => {
     view.drawing = drawingPick.value;
-    view.product = "";
-    reload();
+    view.parent = "";
+    work("読み込んでいます", async () => {
+      await me.load();
+      redraw();
+    }).catch(fail);
   } });
-  const productPick = el("select", { class: "in", onchange: () => {
-    view.product = productPick.value;
+  const parentPick = el("select", { class: "in", onchange: () => {
+    view.parent = parentPick.value;
     redraw();
   } });
-  const levelPick = el("select", { class: "in", style: "min-width:80px", onchange: () => {
-    view.level = levelPick.value ? Number(levelPick.value) : Infinity;
-    redraw();
-  } });
+  const users = el("span", { class: "mini" });
   const codeBox = el("input", { class: "in" });
   const nameBox = el("input", { class: "in" });
   for (const box of [codeBox, nameBox]) box.addEventListener("input", () => redraw());
@@ -1402,19 +1403,13 @@ async function structureView(key, redraw) {
     only.classList.toggle("on", me.only);
     redraw();
   } }, "変えた所だけ");
-  me.picks = [el("label", { class: "f" }, "図面", drawingPick), el("label", { class: "f" }, "製品", productPick), el("label", { class: "f" }, "レベル", levelPick)];
+  me.picks = [child ? null : el("label", { class: "f" }, "図面", drawingPick), el("label", { class: "f" }, child ? "組立品" : "製品", parentPick)];
   me.filters = [el("label", { class: "f" }, "品番", codeBox), el("label", { class: "f" }, "名称", nameBox)];
   me.onlyButton = only;
+  me.users = child ? users : null;
   await me.load();
+  me.title = (text) => (child ? `${text}　${child.bases.slice(0, 3).join("・")}${child.bases.length > 3 ? ` ほか ${child.bases.length - 3}` : ""} の中` : text);
   return me;
-}
-
-function movedSlot(s) {
-  return s.now !== s.part || !same(s.before, s.quantity);
-}
-
-function levelText(level) {
-  return ".".repeat(level - 1) + level;
 }
 
 async function listScreen(main) {
@@ -1425,42 +1420,45 @@ async function listScreen(main) {
   const body = el("div", { class: "listview" });
   const draw = () => {
     const text = { part: (r) => r.now ?? r.part, name: (r) => me.name(r.now ?? r.part) }[sort];
-    const tops = text && ((a, b) => (a.level > 1 ? balloonOrder(a.first, b.first) : text(a).localeCompare(text(b), "ja", { numeric: true })) || a.rank - b.rank || balloonOrder(a.first, b.first));
-    rows = me.shown(me.rows({ compare: true, balloons, sort: tops || null }));
+    const order = text && ((a, b) => text(a).localeCompare(text(b), "ja", { numeric: true }) || a.rank - b.rank || balloonOrder(a.first, b.first));
+    rows = me.shown(me.rows({ compare: true, balloons, sort: order || null }));
     grid.render();
   };
   const me = await structureView(5, () => draw());
-  const products = () => me.products();
-  const nowOf = (r) => (r.derived ? r.now : null);
-  const afterOf = (r) => (r.part === nowOf(r) ? null : r.part);
+  const parents = () => me.columns();
+  const afterOf = (r) => (r.part === r.now ? null : r.part);
   const gone = (r) => [...r.cells.values()].every((s) => Number(s.quantity) === 0);
   const left = () => [
-    ["レベル", (r) => ({ text: levelText(r.level) })],
-    ...(balloons ? [[{ text: "風船", cls: "c" }, (r) => ({ text: r.balloon ?? "—", cls: "c" })]] : []),
-    ["品番", (r) => ({ text: nowOf(r) ?? "" })], ["名称", (r) => me.nameCell(nowOf(r))], ["仕様", (r) => me.spec(nowOf(r))], ["状態", (r) => me.state(nowOf(r))]];
+    ...(balloons ? [[{ text: "風船", cls: "c" }, (r) => ({ text: r.balloon ?? "—", cls: "c q" })]] : []),
+    ["品番", (r) => ({ text: r.now ?? "" })], ["名称", (r) => me.nameCell(r.now)], ["仕様", (r) => me.spec(r.now)], ["状態", (r) => me.state(r.now)]];
   const right = [
     [{ text: "品番", cls: "after split" }, (r) => ({ text: afterOf(r) ?? "", cls: "split" + (afterOf(r) ? " own" : "") })],
     [{ text: "名称", cls: "after" }, (r) => (gone(r) ? { text: "削除", cls: "auto" } : me.nameCell(afterOf(r)))],
-    [{ text: "仕様", cls: "after" }, (r) => me.spec(afterOf(r))], [{ text: "状態", cls: "after" }, (r) => me.state(afterOf(r))]];
+    [{ text: "仕様", cls: "after" }, (r) => me.spec(afterOf(r))], [{ text: "状態", cls: "after" }, (r) => me.state(afterOf(r))],
+    [{ text: "中", cls: "after" }, (r) => me.openCell(r)]];
   const columns = () => [...left(), ...right];
   const model = {
     groups: () => [{ text: "", span: 1 }, { text: "現行", span: left().length }, { text: "変更後", span: right.length, cls: "after split" },
-      ...(products().length ? [{ text: side === "now" ? "現行の数量" : "変更後の数量", span: products().length, cls: "split" }] : [])],
-    head: () => ["", ...columns().map((c) => c[0]), ...products().map(me.productHead)],
+      ...(parents().length ? [{ text: side === "now" ? "現行の数量" : "変更後の数量", span: parents().length, cls: "split" }] : [])],
+    head: () => ["", ...columns().map((c) => c[0]), ...parents().map(me.head)],
     nRows: () => rows.length,
-    nCols: () => 1 + columns().length + products().length,
+    nCols: () => 1 + columns().length + parents().length,
     cell(r, c) {
       if (c === 0) return { text: String(r + 1), cls: "n" };
       const cols = columns();
       if (c <= cols.length) return cols[c - 1][1](rows[r]);
-      const s = rows[r].cells.get(products()[c - 1 - cols.length]);
+      const s = rows[r].cells.get(parents()[c - 1 - cols.length]);
       const edge = c === cols.length + 1 ? " split" : "";
       if (!s) return { text: "", cls: "r q" + edge };
-      const shown = side === "now" ? (rows[r].derived ? s.before : null) : s.quantity;
+      const shown = side === "now" ? s.before : s.quantity;
       return { text: shown === null ? "" : fmt(shown), cls: "r q" + edge + (s.problem ? " bad" : side === "after" && !same(s.before, s.quantity) ? " own" : ""),
         title: s.problem ? "要確認（変更一覧）" : null };
     },
     set() {},
+    action(r, c) {
+      if (rows[r] && c === columns().length && me.opens(rows[r])) me.open(rows[r]);
+      return false;
+    },
   };
   const grid = new Grid(body, model);
   const balloonButton = el("button", { class: "chip on", onclick: () => {
@@ -1490,54 +1488,44 @@ async function listScreen(main) {
       fail(e);
     }
   } }, el("option", { value: "" }, "（なし）"), S.targets.map((code) => el("option", { value: code, selected: code === me.data.main_product }, code)));
-  main.append(card("構成一覧", [
-    el("label", { class: "inline" }, "主対象 ", mainPick),
+  main.append(card(me.title("構成一覧"), [
+    me.child ? null : el("label", { class: "inline" }, "主対象 ", mainPick),
     el("button", { class: "btn", onclick: whereUsed, disabled: !S.number }, "使用先"),
-    el("button", { class: "btn", onclick: conditionsDialog, disabled: !S.number }, "計算条件"),
+    me.child ? null : el("button", { class: "btn", onclick: conditionsDialog, disabled: !S.number }, "計算条件"),
   ], [
     el("div", { class: "row" }, me.picks, el("label", { class: "f" }, "並び", pick([["balloon", "風船番号"], ["part", "品番"], ["name", "名称"]], (v) => { sort = v; })),
       el("label", { class: "f" }, "数量", pick([["after", "変更後"], ["now", "現行"]], (v) => { side = v; })),
-      me.filters, el("div", { class: "chips" }, me.onlyButton, balloonButton), me.note),
+      me.filters, el("div", { class: "chips" }, me.onlyButton, balloonButton), me.users, me.note),
     body,
   ]));
   draw();
   grid.focus();
 }
 
-// ⑧ 品番と数量を、その欄で打ち替える。直下の数量は製品ごと、ほかは行に出ている製品の全部に効く。空にすると現行に戻る。
-// 組立品の中を変えると、上の組立品に新しい品番が付く（サーバが決める）
+// ⑧ 品番と数量を、その欄で打ち替える。品番は行に出ている親の全部に、数量は親ごとに効く。空にすると現行に戻る。
+// 親が組立品なら、中を変えた組立品に新しい品番が付き（サーバが決める）、開いた時に出していた製品の範囲に効く
 async function rewriteScreen(main, cur) {
   const ro = !canWrite();
   let rows = [];
   let drawing = null;
-  let drafts = []; // 足しかけの行 { draft, level, balloon, part, path, tops, cells: 空, amounts: 製品 → 数量, after・afterKey: 上の行 }
+  let drafts = []; // 足しかけの行 { draft, balloon, part, cells: 空, amounts: 親 → 数量, after: 上の行の鍵 }
   let place = new Map(); // 行の鍵 → 並びの位置（打った行が動かないように、開いた時・並べ直した時の位置を持つ）
   const body = el("div", { class: "listview" });
-  const base = (code) => me.data.bases[code] ?? code;
-  const idOf = (r) => JSON.stringify([r.path, r.level > 1 ? r.tops : null, r.balloon, r.part]);
-  const keyOf = (r) => JSON.stringify([r.path.map(base), r.level > 1 ? r.tops.map((t) => t.balloon)[0] : null, r.balloon, base(r.part)]);
+  const keyOf = (r) => JSON.stringify([r.balloon, me.base(r.part)]);
   const draw = () => {
-    // 1段目ごとのまとまりの中で並べる。前からある行は前の位置のまま、新しい行は直前の行のすぐ後ろ
+    // 前からある行は前の位置のまま、新しい行は直前の行のすぐ後ろ
     const sorted = me.rows();
-    const groups = new Map();
-    for (const r of sorted) {
-      const k = JSON.stringify(r.path);
-      if (!groups.has(k)) groups.set(k, []);
-      groups.get(k).push(r);
-    }
     let last = 0;
     for (const r of sorted) {
       const k = keyOf(r);
       if (!place.has(k)) place.set(k, last + 1e-6);
       last = place.get(k);
     }
-    const nest = (list) => list.map((r, i) => [r, i]).sort(([a, i], [b, j]) => place.get(keyOf(a)) - place.get(keyOf(b)) || i - j).flatMap(([r]) => [r, ...nest(r.children || [])]);
-    const all = nest(sorted.filter((r) => r.level === 1));
-    rows = me.shown(all);
+    rows = me.shown(sorted.map((r, i) => [r, i]).sort(([a, i], [b, j]) => place.get(keyOf(a)) - place.get(keyOf(b)) || i - j).map(([r]) => r));
     for (const d of drafts) {
-      // 足しかけの行は、選んでいた行（とその中）の後ろに出す
-      let at = rows.findIndex((r) => !r.draft && idOf(r) === d.after);
-      if (at >= 0) for (at += 1; at < rows.length && (rows[at].level > d.level || (rows[at].draft && rows[at].after === d.after)); at += 1);
+      // 足しかけの行は、選んでいた行の後ろに出す
+      let at = rows.findIndex((r) => !r.draft && keyOf(r) === d.after);
+      if (at >= 0) for (at += 1; at < rows.length && rows[at].draft && rows[at].after === d.after; at += 1);
       rows.splice(at < 0 ? rows.length : at, 0, d);
     }
     grid.render();
@@ -1555,18 +1543,16 @@ async function rewriteScreen(main, cur) {
     draw();
   });
   restart();
-  const products = () => me.products();
-  const left = 7; // 番号・レベル・風船・品番・名称・仕様・状態
-  const newDraft = (near) => ({ draft: true, level: near ? near.level : 1, balloon: "", part: "", now: null, path: near ? near.path : [], tops: near && near.level > 1 ? near.tops : null,
-    cells: new Map(), amounts: new Map(), after: near ? (near.draft ? near.after : idOf(near)) : null, afterKey: near ? (near.draft ? near.afterKey : keyOf(near)) : null });
-  const holds = (r, product) => (r.tops ? r.tops.some((t) => t.product === product) : true);
+  const parents = () => me.columns();
+  const left = 7; // 番号・風船・品番・名称・仕様・状態・中
+  const newDraft = (near) => ({ draft: true, balloon: "", part: "", now: null, cells: new Map(), amounts: new Map(), after: near ? (near.draft ? near.after : keyOf(near)) : null });
   // 打ち替えは溜めて、changed() で1回に送る
   let parts = new Map(); // 行 → 品番（空は現行に戻す）
-  let amounts = new Map(); // 行 → 製品 → 数量（空は現行に戻す）
+  let amounts = new Map(); // 行 → 親 → 数量（空は現行に戻す）
   const model = {
-    head: () => ["", "レベル", { text: "風船", cls: "c" }, "品番", "名称", "仕様", "状態", ...products().map(me.productHead)],
-    nRows: () => rows.length + (ro || !products().length ? 0 : 1),
-    nCols: () => left + products().length,
+    head: () => ["", { text: "風船", cls: "c" }, "品番", "名称", "仕様", "状態", "中", ...parents().map(me.head)],
+    nRows: () => rows.length + (ro || !parents().length ? 0 : 1),
+    nCols: () => left + parents().length,
     grow: ro ? undefined : () => {
       const d = newDraft(null);
       drafts.push(d);
@@ -1577,52 +1563,56 @@ async function rewriteScreen(main, cur) {
       const row = rows[r];
       if (c === 0) return { text: String(r + 1), cls: "n" };
       const part = row ? row.part : "";
-      if (c === 1) return { text: row ? levelText(row.level) : "", cls: "q" };
-      if (c === 2) return { text: row ? (row.draft ? row.balloon : row.balloon ?? "—") : "", editable: !ro && (!row || !!row.draft), cls: "c q" };
-      if (c === 3) {
+      if (c === 1) return { text: row ? (row.draft ? row.balloon : row.balloon ?? "—") : "", editable: !ro && (!row || !!row.draft), cls: "c q" };
+      if (c === 2) {
         const own = row && (row.draft ? part : [...row.cells.values()].some((s) => s.now !== s.part));
         return { text: part, editable: !ro, cls: own ? "own" : "" };
       }
-      if (c === 4) return row && row.draft ? nameCell(part) : me.nameCell(part);
-      if (c === 5) return me.spec(part);
-      if (c === 6) return me.state(part);
-      const product = products()[c - left];
+      if (c === 3) return row && row.draft ? nameCell(part) : me.nameCell(part);
+      if (c === 4) return me.spec(part);
+      if (c === 5) return me.state(part);
+      if (c === 6) return me.openCell(row);
+      const parent = parents()[c - left];
       const edge = c === left ? " split" : "";
       if (!row) return { text: "", editable: !ro, cls: "r q" + edge };
-      if (row.draft) return { text: row.amounts.get(product) ?? "", editable: !ro && holds(row, product), cls: "r q" + edge };
-      const s = row.cells.get(product);
-      if (!s) return { text: "", editable: !ro && row.level === 1, cls: "r q" + edge };
+      if (row.draft) return { text: row.amounts.get(parent) ?? "", editable: !ro, cls: "r q" + edge };
+      const s = row.cells.get(parent);
+      if (!s) return { text: "", editable: !ro, cls: "r q" + edge };
       const changed = !same(s.before, s.quantity);
       return { text: fmt(s.quantity), editable: !ro, cls: "r q" + edge + (s.problem ? " bad" : changed ? " own" : ""),
         title: s.problem ? "要確認（変更一覧）" : changed && s.before !== null ? `現行 ${fmt(s.before)}` : null };
     },
     set(r, c, text) {
-      if (c < 2 || (c > 3 && c < left)) return;
+      if (c < 1 || (c > 2 && c < left)) return;
       if (!rows[r]) {
         if (!text) return;
         model.grow();
       }
       const row = rows[r];
-      const product = products()[c - left];
+      const parent = parents()[c - left];
       if (c >= left && text !== "" && !(isNumber(text) && Number(text) >= 0)) return alert(`数量は0以上の数で入力してください（${row.part || "品番なし"}「${text}」）`);
       if (row.draft) {
-        if (c === 2) row.balloon = text;
-        else if (c === 3) row.part = text;
-        // 組立品の中の数量は、その組立品を使う製品の全部に効く
-        else for (const p of row.tops ? row.tops.map((t) => t.product) : [product]) text === "" ? row.amounts.delete(p) : row.amounts.set(p, text);
+        if (c === 1) row.balloon = text;
+        else if (c === 2) row.part = text;
+        else if (text === "") row.amounts.delete(parent);
+        else row.amounts.set(parent, text);
         return;
       }
-      if (c === 2) return;
-      if (c === 3) {
+      if (c === 1) return;
+      if (c === 2) {
         if (text !== row.part) parts.set(row, text);
         return;
       }
-      const s = row.cells.get(product);
+      const s = row.cells.get(parent);
       if (s ? same(text, s.quantity) : text === "") return;
       if (!amounts.has(row)) amounts.set(row, new Map());
-      amounts.get(row).set(product, text);
+      amounts.get(row).set(parent, text);
     },
     changed() { apply().catch(fail); },
+    action(r, c) {
+      if (c === 6 && rows[r] && me.opens(rows[r])) me.open(rows[r]);
+      return false;
+    },
   };
   const grid = new Grid(body, model);
   const send = async (path, payload, text) => {
@@ -1638,77 +1628,62 @@ async function rewriteScreen(main, cur) {
     parts = new Map();
     amounts = new Map();
     const ready = drafts.filter((d) => d.part && d.amounts.size);
-    const codes = [...typed.map(([, v]) => v), ...drafts.map((d) => d.part)];
-    if (await lookup(codes) && drafts.length) grid.render();
+    if (await lookup([...typed.map(([, v]) => v), ...drafts.map((d) => d.part)]) && drafts.length) grid.render();
     if (!typed.length && !counts.length && !ready.length) return;
     const body = { quantity: [], replace: [], add: [], inside: [] };
     const renames = [];
-    const deep = new Map(); // 行 → 中の打ち替え（品番と数量を1つにまとめる）
-    const inner = (row) => {
-      if (!deep.has(row)) deep.set(row, { path: row.path, tops: row.tops, balloon: row.balloon, old: row.part });
-      return deep.get(row);
+    // 親が製品なら直下の箇所、組立品なら組立品の中の箇所として送る。1つの箇所の品番と数量は1つにまとめる
+    const edits = new Map();
+    const inner = (parent, balloon, s) => {
+      const k = JSON.stringify([parent, balloon, s.part]);
+      if (!edits.has(k)) edits.set(k, { parent, balloon, old: s.part });
+      return edits.get(k);
     };
-    const line = (row) => row.cells.values().next().value;
     let count = 0;
-    const move = (from, to) => !place.has(to) && place.has(from) && place.set(to, place.get(from)); // 打った行が動かないように、新しい鍵に位置を渡す
     for (const [row, text] of typed) {
       // 流用した仮品番に、登録の無い品番を打った時は、その仮品番の品番を替える
       if (text && me.data.bases[row.part] && items.get(text) && !items.get(text).registered) {
         renames.push([row.part, text]);
         continue;
       }
-      if (row.level === 1) {
-        for (const [product, s] of row.cells) {
-          const at = { product, balloon: row.balloon };
-          const to = text || s.now;
-          if (!text && s.now === null) body.quantity.push({ ...at, part: s.part, quantity: "" }); // 足した箇所の取り消し
-          else if (Number(s.quantity) === 0) continue; // 消した箇所は、数量を空にして戻してから替える
-          else if (to !== s.part) body.replace.push({ ...at, old: s.part, new: to });
-          count += 1;
-        }
-      } else {
-        const s = line(row);
-        if (Number(s.quantity) === 0) continue;
-        if (!text && s.now === null) inner(row).quantity = "0";
-        else if ((text || s.now) !== s.part) inner(row).new = text || s.now;
+      for (const [parent, s] of row.cells) {
+        const to = text || s.now;
+        const at = { product: parent, balloon: row.balloon };
+        if (Number(s.quantity) === 0) continue; // 消した箇所は、数量を空にして戻してから替える
+        if (to === null) me.child ? (inner(parent, row.balloon, s).quantity = "0") : body.quantity.push({ ...at, part: s.part, quantity: "" }); // 足した箇所の取り消し
+        else if (to !== s.part) me.child ? (inner(parent, row.balloon, s).new = to) : body.replace.push({ ...at, old: s.part, new: to });
         count += 1;
       }
-      if (text) move(keyOf(row), keyOf({ ...row, part: text }));
+      const to = keyOf({ ...row, part: text });
+      if (text && !place.has(to)) place.set(to, place.get(keyOf(row))); // 打った行が動かないように、新しい鍵に位置を渡す
     }
     for (const [row, values] of counts) {
-      if (row.level === 1) {
-        for (const [product, text] of values) {
-          const s = row.cells.get(product);
-          const at = { product, balloon: row.balloon, part: row.part };
+      for (const [parent, text] of values) {
+        const s = row.cells.get(parent);
+        const at = { product: parent, balloon: row.balloon, part: row.part };
+        count += 1;
+        if (!me.child) {
           if (!s) body.add.push({ ...at, quantity: text });
           // 置き換えた箇所の空は、現行の数量に戻す（現行に無い品番なので、そのまま送ると消える）
           else body.quantity.push({ ...at, quantity: text === "" && s.now !== s.part ? s.before ?? "" : text });
-          count += 1;
-        }
-      } else {
-        const kinds = new Set(values.values());
-        if (kinds.size > 1) {
-          alert(`${row.part} の数量が製品で違います。組立品の中の数量は、その組立品を使う製品の全部に効くので、1つだけ変える時は上で製品を選んでください`);
           continue;
         }
-        const s = line(row);
-        const text = [...kinds][0] === "" ? s.before ?? "0" : [...kinds][0];
-        if (Number(s.quantity) === 0) {
-          if (Number(text) !== 0) Object.assign(inner(row), { old: null, new: row.part, quantity: text }); // 消した箇所を戻す
-        } else inner(row).quantity = text;
-        count += 1;
+        const value = text === "" ? s.before ?? "0" : text;
+        if (s && Number(s.quantity) !== 0) inner(parent, row.balloon, s).quantity = value;
+        else if (Number(value) !== 0) body.inside.push({ parent, balloon: row.balloon, old: null, new: row.part, quantity: value });
       }
     }
     for (const d of ready) {
       const balloon = d.balloon || null;
-      if (d.level === 1) for (const [product, quantity] of d.amounts) body.add.push({ product, balloon, part: d.part, quantity });
-      else body.inside.push({ path: d.path, tops: d.tops, balloon, old: null, new: d.part, quantity: [...d.amounts.values()][0] });
-      const key = keyOf({ ...d, balloon });
-      place.set(key, place.has(d.afterKey) ? place.get(d.afterKey) + 1e-7 : Math.max(0, ...place.values()) + 1);
-      count += 1;
+      for (const [parent, quantity] of d.amounts) {
+        if (me.child) body.inside.push({ parent, balloon, old: null, new: d.part, quantity });
+        else body.add.push({ product: parent, balloon, part: d.part, quantity });
+        count += 1;
+      }
+      place.set(keyOf({ ...d, balloon }), place.has(d.after) ? place.get(d.after) + 1e-7 : Math.max(0, ...place.values()) + 1);
     }
-    // 組立品ごと替わる行が混ざると、中の行の上の品番が変わってしまうので、数量・直下・中の順に送る
-    body.inside.push(...[...deep.values()].filter((e) => e.new !== undefined || e.quantity !== undefined));
+    body.inside.push(...edits.values());
+    for (const e of body.inside) e.products = me.range();
     try {
       if (Object.values(body).some((list) => list.length)) await send("/api/v2/structure", body, `${count} 箇所を変えました`);
       for (const [code, to] of renames) await send("/api/v2/temp-rename", { code, new: to }, `${code} を ${to} にしました`);
@@ -1723,11 +1698,10 @@ async function rewriteScreen(main, cur) {
   };
   const selected = () => rows[grid.sel.r];
   const addRow = () => {
-    const near = selected();
-    const d = newDraft(near || null);
+    const d = newDraft(selected() || null);
     drafts.push(d);
     draw();
-    grid.select(rows.indexOf(d), 2);
+    grid.select(rows.indexOf(d), 1);
     grid.focus();
   };
   const dropRow = () => {
@@ -1748,11 +1722,11 @@ async function rewriteScreen(main, cur) {
   } }, text);
   // 足しかけの行がある間は、ほかの窓の保存で描き直さない（打ちかけが消えるため）
   cur.saver = { flush: async () => {}, get pending() { return drafts.some((d) => d.part || d.balloon || d.amounts.size); } };
-  main.append(card("構成変更", [button("行を追加", addRow), button("行を削除", dropRow), button("風船番号で並べる", () => {
+  main.append(card(me.title("構成変更"), [button("行を追加", addRow), button("行を削除", dropRow), button("風船番号で並べる", () => {
     restart();
     draw();
   })], [
-    el("div", { class: "row" }, me.picks, me.filters, el("div", { class: "chips" }, me.onlyButton), me.note),
+    el("div", { class: "row" }, me.picks, me.filters, el("div", { class: "chips" }, me.onlyButton), me.users, me.note),
     body,
   ]));
   draw();

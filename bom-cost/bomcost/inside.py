@@ -149,6 +149,47 @@ def input_edits(rows: Sequence[Mapping[str, Any]]) -> list[Edit]:
     return edits
 
 
+def expand_parents(ws: Workspace, plan: str, rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """parent（組立品）と products で送られた行を、products の下でその組立品がある所（path と tops）ごとの行にする。"""
+    tops = _tops(ws, plan)
+    lines: dict[str, dict[SlotKey, Decimal]] = {}
+    paths: dict[tuple[str, str], list[Path]] = {}  # （直下の品番, 組立品）→ 直下の品番から組立品まで
+
+    def below(code: str) -> list[str]:
+        if code not in lines:
+            lines[code] = inside_lines(ws, code)
+        return list(dict.fromkeys(k[1] for k in lines[code]))
+
+    def walk(path: Path, parent: str) -> Iterable[Path]:
+        if path[-1] == parent:
+            yield path
+            return
+        for part in below(path[-1]):
+            if part not in path:
+                yield from walk((*path, part), parent)
+
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        parent = input_code(r.get("parent"), name="組立品")
+        products = r.get("products")
+        if not isinstance(products, list) or not products:
+            raise ValueError("送る形が違います（products は配列）")
+        wanted = {input_code(p, name="製品") for p in products}
+        found: list[dict[str, Any]] = []
+        for code, places in tops.items():
+            here = [{"product": p, "balloon": b} for p, b in places if p in wanted]
+            if not here:
+                continue
+            if (code, parent) not in paths:
+                paths[(code, parent)] = list(walk((code,), parent))
+            found += [{**{k: r[k] for k in ("balloon", "old", "new", "quantity") if k in r}, "path": list(path), "tops": here}
+                      for path in paths[(code, parent)]]
+        if not found:
+            raise ValueError(f"{parent} は、出している製品の下にありません（画面を開き直してください）")
+        out += found
+    return out
+
+
 def _input_tops(row: Mapping[str, Any]) -> frozenset[tuple[str, str | None]] | None:
     places = row["tops"] if "tops" in row else [{"product": row["product"], "balloon": row.get("top")}] if "product" in row else None
     if places is None:
