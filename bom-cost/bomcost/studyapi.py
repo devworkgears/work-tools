@@ -21,6 +21,7 @@ from .importer import (
     save_workbook,
     read_csv,
 )
+from .inside import Rebuild, input_edits, inside_rows
 from .model import CostHead, Version
 from .normalize import to_code, to_optional_code
 from .rollup import CostCalculator
@@ -49,7 +50,6 @@ from .study import (
     after_places,
     after_table,
     annual_of,
-    deep_parts,
     direct_lines,
     input_code,
     input_optional_code,
@@ -302,6 +302,7 @@ class StudyApi:
             ("GET", r"/api/v2/after-parts", self.after_parts),
             ("POST", r"/api/v2/replace/apply", self.apply_replace),
             ("POST", r"/api/v2/replace/revert", self.revert_replace),
+            ("POST", r"/api/v2/inside/replace", self.replace_inside),
             ("GET", r"/api/v2/replace", self.replace),
             ("GET", r"/api/v2/replace/groups", self.replace_groups),
             ("PUT", r"/api/v2/replace", self.put_replace),
@@ -576,11 +577,14 @@ class StudyApi:
         ws = self._ws(params)
         items = ws.bom.items
         found = after_parts(ws, self._plan(params))
+        inside, tops = inside_rows(ws, self._plan(params))
         return self._json({"parts": [
             {"code": p.code, "name": items[p.code].name if p.code in items else None, "used": len(p.users),
              "before": p.before, "products": p.users, "was": p.was} for p in found],
-            "deep": [{"code": c, "name": items[c].name if c in items else None, "used": n}
-                     for c, n in deep_parts(ws, (p.code for p in found))],
+            # 組立品の中（全階層）。path は直下の組立品から部品の親まで・tops は直下の組立品 → 使う箇所
+            "inside": [{"path": r.path, "part": r.part, "name": items[r.part].name if r.part in items else None,
+                        "lines": [{"balloon": x.balloon, "quantity": _s(x.quantity), "was": x.was} for x in r.lines]} for r in inside],
+            "tops": {code: [{"product": p, "balloon": b} for p, b in places] for code, places in tops.items()},
             "places": [{"product": p.product, "balloon": p.balloon, "part": p.part, "quantity": _s(p.quantity), "was": p.was,
                         "before": _s(p.before)} for p in after_places(ws, self._plan(params))]})
 
@@ -596,6 +600,19 @@ class StudyApi:
         place = (body.get("product"), body.get("balloon")) if "product" in body else None
         self.store.revert_replace(_number(params), self._plan(params), body.get("part"), place)
         return self.after_parts({"number": _number(params), "plan": self._plan(params)})
+
+    def replace_inside(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
+        """組立品の中の置き換え。新しい品番が要る組立品があり codes が無ければ、何も保存せずに needs を返す。"""
+        number, plan = _number(params), self._plan(params)
+        ws = self.store.workspace(number)
+        rebuild = Rebuild(ws, plan, input_edits(_objects(body, "rows")))
+        if rebuild.nodes and body.get("codes") is None:
+            return self._json({"needs": rebuild.needs()})
+        change = rebuild.change(_objects(body, "codes"))
+        self.store.save_inside(ws, plan, change.added, change.lines, change.picks)
+        # 材料費を打ってある仮品番は、中を替えても金額が変わらない
+        typed = [t.code for t in ws.temps if t.code in change.lines and t.material is not None]
+        return self._json({**self.after_parts({"number": number, "plan": plan}).json(), "typed": typed})
 
     def put_quantity(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
         """箇所（product・balloon・part）ごとの、変えた後の数量。"""

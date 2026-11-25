@@ -12,7 +12,7 @@ from bomcost.importer import load_openpyxl
 from bomcost.model import BomLine, CostHead, CostRow, Item, Version
 from bomcost.store import Store
 from bomcost.studyapi import StudyApi, change_effects
-from bomcost.study import DEEP, REPLACE, StudyStore, after_parts, after_places, after_table, calculate, check_changes, deep_parts
+from bomcost.study import DEEP, REPLACE, StudyStore, after_parts, after_places, after_table, calculate, check_changes
 
 ALL = ("item", "bom_line", "cost", "volume")
 D = Decimal
@@ -65,7 +65,6 @@ class LevelCase(unittest.TestCase):
 class FirstLevel(LevelCase):
     def test_lists_and_replace_see_only_the_first_level(self) -> None:
         self.assertEqual([p.code for p in after_parts(self.ws(), "A")], ["K", "S", "U"])
-        self.assertEqual(deep_parts(self.ws(), ["K", "S", "U"]), [("B", 3), ("V", 3)])
         self.store.apply_replace(self.number, "A", "K", "N")
         # U の中の K は替わらない
         self.assertEqual(self.changes(), {("P1", "P1", "2", "K"): D(-1), ("P1", "P1", "2", "N"): D(1),
@@ -287,7 +286,10 @@ class LevelApi(unittest.TestCase):
 
     def test_after_parts_tells_places_and_deeper_parts(self) -> None:
         data = self.ok("GET", "/api/v2/after-parts")
-        self.assertEqual([(d["code"], d["used"]) for d in data["deep"]], [("B", 2), ("V", 2)])
+        self.assertEqual([(r["path"], r["part"], r["lines"]) for r in data["inside"]], [
+            (["U"], "K", [{"balloon": "11", "quantity": "2", "was": []}]), (["U"], "V", [{"balloon": "12", "quantity": "1", "was": []}]),
+            (["U", "V"], "B", [{"balloon": "21", "quantity": "3", "was": []}])])
+        self.assertEqual(data["tops"], {"U": [{"product": "P1", "balloon": "1"}, {"product": "P2", "balloon": "1"}]})
         self.assertIn({"product": "P2", "balloon": "2", "part": "K", "quantity": "4", "was": [], "before": "4"}, data["places"])
         got = self.ok("POST", "/api/v2/replace/apply", {"rows": [{"product": "P2", "balloon": "2", "old": "K", "new": "N"}]})
         self.assertEqual({p["code"]: (p["used"], p["before"]) for p in got["parts"]}["K"], (1, 2))

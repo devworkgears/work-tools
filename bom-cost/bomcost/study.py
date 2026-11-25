@@ -381,6 +381,18 @@ def temp_lines(bom: Version, temp: Temp) -> tuple[dict[SlotKey, Decimal], dict[S
     return now, after
 
 
+def temp_cycle(bom: Version, temps: Mapping[str, Temp], code: str) -> None:
+    """仮品番の中に自分が（別の仮品番を通しても）入ると、材料費が決まらないので断る。"""
+    stack, seen = [part for _, part, d in temps[code].lines if d > 0], set()
+    while stack:
+        part = stack.pop()
+        if part == code:
+            raise ValueError(f"{code} の中に {code} 自身は入れられません")
+        if part in temps and part not in seen:
+            seen.add(part)
+            stack += [k[1] for k, q in temp_lines(bom, temps[part])[1].items() if q > 0]
+
+
 def inside_lines(ws: Workspace, code: str) -> dict[SlotKey, Decimal]:
     """組立品の中（直下の箇所と数量）。流用した仮品番は、変えた後の中身。"""
     temp = next((t for t in ws.temps if t.code == code and code in ws.temp_merged and t.base is not None), None)
@@ -654,16 +666,6 @@ def after_parts(ws: Workspace, plan: str) -> list[AfterPart]:
         users[p.product] = None
         was.update(p.was)
     return [AfterPart(code, list(users), before.get(code, 0), sorted(was)) for code, (users, was) in sorted(found.items())]
-
-
-def deep_parts(ws: Workspace, shown: Iterable[str]) -> list[tuple[str, int]]:
-    """対象品番の組立品の中にだけある部品（shown＝直下に出した品番を除く）と、使う対象品番の数。"""
-    used: dict[str, int] = {}
-    for product in ws.targets:
-        for code in {line.child for line in product_lines(ws.bom, product)}:
-            used[code] = used.get(code, 0) + 1
-    skip = set(shown)
-    return sorted((c, n) for c, n in used.items() if c not in skip)
 
 
 def problem_count(ws: Workspace) -> int:
@@ -1446,19 +1448,27 @@ class StudyStore:
         refuse_unregistered(bom, [k[1] for k in after if k[1] not in there and k[1] not in temps])
         lines = tuple((*k, after.get(k, Decimal(0)) - now.get(k, Decimal(0))) for k in dict.fromkeys([*now, *after]))
         lines = tuple(x for x in lines if x[2] != 0)
-        # 仮品番の中に自分が（別の仮品番を通しても）入ると、材料費が決まらない
-        stack, seen = [part for _, part, d in lines if d > 0], set()
-        while stack:
-            part = stack.pop()
-            if part == target:
-                raise ValueError(f"{target} の中に {target} 自身は入れられません")
-            if part in temps and part not in seen:
-                seen.add(part)
-                stack += [k[1] for k, q in temp_lines(bom, temps[part])[1].items() if q > 0]
+        temp_cycle(bom, {**temps, target: temp._replace(lines=lines)}, target)
         with self._conn:
             self._conn.execute("DELETE FROM v2_temp_line WHERE study_id = ? AND code = ?", (sid, target))
             self._put_temp_lines(sid, target, lines)
             self._touch(sid)
+
+    def save_inside(self, ws: Workspace, plan: str, added: Sequence[Temp], lines: Mapping[str, Sequence[TempLine]],
+                    picks: Sequence[tuple[str, str | None, str, str]]) -> None:
+        """仮品番を足し、仮品番の中（lines）を入れ替え、直下（picks）を置き換える。"""
+        sid = self.study_id(ws.number)
+        with self._conn:
+            at = self._conn.execute("SELECT COALESCE(MAX(position), -1) + 1 FROM v2_temp_item WHERE study_id = ?", (sid,)).fetchone()[0]
+            self._conn.executemany(
+                "INSERT INTO v2_temp_item (study_id, position, code, name, material, base) VALUES (?, ?, ?, ?, ?, ?)",
+                [(sid, at + i, t.code, t.name, _txt(t.material), t.base) for i, t in enumerate(added)])
+            for code, rows in [*((t.code, t.lines) for t in added), *lines.items()]:
+                self._conn.execute("DELETE FROM v2_temp_line WHERE study_id = ? AND code = ?", (sid, code))
+                self._put_temp_lines(sid, code, rows)
+            self._touch(sid)
+            if picks:
+                self._replace_at(ws, plan, picks)
 
     def drop_deep_changes(self, number: str, plan: str) -> int:
         """前に入れた2階層目の変更を消し、消した数を返す。"""
