@@ -39,7 +39,6 @@ from .model import (
 )
 from .modelchange import MatchKind, StructureRow, compare_structures
 from .mold import (
-    DEFAULT_AMORTIZATION_YEARS,
     Allocation,
     MoldAllocation,
     MoldCost,
@@ -64,7 +63,7 @@ from .store import GroupInfo, OldDatabaseError, PartMapRow, ScenarioInfo, Store
 
 __all__ = [
     "Allocation", "BASIC_HEADS", "BomConflict", "BomLine", "Change", "ChangeKind", "ChangeRecord",
-    "ColumnMap", "CostCalculator", "CostHead", "CostResult", "CostRow", "DEFAULT_AMORTIZATION_YEARS",
+    "ColumnMap", "CostCalculator", "CostHead", "CostResult", "CostRow",
     "DEFAULT_NEAR_TOLERANCE", "DEFAULT_SMALL_RATIO", "FieldSpec", "ImportWarning", "Item", "Judgement",
     "GroupInfo", "MANUAL_VERSION_ID", "ManualOverlap", "MatchKind", "MissingColumnsError",
     "MoldAllocation", "MoldCost", "PartMapRow", "PartUser", "ProductShare", "ReuseImpact", "ReuseTarget", "Scenario",

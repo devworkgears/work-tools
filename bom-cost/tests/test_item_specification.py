@@ -5,6 +5,7 @@ import unittest
 from dataclasses import replace
 from unittest.mock import patch
 
+import example_settings  # noqa: F401
 from bomcost import ColumnMap, Item, Store, Version, VersionImport
 from bomcost.importer import TABLE_FIELDS, load_openpyxl, read_table_bytes
 from bomcost.masterbook import SHEETS, apply_plan, book_bytes, plan_book

@@ -12,9 +12,10 @@ from datetime import datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
+from . import settings
 from .api import MASTER_HEADS, _View, group_label
 from .comparebook import _UNSAFE
-from .formula import ADJUSTMENT_RATE, INDIRECT_RATE, Head
+from .formula import Head
 from .group import _part_view, _Structure
 from .importer import load_openpyxl
 from .model import CostHead, Version
@@ -25,7 +26,6 @@ if TYPE_CHECKING:
     from .group import Group
 
 CURRENT = "現行"
-FACTOR = (1 + ADJUSTMENT_RATE) * (1 + INDIRECT_RATE)
 
 STRUCTURE = "構成"
 PRODUCT_COST = "製品原価"
@@ -143,6 +143,7 @@ def analysis_book(group: "Group", params: dict[str, str], now: datetime) -> tupl
         else:
             costs[(row["name"], row["product"])] = row["costs"]
     products = [c for c in bases if any((n, c) in costs for n in names)]
+    rates = settings.rates()
     store = group.store
     policy = store.load_scope_policy()
     scenario_ids = {n: group._scenarios(version) for n in names}
@@ -162,7 +163,7 @@ def analysis_book(group: "Group", params: dict[str, str], now: datetime) -> tupl
                 entries = scenario.root_entries() if scenario else [(code, Decimal(1), True, None)]
                 priced = _part_view(view, scenario)
                 for p in places(priced.version, policy, priced, tree, code, entries):
-                    contribution = _mul(p.material, FACTOR)
+                    contribution = _mul(p.material, rates.factor)
                     structure.append([label, code, p.parent, p.part, p.level, p.quantity, p.usage, p.unit, p.material,
                                       contribution, annual[code], _mul(contribution, annual[code])])
                 values = costs.get((label, code), costs[(CURRENT, code)])
@@ -201,9 +202,9 @@ def analysis_book(group: "Group", params: dict[str, str], now: datetime) -> tupl
             ["製品の絞り込み", (params.get("q") or "").strip() or "なし"],
             ["製品", len(products)],
             ["出した日時", now.strftime("%Y-%m-%d %H:%M")],
-            ["調整費の率", ADJUSTMENT_RATE],
-            ["間接費の率", INDIRECT_RATE],
-            ["材料費から製造原価への係数", FACTOR],
+            ["調整費の率", rates.adjustment],
+            ["間接費の率", rates.indirect],
+            ["材料費から製造原価への係数", rates.factor],
             ["償却費", "無視した（0 として計算）" if ignore else "含めた"],
             ["構成の材料費", "材料費小計に足す分（下位込みの組立品の下は 0）"],
             ["試算の無い製品", "現行の構成と値"],

@@ -5,6 +5,7 @@ import unittest
 from decimal import Decimal
 from urllib.parse import quote
 
+import example_settings  # noqa: F401
 from bomcost.app import static_response
 from bomcost.importer import guess_columns
 from test_group import NAME, SampleDbCase
@@ -119,7 +120,7 @@ class AmortizationPremise(SampleDbCase):
         current = self.compare()["products"][0]["current"]["MANUFACTURING"]
         self.assertEqual(Decimal(mold), Decimal(current))
         ignored = self.compare("&ignore_amortization=1")["products"][0]["current"]["MANUFACTURING"]
-        self.assertEqual(Decimal(mold) - Decimal(ignored), 50 * Decimal("1.03") * Decimal("1.11"))
+        self.assertEqual(Decimal(mold) - Decimal(ignored), 50 * Decimal("1.1") * Decimal("1.2"))
         self.assertEqual(view["premises"]["amortization_basis"], "registered")
         self.assertIn("償却費は登録値", js("screens.js"))
 

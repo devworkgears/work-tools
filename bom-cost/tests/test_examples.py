@@ -3,6 +3,7 @@
 import unittest
 from decimal import Decimal
 
+import example_settings  # noqa: F401
 import example_data as ex
 from bomcost import (
     Allocation,

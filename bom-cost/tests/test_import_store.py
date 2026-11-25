@@ -9,6 +9,7 @@ from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 
+import example_settings  # noqa: F401
 import example_data as ex
 from bomcost import (
     MANUAL_VERSION_ID,
@@ -59,19 +60,19 @@ COST_MAP = {
 }
 
 ITEM_ROWS = [
-    ["AB123456", "製品甲", "S1", "Q", 1, "x", ""],
-    ["AB12345601", "製品甲の派生", "S1", "Q", 1, "x", ""],
-    ["12340000", "部品乙", "Z9", "D", 0, "y", "知らない記号"],
+    ["AB1234", "製品甲", "S1", "Q", 1, "x", ""],
+    ["AB123401", "製品甲の派生", "S1", "Q", 1, "x", ""],
+    ["123400", "部品乙", "Z9", "D", 0, "y", "知らない記号"],
 ]
 BOM_ROWS = [
-    ["AB123456", 1, "12340000", 2, 1, "dwg"],
-    ["AB12345601", 1, "AB123456", 1, 1, "dwg"],
-    ["AB12345601", 1, "12340000", -1, 2, "dwg"],
+    ["AB1234", 1, "123400", 2, 1, "dwg"],
+    ["AB123401", 1, "AB1234", 1, 1, "dwg"],
+    ["AB123401", 1, "123400", -1, 2, "dwg"],
 ]
 COST_ROWS = [
-    ["AB123456000", "1,600", 10, "", 0, 5, 1615, "x"],
-    ["AB123456010", 1600.5, "", "", "", "", "", "x"],
-    ["12340000000", "0.1", 1, 1, 1, 1, 4.1, "x"],
+    ["AB1234000", "1,600", 10, "", 0, 5, 1615, "x"],
+    ["AB1234010", 1600.5, "", "", "", "", "", "x"],
+    ["123400000", "0.1", 1, 1, 1, 1, 4.1, "x"],
     ["XYZ-9", 7, "", "", "", "", "", "x"],
 ]
 
@@ -104,24 +105,24 @@ class TempDir(unittest.TestCase):
 
 class CodeConversion(unittest.TestCase):
     def test_mbom_to_ebom(self) -> None:
-        self.assertEqual(mbom_to_ebom("AB123456000"), "AB123456")
-        self.assertEqual(mbom_to_ebom("AB123456010"), "AB12345601")
-        self.assertEqual(mbom_to_ebom(12345678000), "12345678")
-        self.assertEqual(mbom_to_ebom("1234567899" + "0"), "1234567899")
+        self.assertEqual(mbom_to_ebom("AB1234000"), "AB1234")
+        self.assertEqual(mbom_to_ebom("AB1234010"), "AB123401")
+        self.assertEqual(mbom_to_ebom(123456000), "123456")
+        self.assertEqual(mbom_to_ebom("12345699" + "0"), "12345699")
 
-    def test_ten_digit_with_00_is_base(self) -> None:
-        self.assertEqual(base_code("AB12345600"), "AB123456")
-        self.assertEqual(base_code("AB12345601"), "AB12345601")
-        self.assertEqual(base_code("AB123456"), "AB123456")
+    def test_branch_of_zeros_is_base(self) -> None:
+        self.assertEqual(base_code("AB123400"), "AB1234")
+        self.assertEqual(base_code("AB123401"), "AB123401")
+        self.assertEqual(base_code("AB1234"), "AB1234")
 
-    def test_not_eleven_digits_rejected(self) -> None:
-        for code in ("AB12345600", "AB1234560000", "AB123456011"):
+    def test_wrong_digits_rejected(self) -> None:
+        for code in ("AB123400", "AB12340000", "AB1234011"):
             with self.subTest(code=code), self.assertRaises(ValueError):
                 mbom_to_ebom(code)
 
     def test_cost_row_from_mbom_keeps_original(self) -> None:
-        row = CostRow.from_mbom("AB123456010", {M: 1})
-        self.assertEqual((row.code, row.mbom_code), ("AB12345601", "AB123456010"))
+        row = CostRow.from_mbom("AB1234010", {M: 1})
+        self.assertEqual((row.code, row.mbom_code), ("AB123401", "AB1234010"))
 
 
 class SymbolsAndVolumeKind(unittest.TestCase):
@@ -188,16 +189,16 @@ class ImportFiles(TempDir):
     def test_imported_values(self) -> None:
         imp = self.import_all(*self.make(".csv", "cp932"))
         v = imp.version
-        self.assertEqual(v.items["12340000"].kind, "Z9")
-        self.assertEqual(v.items["12340000"].lifecycle, "D")
-        self.assertIs(v.items["AB123456"].has_children, True)
-        self.assertEqual(v.cost_value("AB123456", M), d("1600"))
-        self.assertIsNone(v.cost_value("AB123456", CostHead.INDIRECT))
-        self.assertEqual(v.cost_value("AB12345601", M), d("1600.5"))
-        self.assertEqual(v.cost_value("12340000", M), d("0.1"))
-        self.assertEqual(v.children("AB12345601", by_balloon=True)[1].quantity, d(-1))
+        self.assertEqual(v.items["123400"].kind, "Z9")
+        self.assertEqual(v.items["123400"].lifecycle, "D")
+        self.assertIs(v.items["AB1234"].has_children, True)
+        self.assertEqual(v.cost_value("AB1234", M), d("1600"))
+        self.assertIsNone(v.cost_value("AB1234", CostHead.INDIRECT))
+        self.assertEqual(v.cost_value("AB123401", M), d("1600.5"))
+        self.assertEqual(v.cost_value("123400", M), d("0.1"))
+        self.assertEqual(v.children("AB123401", by_balloon=True)[1].quantity, d(-1))
         self.assertEqual(v.source_name, "item.csv, bom.csv, cost.csv")
-        # 11桁でない MBOM 品番は変換せずに取り込み、警告に出る
+        # 桁の合わない MBOM 品番は変換せずに取り込み、警告に出る
         self.assertEqual(v.cost_value("XYZ-9", M), d(7))
         self.assertEqual(len(imp.warnings), 1)
         self.assertIn("XYZ-9", imp.warnings[0].message)
@@ -274,7 +275,7 @@ class ColumnMapping(TempDir):
         write_csv(path, ITEM_HEADERS, ITEM_ROWS, "utf-8")
         imp = VersionImport(Version("t"))
         imp.add_file(path, ColumnMap("item", ITEM_HEADERS, {"code": "品番", "name": "名称"}))
-        self.assertEqual(imp.version.items["12340000"], Item("12340000", "部品乙"))
+        self.assertEqual(imp.version.items["123400"], Item("123400", "部品乙"))
         self.assertEqual(imp.warnings, [])
 
 

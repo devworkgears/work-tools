@@ -1,15 +1,15 @@
 """設計検討（/v2/）の API。検討は検討番号（number）と版（version: 空なら仮）で指す。"""
 
 import io
-import json
 import unicodedata
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Mapping
 from urllib.parse import quote
 
-from .formula import ADJUSTMENT_RATE, INDIRECT_RATE, breakdown, registered_own
+from . import settings
+from .formula import breakdown, registered_own
 from .importer import (
     TABLE_FIELDS,
     ColumnMap,
@@ -60,7 +60,6 @@ if TYPE_CHECKING:
 # 設計検討の見本（製品をまたぐ差し替えを試せる大きさ）。パッケージの外に置き、配る zip には入れない
 SAMPLES_DIR = Path(__file__).resolve().parent.parent / "samples_v2"
 XLSX_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-LABELS_NAME = "labels.json"
 
 
 def _balloons(ws: Workspace, plan: str, columns: list[str], part: str) -> dict[str, str]:
@@ -144,21 +143,13 @@ def _fold(text: str) -> str:
     return "".join(unicodedata.normalize("NFKC", text).casefold().split())
 
 
-def load_labels(db_path: Path | None) -> dict[str, str]:
-    """語の読み替え（画面と取り込みの見出しの語 → 使う語）。DB と同じフォルダの labels.json に書く。無ければ空。"""
-    path = None if db_path is None else db_path.parent / LABELS_NAME
-    if path is None or not path.is_file():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError) as e:
-        raise ValueError(f"{LABELS_NAME} を読めません（{e}）") from None
-    if not isinstance(data, dict) or not all(isinstance(v, str) for v in data.values()):
-        raise ValueError(f"{LABELS_NAME} の形が違います（語 → 使う語 の対応を書く）")
-    return data
+def _rates_json(ws: Workspace) -> dict[str, str]:
+    """計算に使った率（%）。"""
+    rates = ws.use_rates()
+    return {k: format((v * 100).normalize(), "f") for k, v in (("adjustment", rates.adjustment), ("indirect", rates.indirect))}
 
 
-def item_attributes(table: Table, column_map: ColumnMap, labels: dict[str, str] | None = None) -> Attributes:
+def item_attributes(table: Table, column_map: ColumnMap, labels: Mapping[str, str] | None = None) -> Attributes:
     """部品マスタの任意の列（代表・規格・組立図）を品番ごとに。無い列は空文字。
 
     labels に読み替えがある見出しは、読み替えた語の列を先に探し、無ければ元の語の列を使う。
@@ -183,7 +174,7 @@ def item_attributes(table: Table, column_map: ColumnMap, labels: dict[str, str] 
     return result
 
 
-def import_tables(tables: list[Table], labels: dict[str, str] | None = None,
+def import_tables(tables: list[Table], labels: Mapping[str, str] | None = None,
                   maps: list[ColumnMap | None] | None = None) -> tuple[Version, list[str], list[str], Attributes]:
     """表を取り込んだ版・入った表の種類・警告の文・品目の属性。
 
@@ -269,7 +260,7 @@ class StudyApi:
     # 部品表 -----------------------------------------------------------------
 
     def labels(self, params: dict[str, str]) -> "Response":
-        return self._json({"labels": load_labels(self.api.store.path)})
+        return self._json({"labels": dict(settings.labels())})
 
     def bom_status(self, params: dict[str, str]) -> "Response":
         return self._json({"counts": self.store.bom_counts(), "samples": SAMPLES_DIR.is_dir()})
@@ -297,7 +288,7 @@ class StudyApi:
                 table, _, _ = screens._read_upload(f)
                 tables.append(table)
                 maps.append(screens._column_map(f, table) if f.get("columns") is not None else None)
-        version, kinds, warnings, attributes = import_tables(tables, load_labels(self.api.store.path), maps)
+        version, kinds, warnings, attributes = import_tables(tables, settings.labels(), maps)
         if body.get("check"):
             read = {"item": len(version.items), "bom_line": len(version.lines), "cost": len(version.cost_rows),
                     "volume": len(version.volumes)}
@@ -316,9 +307,9 @@ class StudyApi:
         temp: set[str] = set()
         if params.get("number"):
             ws = self._ws(params)
-            bom, attributes, temp = ws.bom, ws.attributes, ws.temp_merged
+            bom, attributes, temp, rates = ws.bom, ws.attributes, ws.temp_merged, ws.rates
         else:
-            bom, attributes = self.store.load_bom(), self.store.load_attributes()
+            bom, attributes, rates = self.store.load_bom(), self.store.load_attributes(), None
         codes = [nfkc(str(c)).strip() for c in _list(body, "codes") if c is not None and str(c).strip()]
         calc = CostCalculator(bom, CostHead.MATERIAL)
         result = {}
@@ -341,7 +332,7 @@ class StudyApi:
                 **{name: attributes.get(code, {}).get(name, "") for name, _ in ATTRIBUTES},
                 "annual": None if volume is None else _s(volume.annual),
                 "material": _s(material),
-                "manufacturing": _s(breakdown(material, registered_own(bom, code)).value(CostHead.MANUFACTURING)
+                "manufacturing": _s(breakdown(material, registered_own(bom, code), rates=rates).value(CostHead.MANUFACTURING)
                                     if material is not None else None),
             }
         return self._json({"items": result})
@@ -717,12 +708,13 @@ class StudyApi:
         if key == "all":
             ws = self._ws(params)
             results = calculate_heads(ws)
-            return {"computed_at": now, "head": "all", "plans": ws.plan_ids(),
+            return {"computed_at": now, "head": "all", "plans": ws.plan_ids(), "rates": _rates_json(ws),
                     "heads": [{"key": k, "label": h.value, **self._head_json(results[h])} for k, h in HEADS.items()]}
         head = HEADS.get(key)
         if head is None:
             raise ValueError(f"費目の指定が違います（{key}）")
-        return {"computed_at": now, "head": key, **self._head_json(calculate(self._ws(params), head))}
+        ws = self._ws(params)
+        return {"computed_at": now, "head": key, "rates": _rates_json(ws), **self._head_json(calculate(ws, head))}
 
     def calc(self, params: dict[str, str]) -> "Response":
         return self._json(self._calc(params))
@@ -797,8 +789,10 @@ class StudyApi:
 
     @staticmethod
     def _condition_rows(ws: Workspace, plan: str) -> list[list[Any]]:
+        rates = ws.use_rates()
+        note = "版を取った時の率" if ws.rates else None
         rows: list[list[Any]] = [["単価の時点", None, None, None, "時点は持っていない（取り込んだ原価の表の値で計算する）"],
-                                 ["率", None, "調整費", ADJUSTMENT_RATE, None], ["率", None, "間接費", INDIRECT_RATE, None]]
+                                 ["率", None, "調整費", rates.adjustment, note], ["率", None, "間接費", rates.indirect, note]]
         for p in ws.targets:
             volume = ws.bom.volume(p)
             given = ws.conditions.get(p)

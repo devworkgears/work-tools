@@ -1,6 +1,6 @@
 """CSV／Excel（.xlsx）の取り込みと、元の列とモックの項目の対応づけ。
 
-元のファイルには列がたくさんある。モックが使う項目ごとに「どの見出しの列か」を ColumnMap で決め、
+使う項目ごとに「どの見出しの列か」を ColumnMap で決め、
 同じ見出しの並びのファイルには保存した ColumnMap をそのまま当てる（保存は store）。
 """
 
@@ -290,7 +290,7 @@ class VersionImport:
         add_row = getattr(self, f"_add_{column_map.table}")
         self_rows = 0
         for number, record in column_map.records(table):
-            # 頂点の品目を「親＝子」の1行で出す構成表がある。構成ではないので、行ごとに警告せず数だけ残す
+            # 親と子が同じ行は構成ではないので、行ごとに警告せず数だけ残す
             if column_map.table == "bom_line" and _is_self_row(record):
                 self_rows += 1
                 continue
@@ -327,7 +327,7 @@ class VersionImport:
             code = mbom_to_ebom(mbom)
         except ValueError:
             code = mbom
-            self._warn(file, number, f"MBOM の品番が11桁でないので変換せずに取り込んだ: {mbom}")
+            self._warn(file, number, f"MBOM の品番が設定の桁に合わないので変換せずに取り込んだ: {mbom}")
         values = {head: r.get(name) for name, head in COST_FIELDS.items()}
         row = CostRow(code, values, mbom_code=mbom)
         kept = self.version.cost_row(code)

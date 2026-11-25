@@ -6,6 +6,7 @@ import unittest
 from decimal import Decimal
 from pathlib import Path
 
+import example_settings  # noqa: F401
 from bomcost import (
     BomLine,
     CostHead,

@@ -3,6 +3,7 @@
 import unittest
 from decimal import Decimal
 
+import example_settings  # noqa: F401
 import example_data as ex
 from bomcost import (
     Allocation,
@@ -48,7 +49,7 @@ class DecimalOnly(unittest.TestCase):
         self.assertEqual(line.quantity, Decimal("0.1"))
         row = CostRow("Q", {M: 1600.0})
         self.assertIsInstance(row.value(M), Decimal)
-        self.assertEqual(MoldCost("Q", 2400000.0).amount, Decimal("2400000"))
+        self.assertEqual(MoldCost("Q", 2400000.0, 2).amount, Decimal("2400000"))
         self.assertEqual(Volume("P", 1000.0).annual, Decimal("1000"))
 
     def test_float_int_and_text_give_same_result(self) -> None:
@@ -80,25 +81,25 @@ class InputVariations(unittest.TestCase):
         v = Version("t")
         v.add_bom_lines(
             [
-                BomLine(12345, 1, 67890123, 2),
-                BomLine("12345", " 2 ", " 55555555 ", "3"),
+                BomLine(12345, 1, 678901, 2),
+                BomLine("12345", " 2 ", " 555555 ", "3"),
             ]
         )
         v.add_costs(
             [
-                CostRow.from_mbom("67890123000", {M: "1,600"}),
-                CostRow.from_mbom(55555555000, {M: 500}),
+                CostRow.from_mbom("678901000", {M: "1,600"}),
+                CostRow.from_mbom(555555000, {M: 500}),
             ]
         )
         result = calculate_cost(v, " 12345 ", M)
         self.assertEqual(result.total, Decimal("4700"))
         self.assertEqual(calculate_cost(v, 12345, M).total, Decimal("4700"))
-        self.assertEqual({line.child for line in v.children(12345)}, {"67890123", "55555555"})
+        self.assertEqual({line.child for line in v.children(12345)}, {"678901", "555555"})
 
     def test_integral_float_code_joins_int_code(self) -> None:
         v = Version("t")
-        v.add_bom_lines([BomLine(12345.0, 1, 67890123.0, 2)])
-        v.add_costs([CostRow.from_mbom("67890123000", {M: 100})])
+        v.add_bom_lines([BomLine(12345.0, 1, 678901.0, 2)])
+        v.add_costs([CostRow.from_mbom("678901000", {M: 100})])
         self.assertEqual(calculate_cost(v, 12345, M).total, Decimal("200"))
         with self.assertRaises(TypeError):
             BomLine(12345.5, 1, 67890, 2)
@@ -245,7 +246,7 @@ class MoldSum(unittest.TestCase):
 
     def test_unknown_volume_and_default_years(self) -> None:
         v = Version("t")
-        mold = MoldCost("N", 100)
+        mold = MoldCost("N", 100, 2)
         self.assertEqual(mold.years, Decimal(2))
         a = allocate_mold_cost(v, mold, Allocation.BY_USAGE, [ReuseTarget("N", "Z-1", 1)])
         self.assertEqual(a.unknown_volume, ("Z-1",))

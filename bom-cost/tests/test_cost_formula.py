@@ -6,8 +6,10 @@ import unittest
 from decimal import Decimal
 from urllib.parse import quote
 
+import example_settings  # noqa: F401
 from bomcost import BomLine, CostHead, CostRow, Item, Version
-from bomcost.formula import ADJUSTMENT_RATE, INDIRECT_RATE, Head, OwnValues, breakdown
+from bomcost import settings
+from bomcost.formula import Head, OwnValues, breakdown
 from bomcost.importer import load_openpyxl
 from bomcost.rollup import calculate_cost
 from bomcost.scenario import Change, ChangeKind, Scenario
@@ -26,20 +28,19 @@ class Formula(unittest.TestCase):
         b = breakdown(D(1000), OwnValues(D(0), D(100), D(50)))
         self.assertEqual(values(b), {
             "MATERIAL": D(1000), "PROCESSING": D(0), "AMORTIZATION": D(100),
-            "ADJUSTMENT": D(33),  # (1000 ＋ 0 ＋ 100) × 0.03
-            "MATERIAL_TOTAL": D(1133),
-            "INDIRECT": D("124.63"),  # 1133 × 0.11
+            "ADJUSTMENT": D(110),  # (1000 ＋ 0 ＋ 100) × 0.1
+            "MATERIAL_TOTAL": D(1210),
+            "INDIRECT": D(242),  # 1210 × 0.2
             "DIRECT": D(50),
-            "MANUFACTURING": D("1307.63"),  # 1133 ＋ 124.63 ＋ 50
+            "MANUFACTURING": D(1502),  # 1210 ＋ 242 ＋ 50
         })
         self.assertEqual(b.incomplete, frozenset())
         # 端数は丸めない。社内加工費も調整費の元に入る
         c = breakdown(D("10.01"), OwnValues(D(5), D(0), D(0)))
-        self.assertEqual(c.value(Head.ADJUSTMENT), D("0.4503"))
-        self.assertEqual(c.value(Head.MANUFACTURING), D("15.4603") * D("1.11"))
-        self.assertEqual((ADJUSTMENT_RATE, INDIRECT_RATE), (D("0.03"), D("0.11")))
+        self.assertEqual(c.value(Head.ADJUSTMENT), D("1.501"))
+        self.assertEqual(c.value(Head.MANUFACTURING), D("16.511") * D("1.2"))
         # 表示の文字は末尾の 0 を落とすが指数表記にしない
-        self.assertEqual(format(breakdown(D(1000), OwnValues(D(0), D(0), D(0))).value(Head.MATERIAL_TOTAL), "f"), "1030")
+        self.assertEqual(format(breakdown(D(1000), OwnValues(D(0), D(0), D(0))).value(Head.MATERIAL_TOTAL), "f"), "1100")
 
     def test_material_missing_makes_dependents_missing(self) -> None:
         b = breakdown(None, OwnValues(D(0), D(100), D(50)))
@@ -51,18 +52,18 @@ class Formula(unittest.TestCase):
     def test_amortization_and_direct_missing_count_as_zero_with_mark(self) -> None:
         b = breakdown(D(1000), OwnValues(D(0), None, None))
         self.assertEqual((b.value(Head.AMORTIZATION), b.value(Head.DIRECT)), (None, None))
-        self.assertEqual(b.value(Head.ADJUSTMENT), D(30))
-        self.assertEqual(b.value(Head.MANUFACTURING), D("1143.3"))  # 1030 × 1.11
+        self.assertEqual(b.value(Head.ADJUSTMENT), D(100))
+        self.assertEqual(b.value(Head.MANUFACTURING), D(1320))  # 1100 × 1.2
         self.assertEqual({h.name for h in b.incomplete},
                          {"AMORTIZATION", "ADJUSTMENT", "MATERIAL_TOTAL", "INDIRECT", "DIRECT", "MANUFACTURING"})
         only_direct = breakdown(D(1000), OwnValues(D(0), D(0), None))
         self.assertEqual({h.name for h in only_direct.incomplete}, {"DIRECT", "MANUFACTURING"})
         # 償却費を無視すると 0 として通し、印を付けない（欄は空）
         ignored = breakdown(D(1000), OwnValues(D(0), None, D(0)), ignore_amortization=True)
-        self.assertEqual((ignored.value(Head.AMORTIZATION), ignored.value(Head.MANUFACTURING)), (None, D("1143.3")))
+        self.assertEqual((ignored.value(Head.AMORTIZATION), ignored.value(Head.MANUFACTURING)), (None, D(1320)))
         self.assertEqual(ignored.incomplete, frozenset())
         ignored_registered = breakdown(D(1000), OwnValues(D(0), D(500), D(0)), ignore_amortization=True)
-        self.assertEqual(ignored_registered.value(Head.ADJUSTMENT), D(30))
+        self.assertEqual(ignored_registered.value(Head.ADJUSTMENT), D(100))
         # 材料費小計が一部未登録なら、それに依る費目も一部未登録
         partial = breakdown(D(1000), OwnValues(D(0), D(0), D(0)), material_incomplete=True)
         self.assertEqual({h.name for h in partial.incomplete},
@@ -87,12 +88,12 @@ class RollupOnlyMaterial(unittest.TestCase):
     def test_parts_manufacturing_is_not_added_to_product(self) -> None:
         v = small_version()
         result = calculate_cost(v, "P", CostHead.MANUFACTURING)
-        # 材料費小計 200（2×100）・償却費 10 → 材料費合計 216.3・間接費 23.793・直接費 5
-        self.assertEqual(result.total, D("245.093"))
+        # 材料費小計 200（2×100）・償却費 10 → 材料費合計 231・間接費 46.2・直接費 5
+        self.assertEqual(result.total, D("282.2"))
         self.assertEqual(calculate_cost(v, "P", CostHead.DIRECT).total, D(5))  # 子の 2×30 を足さない
-        self.assertEqual(calculate_cost(v, "P", CostHead.INDIRECT).total, D("23.793"))
-        # 部品にも同じ式を当てる（その値は親の計算に使わない）: 100 × 1.03 × 1.11 ＋ 30
-        self.assertEqual(result.item_costs["C"], D("144.33"))
+        self.assertEqual(calculate_cost(v, "P", CostHead.INDIRECT).total, D("46.2"))
+        # 部品にも同じ式を当てる（その値は親の計算に使わない）: 100 × 1.1 × 1.2 ＋ 30
+        self.assertEqual(result.item_costs["C"], D(162))
 
     def test_swapping_parts_moves_only_material(self) -> None:
         v = small_version()
@@ -103,7 +104,7 @@ class RollupOnlyMaterial(unittest.TestCase):
         after = {h: s.calculate(head=h).total for h in (M, CostHead.DIRECT, CostHead.MANUFACTURING)}
         self.assertEqual(after[M] - before[M], D(250))  # 2×(150−100) ＋ 150
         self.assertEqual(after[CostHead.DIRECT], before[CostHead.DIRECT])
-        self.assertEqual(after[CostHead.MANUFACTURING] - before[CostHead.MANUFACTURING], D(250) * D("1.03") * D("1.11"))
+        self.assertEqual(after[CostHead.MANUFACTURING] - before[CostHead.MANUFACTURING], D(250) * D("1.1") * D("1.2"))
 
     def test_set_head_changes_product_values(self) -> None:
         v = small_version()
@@ -115,8 +116,8 @@ class RollupOnlyMaterial(unittest.TestCase):
         s.apply(Change(ChangeKind.SET_HEAD, "P", 0, target_head="AMORTIZATION"))
         self.assertEqual(s.root_lines(), lines)  # 構成は変えない
         self.assertEqual(s.own_values(), OwnValues(D(30), D(0), D(80)))
-        # (200 ＋ 30 ＋ 0) × 1.03 × 1.11 ＋ 80
-        self.assertEqual(s.calculate().total, D(230) * D("1.03") * D("1.11") + 80)
+        # (200 ＋ 30 ＋ 0) × 1.1 × 1.2 ＋ 80
+        self.assertEqual(s.calculate().total, D(230) * D("1.1") * D("1.2") + 80)
         self.assertEqual(s.calculate(head=M).total, D(200))
         s.undo()
         self.assertEqual(s.own_values().amortization, D(10))
@@ -143,14 +144,14 @@ class SampleApi(SampleDbCase):
             ("MATERIAL", "材料費小計"), ("PROCESSING", "社内加工費"), ("AMORTIZATION", "償却費"), ("ADJUSTMENT", "調整費"),
             ("MATERIAL_TOTAL", "材料費合計"), ("INDIRECT", "間接費"), ("DIRECT", "直接費"), ("MANUFACTURING", "製造原価")])
         base, trial = r["rows"]
-        # 200 → 材料費合計 206・間接費 22.66・製造原価 228.66（直接費は未登録で 0 として通す）
+        # 200 → 材料費合計 220・間接費 44・製造原価 264（直接費は未登録で 0 として通す）
         self.assertEqual((base["costs"]["MATERIAL_TOTAL"], base["costs"]["INDIRECT"], base["costs"]["MANUFACTURING"]),
-                         ("206", "22.66", "228.66"))
+                         ("220", "44", "264"))
         self.assertEqual(base["costs"]["PROCESSING"], "0")
         self.assertIn("MANUFACTURING", base["incomplete"])
         self.assertNotIn("AMORTIZATION", base["incomplete"])  # 無視した償却費は印を付けない
-        # 製造原価の差は 材料費の差 × 1.03 × 1.11
-        self.assertEqual(D(trial["differences"]["MANUFACTURING"]), D(-2800) * D("1.03") * D("1.11"))
+        # 製造原価の差は 材料費の差 × 1.1 × 1.2
+        self.assertEqual(D(trial["differences"]["MANUFACTURING"]), D(-2800) * D("1.1") * D("1.2"))
         self.assertEqual(trial["differences"]["PROCESSING"], "0")
         # ②の製品の行の差も同じ計算
         rows = {p["code"]: p for p in self.products("&costs=1&head=MANUFACTURING")["products"]}
@@ -165,7 +166,7 @@ class SampleApi(SampleDbCase):
             ("SET_HEAD", "費目変更", "DIRECT", "費目変更 直接費 → 50"),
             ("SET_HEAD", "費目変更", "PROCESSING", "費目変更 社内加工費 → 100")])
         self.assertEqual(D(rows[0]["difference"]), D(50))
-        self.assertEqual(D(rows[1]["difference"]), D(100) * D("1.03") * D("1.11"))
+        self.assertEqual(D(rows[1]["difference"]), D(100) * D("1.1") * D("1.2"))
         heads = self.ok("GET", "/api/group/heads", f"group=2026-10&product=A-100")
         self.assertEqual(heads["editable"], ["PROCESSING", "AMORTIZATION", "DIRECT"])
         self.assertEqual((heads["current"]["DIRECT"], heads["after"]["DIRECT"]), (None, "50"))
@@ -202,7 +203,7 @@ class SampleApi(SampleDbCase):
             ("V-110", "費目変更 償却費 → 5", None)])
         self.assertEqual([(h["id"], h["value"]) for h in rows[1]["heads"]], [("PROCESSING", "30"), ("DIRECT", "50")])
         # 1回の操作の差は、まとめて入れた費目の差の合計
-        self.assertEqual(D(rows[1]["difference"]), D(30) * D("1.03") * D("1.11") + 40)
+        self.assertEqual(D(rows[1]["difference"]), D(30) * D("1.1") * D("1.2") + 40)
         table = self.ok("GET", "/api/group/heads/all", f"group=2026-10")
         self.assertEqual([h["id"] for h in table["heads"]], ["PROCESSING", "AMORTIZATION", "DIRECT"])
         after = {x["product"]: x["after"] for x in table["rows"]}
@@ -232,9 +233,9 @@ class SampleApi(SampleDbCase):
         calc = {c["head"]: (c["value"], c["incomplete"]) for c in item["calculated"]}
         self.assertEqual(list(calc), [h.name for h in Head])
         self.assertEqual(calc["MATERIAL"], ("200", False))
-        self.assertEqual(calc["MANUFACTURING"], ("228.66", True))  # 償却費・直接費が未登録で 0 として通した
+        self.assertEqual(calc["MANUFACTURING"], ("264", True))  # 償却費・直接費が未登録で 0 として通した
         candidates = {c["code"]: c for c in self.ok("GET", "/api/lookup", "group=2026-10&q=部品")["candidates"]}
-        self.assertEqual(candidates["B-200"]["manufacturing"], "1829.28")  # 1600 × 1.03 × 1.11
+        self.assertEqual(candidates["B-200"]["manufacturing"], "2112")  # 1600 × 1.1 × 1.2
 
     @unittest.skipUnless(HAS_OPENPYXL, "openpyxl が無い")
     def test_excel_heads(self) -> None:

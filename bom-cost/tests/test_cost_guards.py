@@ -5,6 +5,7 @@ from datetime import datetime
 from decimal import Decimal
 from unittest.mock import patch
 
+import example_settings  # noqa: F401
 import bomcost.scenario as scenario_module
 from bomcost.group import replayed_batches
 

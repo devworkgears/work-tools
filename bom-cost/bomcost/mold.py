@@ -14,8 +14,6 @@ from .model import Code, CostHead, Version, VolumeKind
 from .normalize import NumberLike, to_code, to_decimal
 from .rollup import ScopePolicy, StructureOverrides, calculate_cost
 
-DEFAULT_AMORTIZATION_YEARS = Decimal(2)
-
 
 class Allocation(Enum):
     NEW_PRODUCTS_ONLY = "新製品だけに載せる"
@@ -27,7 +25,7 @@ class Allocation(Enum):
 class MoldCost:
     part: str
     amount: Decimal
-    years: Decimal = DEFAULT_AMORTIZATION_YEARS
+    years: Decimal
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "part", to_code(self.part))

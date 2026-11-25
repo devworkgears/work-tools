@@ -2,6 +2,7 @@
 
 import unittest
 
+import example_settings  # noqa: F401
 from bomcost import Change, ChangeKind, CostHead, Scenario
 from bomcost.demo import demo_policy, demo_versions
 from test_group import SampleDbCase

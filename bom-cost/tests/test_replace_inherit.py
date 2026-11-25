@@ -6,6 +6,7 @@ import unittest
 from decimal import Decimal
 from urllib.parse import quote
 
+import example_settings  # noqa: F401
 from bomcost import BomLine, CostHead, CostRow, Item, Version
 from bomcost.importer import load_openpyxl
 from bomcost.scenario import Change, ChangeKind, Scenario

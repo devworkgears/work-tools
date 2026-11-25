@@ -3,6 +3,7 @@
 import unittest
 from decimal import Decimal
 
+import example_settings  # noqa: F401
 from bomcost.app import static_response
 from bomcost.group import Group, _Structure
 from bomcost.lookup import Lookup, _used_in

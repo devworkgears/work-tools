@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import example_settings  # noqa: F401
 from bomcost import Store
 from bomcost.api import Api
 from bomcost.importer import load_openpyxl

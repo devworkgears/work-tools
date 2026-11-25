@@ -13,6 +13,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, Iterable, Mapping, Sequence
 
+from . import settings
 from .formula import COMPARE_HEADS, Breakdown, Head, OwnValues, breakdown, registered_own
 from .model import BomLine, CostHead, CostRow, Item, Version, Volume
 from .normalize import to_code, to_decimal, to_optional_code
@@ -264,6 +265,11 @@ class Workspace:
     owns: dict[str, dict[tuple[str, str], Decimal]] = field(default_factory=dict)
     # temps のうち部品表に混ぜた品番（品目の台帳に同じ品番がある仮品番は、台帳の方を使うので混ぜない）
     temp_merged: set[str] = field(default_factory=set)
+    # 版を取った時の率。None（仮と、率を持たない前の版）は設定の率を使う
+    rates: settings.Rates | None = None
+
+    def use_rates(self) -> settings.Rates:
+        return self.rates or settings.rates()
 
     def attribute(self, code: str, name: str) -> str:
         return self.attributes.get(code, {}).get(name, "")
@@ -503,6 +509,7 @@ def calculate_heads(ws: Workspace, heads: Sequence[Head] = COMPARE_HEADS) -> dic
     """
     bom = ws.bom
     calc = CostCalculator(bom, CostHead.MATERIAL)
+    rates = ws.use_rates()
     all_checked = check_changes(ws)
     checked = [c for c in all_checked if c.counted]
     # 計算から外した変更がある製品・案は、値に不完全の印を付ける
@@ -529,7 +536,7 @@ def calculate_heads(ws: Workspace, heads: Sequence[Head] = COMPARE_HEADS) -> dic
         now_material = None if material_result is None else material_result.total
         # 組立品の未登録は子から足し上げて出るので、不完全は子の無い品目の未登録だけ
         now_missing = material_result is None or any(not bom.children(m) for m in material_result.missing)
-        now_b = None if now_material is None else breakdown(now_material, own)
+        now_b = None if now_material is None else breakdown(now_material, own, rates=rates)
         annual = ws.conditions.get(product)
         if annual is None and bom.volume(product) is not None:
             annual = bom.volume(product).annual
@@ -546,7 +553,8 @@ def calculate_heads(ws: Workspace, heads: Sequence[Head] = COMPARE_HEADS) -> dic
                     missing = True
                     continue
                 delta += c.change.delta * usage.get(c.change.parent, Decimal(0)) * unit
-            b = None if now_material is None else breakdown(now_material + delta, own_values(ws, plan, product, own))
+            b = None if now_material is None else breakdown(now_material + delta, own_values(ws, plan, product, own),
+                                                               rates=rates)
             after_b[plan] = (b, missing)
         for head in heads:
             res = results[head]
@@ -1103,6 +1111,10 @@ class StudyStore:
         return _from_snapshot(json.loads(row[0]), version)
 
 
+def _rates_snapshot(rates: settings.Rates) -> list[str]:
+    return [str(rates.adjustment), str(rates.indirect)]
+
+
 def _snapshot(ws: Workspace) -> dict[str, Any]:
     bom = ws.bom
     codes: set[str] = set(ws.targets)
@@ -1118,6 +1130,7 @@ def _snapshot(ws: Workspace) -> dict[str, Any]:
         "header": ws.header,
         "targets": ws.targets,
         "main_product": ws.main_product,
+        "rates": _rates_snapshot(ws.use_rates()),
         "plans": [{"plan": p.plan, "grid_columns": p.grid_columns, "grid_rows": p.grid_rows} for p in ws.plans],
         "replaces": ws.replaces,
         "changes": [[c.plan, c.product, c.parent, c.balloon, c.part, str(c.delta), c.source, c.origin, c.seq]
@@ -1150,6 +1163,7 @@ def _from_snapshot(data: dict[str, Any], version: int) -> Workspace:
         bom.add_cost(CostRow(row[0], {h: _dec(t) for (_, h), t in zip(COST_COLUMNS, row[1:])}))
     for product, annual in b["volumes"]:
         bom.add_volume(Volume(product, Decimal(annual)))
+    rates = data.get("rates")  # 率を残す前に固めた版には無い
     return Workspace(
         number=data["header"]["number"],
         version=version,
@@ -1166,6 +1180,7 @@ def _from_snapshot(data: dict[str, Any], version: int) -> Workspace:
         attributes=attributes,
         temps=[(c, nm, _dec(m)) for c, nm, m in data.get("temps", [])],
         temp_merged=set(data.get("temp_merged", [])),
+        rates=None if rates is None else settings.Rates(Decimal(rates[0]), Decimal(rates[1])),
         owns={plan: {(p, h): Decimal(v) for p, h, v in rows} for plan, rows in data.get("owns", {}).items()},
     )
 

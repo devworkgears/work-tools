@@ -5,7 +5,7 @@
 間接費   ＝ 材料費合計 × 間接費の率
 製造原価  ＝ 材料費合計 ＋ 間接費 ＋ 直接費
 
-端数は丸めない。取り込んだ・登録した調整費・間接費・製造原価は使わない。
+率は設定（settings）から。空なら計算を断る。端数は丸めない。取り込んだ・登録した調整費・間接費・製造原価は使わない。
 """
 
 from dataclasses import dataclass, replace
@@ -13,10 +13,8 @@ from decimal import Decimal
 from enum import Enum
 from typing import Mapping
 
+from . import settings
 from .model import Code, CostHead, Version
-
-ADJUSTMENT_RATE = Decimal("0.03")
-INDIRECT_RATE = Decimal("0.11")
 
 
 class Head(Enum):
@@ -56,7 +54,7 @@ class OwnValues:
 
 
 def registered_own(version: Version, code: Code) -> OwnValues:
-    """品目の登録値から。社内加工費はもともと CSV に無い前提なので、未登録は 0（未登録の印は付けない）。"""
+    """品目の登録値から。社内加工費の未登録は 0（未登録の印は付けない）。"""
     processing = version.cost_value(code, CostHead.PROCESSING)
     return OwnValues(Decimal(0) if processing is None else processing,
                      version.cost_value(code, CostHead.AMORTIZATION), version.cost_value(code, CostHead.DIRECT))
@@ -81,12 +79,13 @@ def _tidy(value: Decimal) -> Decimal:
 
 
 def breakdown(material: Decimal | None, own: OwnValues, *, material_incomplete: bool = False,
-              ignore_amortization: bool = False) -> Breakdown:
+              ignore_amortization: bool = False, rates: settings.Rates | None = None) -> Breakdown:
     """材料費小計と品目自身の値から8費目を出す。
 
     材料費小計が未登録なら、それに依る費目は全部未登録。償却費・直接費が未登録なら 0 として通し、一部未登録にする。
-    ignore_amortization は償却費を 0 として扱い、未登録の印を付けない（償却費の欄は None）。
+    ignore_amortization は償却費を 0 として扱い、未登録の印を付けない（償却費の欄は None）。rates が無ければ設定の率を使う。
     """
+    rates = rates or settings.rates()
     incomplete: set[Head] = set()
     if material_incomplete:
         incomplete |= {Head.MATERIAL, *_BELOW_MATERIAL}
@@ -108,9 +107,9 @@ def breakdown(material: Decimal | None, own: OwnValues, *, material_incomplete: 
     }
     if material is not None:
         base = material + own.processing + amortization_used
-        adjustment = base * ADJUSTMENT_RATE
+        adjustment = base * rates.adjustment
         material_total = base + adjustment
-        indirect = material_total * INDIRECT_RATE
+        indirect = material_total * rates.indirect
         values.update({
             Head.ADJUSTMENT: _tidy(adjustment),
             Head.MATERIAL_TOTAL: _tidy(material_total),

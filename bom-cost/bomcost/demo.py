@@ -1,12 +1,13 @@
-"""画面を試すための架空の例の DB。中身はテストの tests/example_data.py と同じ（すべて材料費・円）。区分の記号だけ製品 2・部品 1。
+"""画面を試すための架空の例の DB。中身はテストの tests/example_data.py と同じ（すべて材料費・円）。区分の記号だけ製品・部品の文字。
 
 品番・名称・数値・区分の記号はすべて架空。
 """
 
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 
-from .group import PART_KIND_CODE, PRODUCT_KIND_CODE
+from . import settings
 from .model import MANUAL_VERSION_ID, BomLine, CostHead, CostRow, Item, Version, Volume
 from .mold import MoldCost, ReuseTarget
 from .rollup import Scope, ScopePolicy
@@ -14,8 +15,10 @@ from .scenario import Change, ChangeKind, Scenario
 from .store import Store
 
 M = CostHead.MATERIAL
-PRODUCT = PRODUCT_KIND_CODE  # 区分の記号: 製品
-PART = PART_KIND_CODE  # 部品
+PRODUCT = settings.PRODUCT_KIND  # 区分の記号
+PART = settings.PART_KIND
+# DB のフォルダに設定が無い時に置く、架空の率
+DEMO_SETTINGS = settings.Settings(adjustment_percent=Decimal(5), indirect_percent=Decimal(10), mold_years=Decimal(3))
 DEMO_SCENARIO_NAME = "V-110 検討"
 DEMO_DEV_NUMBER = "D-100"  # 2つのグループはこの開発番号
 DEMO_DEV_NAME = "例のユニット"
@@ -94,10 +97,13 @@ def build_demo(path: str | Path) -> int:
     """架空の例を入れた DB を path に作り、グループ 2026-10 の A-100 の試算（V-110）の ID を返す。path にファイルがあれば止める。
 
     2つのグループは同じ開発番号で、どちらにも同じマスタ登録・型費・流用先を入れる（グループどうしは共有しない）。
+    同じフォルダに settings.json が無ければ、架空の率の物を置く（あれば触らない）。
     """
     path = Path(path)
     if path.exists():
         raise FileExistsError(f"{path} はもうある（作り直すなら消すか、別の名前にする）")
+    if not (path.parent / settings.NAME).exists():
+        settings.write(path.parent / settings.NAME, DEMO_SETTINGS)
     with Store(path) as store:
         for version in demo_versions():
             store.save_group(version)

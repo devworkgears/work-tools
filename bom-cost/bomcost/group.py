@@ -13,10 +13,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 from urllib.parse import quote
 
+from . import settings
 from .api import (XLSX_TYPE, ApiError, Response, _flag, _head, _json_response, _place, _require_known,
                   _record_json, _s, _specification, _text_field, _View, group_label, scenario_annual, trial_code)
 from .comparebook import compare_file_name, compare_workbook
-from .formula import ADJUSTMENT_RATE, COMPARE_HEADS, EDITABLE_HEADS, INDIRECT_RATE, Breakdown, Head
+from .formula import COMPARE_HEADS, EDITABLE_HEADS, Breakdown, Head
 from .model import BomLine, CostHead, Version
 from .normalize import to_code
 from .scenario import ChangeKind, ChangeRecord, Scenario
@@ -27,19 +28,16 @@ if TYPE_CHECKING:
 DEFAULT_PRODUCT_LIMIT = 500
 DEFAULT_ROW_LIMIT = 2000
 MAX_LIMIT = 20000
-PRODUCT_KIND_TEXT = "製品"
-PRODUCT_KIND_CODE = "2"  # 区分の記号: 製品
-PART_KIND_CODE = "1"  # 区分の記号: 部品（製品の記号が PRODUCT_KIND_CODE の時に付ける）
 
 
 def part_kind(product_kind: str, kind: str) -> str:
-    """部品として登録する品目の区分。記号が空で、製品の記号が PRODUCT_KIND_CODE なら PART_KIND_CODE。"""
-    return kind or (PART_KIND_CODE if product_kind == PRODUCT_KIND_CODE else "")
+    """部品として登録する品目の区分。記号が空で、製品の記号が設定の製品の記号なら、設定の部品の記号。"""
+    return kind or (settings.part_kind() if product_kind == settings.product_kind() else "")
 
 
 def is_product_kind(product_kind: str, kind: str) -> bool:
-    """部品に付けられない区分の記号か（製品とみなす記号と PRODUCT_KIND_CODE）。"""
-    return bool(kind) and kind in (product_kind, PRODUCT_KIND_CODE)
+    """部品に付けられない区分の記号か（製品とみなす記号と、設定の製品の記号）。"""
+    return bool(kind) and kind in (product_kind, settings.product_kind())
 
 
 # ③の変更後の列の名前（グループの変更は1つなので、今と並べる列は1つ）
@@ -265,7 +263,7 @@ class Group:
         parts（部品の品番の並び）を付けると、製品の直の子でなくその部品の直の子の内訳（製品ごとの部品の使用数を掛ける）。
         series の行には products（その行が出た製品の数）と annual（年間台数を掛けた金額・台数が未登録の製品は除いて
         annual_excluded に）を足す。contributions は 現行 → 変更後 の差を行ごとに、差の大きい順に（差の無い行は除く。
-        片方が未登録なら difference は None で後ろ）。部品自身の分（塗装・梱包など）は内訳に出さない。
+        片方が未登録なら difference は None で後ろ）。部品自身の分は内訳に出さない。
 
         cost=manufacturing は製造原価で: 部品の行は 材料費 ×(1＋調整費の率)×(1＋間接費の率)、製品の段（parts なし）では
         部品の行の後に製品の費目の行（kind＝head・社内加工費・償却費は同じ率を掛け、直接費はそのまま。製品自身の材料費があれば
@@ -292,7 +290,7 @@ class Group:
         if cost not in ("material", "manufacturing"):
             raise ApiError(400, f"原価（cost）は material・manufacturing のどちらか: {cost}")
         ignore = _flag(params.get("ignore_amortization"))
-        factor = (1 + ADJUSTMENT_RATE) * (1 + INDIRECT_RATE) if cost == "manufacturing" else Decimal(1)
+        factor = settings.rates().factor if cost == "manufacturing" else Decimal(1)
         with_heads = cost == "manufacturing" and not level
         volumes = {code: v.annual for code in products if (v := version.volume(code)) is not None}
         weights = ({code: Decimal(1) for code in products} if weight == "unit"
@@ -515,14 +513,13 @@ class Group:
 
     @staticmethod
     def product_kind(version: Version, structure: _Structure, requested: str = "") -> str | None:
-        """製品とみなす区分の記号。指定 → 品目にあれば PRODUCT_KIND_CODE → 「製品」 → 構成の一番上の親に多い記号の順。"""
+        """製品とみなす区分の記号。指定 → 品目にあれば設定の製品の記号 → 「製品」 → 構成の一番上の親に多い記号の順。"""
         if requested:
             return requested
         kinds = {item.kind for item in version.items.values()}
-        if PRODUCT_KIND_CODE in kinds:
-            return PRODUCT_KIND_CODE
-        if PRODUCT_KIND_TEXT in kinds:
-            return PRODUCT_KIND_TEXT
+        for kind in (settings.product_kind(), settings.PRODUCT_KIND):
+            if kind in kinds:
+                return kind
         top_kinds = Counter(
             version.items[code].kind for code in structure.tops if code in version.items and version.items[code].kind
         )

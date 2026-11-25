@@ -21,6 +21,7 @@ from .mold import usage_per_unit
 from .normalize import to_code, to_decimal, to_optional_code
 from .rollup import CostCalculator, Scope
 from .scenario import Change, ChangeKind, ChangeRecord, Scenario
+from .settings import SettingsMissing
 from .store import Store
 
 MODES = {"diff": "差分", "bulk": "一括"}
@@ -457,6 +458,7 @@ class Api:
         from .lookup import lookup_routes
         from .masterbook import default_opener
         from .screens import screen_routes
+        from .settingsapi import settings_routes
         from .studyapi import study_routes
 
         # マスタのブックの置き場（None なら DB と同じフォルダ）と、書いたブックを開く関数（None なら開かない）
@@ -464,7 +466,7 @@ class Api:
         self.open_file: Callable[[Path], None] | None = default_opener()
         self._routes += [(m, re.compile(p), h)
                          for m, p, h in screen_routes(self) + group_routes(self) + lookup_routes(self)
-                         + study_routes(self)]
+                         + study_routes(self) + settings_routes(self)]
 
     # 入口 ------------------------------------------------------------------
 
@@ -489,6 +491,8 @@ class Api:
             return error_response(404, f"API が無い: {path}")
         except ApiError as exc:
             return error_response(exc.status, exc.message)
+        except SettingsMissing as exc:
+            return error_response(409, str(exc))
         except KeyError as exc:
             return error_response(404, str(exc.args[0]) if exc.args else "見つからない")
         except (ValueError, TypeError) as exc:

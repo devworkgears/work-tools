@@ -3,6 +3,7 @@
 import unittest
 from decimal import Decimal
 
+import example_settings  # noqa: F401
 from bomcost.app import static_response
 from bomcost.model import BomLine, Item, Version
 from test_group import SampleDbCase

@@ -10,6 +10,7 @@ from decimal import Decimal
 from enum import Enum
 from typing import Iterable, Mapping
 
+from . import settings
 from .normalize import (
     NumberLike,
     to_code,
@@ -58,29 +59,31 @@ class VolumeKind(Enum):
 # グループのマスタ登録（手入力の分）だけを読んだ Version に付ける ID
 MANUAL_VERSION_ID = "manual"
 
-MBOM_CODE_LENGTH = 11
-BASE_VARIATION = "00"
-
 Code = str | int
 
 
 def base_code(code: Code) -> str:
-    """10桁でバリエーションの2桁が 00 の品番は基本の品番（先頭8桁）にする。それ以外はそのまま。"""
+    """枝番が全部 0 の品番は、枝番を外した基本の品番にする。それ以外（桁の設定が空の時も）はそのまま。"""
     code = to_code(code)
-    if len(code) == 10 and code.endswith(BASE_VARIATION):
-        return code[:8]
+    s = settings.current()
+    if s.code_base and s.code_branch and len(code) == s.code_base + s.code_branch and not code[s.code_base:].strip("0"):
+        return code[:s.code_base]
     return code
 
 
 def mbom_to_ebom(mbom_code: Code) -> str:
-    """MBOM の11桁の品番（後ろを 0 で埋めたもの）を EBOM の8桁／10桁の品番に戻す。
+    """原価の表（MBOM）の品番を、設定の桁で EBOM の品番（基本、または基本＋枝番）に戻す。設定が空ならそのまま返す。
 
-    先頭10桁を取り、その後ろ2桁が 00 なら先頭8桁にする。11桁でない・11桁目が 0 でない品番は ValueError。
+    桁数が違う品番・後ろを埋める桁が 0 でない品番は ValueError。
     """
     code = to_code(mbom_code, name="MBOM の品番")
-    if len(code) != MBOM_CODE_LENGTH or not code.endswith("0"):
-        raise ValueError(f"MBOM の品番が11桁（末尾 0）でない: {mbom_code!r}")
-    return base_code(code[:10])
+    s = settings.current()
+    if not (s.code_total and s.code_base and s.code_branch):
+        return code
+    used = s.code_base + s.code_branch
+    if len(code) != s.code_total or code[used:].strip("0"):
+        raise ValueError(f"MBOM の品番が設定の桁（{s.code_total}桁）に合わない: {mbom_code!r}")
+    return base_code(code[:used])
 
 
 @dataclass(frozen=True)
@@ -106,7 +109,7 @@ class Item:
 
 @dataclass(frozen=True)
 class BomLine:
-    """構成行。数量がマイナスの行は抜く部品（正しいデータ）。"""
+    """構成行。数量がマイナスの行は抜く部品として扱う。"""
 
     parent: str
     balloon: str | None
@@ -148,7 +151,7 @@ class CostRow:
         values: Mapping[CostHead, NumberLike | None],
         source: Source = Source.IMPORTED,
     ) -> "CostRow":
-        """11桁の MBOM の品番から作る。品番は EBOM の品番に戻して持つ。"""
+        """MBOM の品番から作る。品番は EBOM の品番に戻して持つ。"""
         return cls(code=mbom_to_ebom(mbom_code), values=values, mbom_code=to_code(mbom_code), source=source)
 
     def value(self, head: CostHead) -> Decimal | None:

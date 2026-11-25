@@ -496,7 +496,7 @@ async function renderManual(data) {
   // 型費
   const moldPart = el("input", { value: val("mold", "part"), placeholder: "例 X-610" });
   const moldAmount = el("input", { value: val("mold", "amount"), inputmode: "decimal", placeholder: "円" });
-  const moldYears = el("input", { value: val("mold", "years", "2"), inputmode: "decimal", size: 4 });
+  const moldYears = el("input", { value: val("mold", "years", m.mold_years ?? ""), inputmode: "decimal", size: 4 });
   const molds = el("div", {},
     table(["部品の品番", numTh("型費（円）"), numTh("償却年数"), numTh("1年あたり（円）"), ""], m.molds.map((x) => el("tr", {},
       el("td", {}, x.part), numTd(x.amount, { yen: true }), numTd(x.years), numTd(x.annual_amount, { yen: true }),

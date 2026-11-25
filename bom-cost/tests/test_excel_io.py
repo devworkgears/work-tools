@@ -12,8 +12,10 @@ from decimal import Decimal
 from pathlib import Path
 from urllib.parse import quote
 
+import example_settings  # noqa: F401
 from bomcost import CostHead, CostRow, Item, BomLine
-from bomcost.analysisbook import FACTOR, SHEETS
+from bomcost import settings
+from bomcost.analysisbook import SHEETS
 from bomcost.app import static_response
 from bomcost.importer import load_openpyxl
 from test_group import NAME, breakdown_version
@@ -215,9 +217,9 @@ class AnalysisBook(EmptyDbCase):
             for code in products:
                 part = sum((self.dec(r["製造原価への寄与"]) for r in structure if r["製品"] == code), Decimal(0))
                 # 構成の寄与の計は製品原価の材料費小計 × 係数（float のセルなので桁をそろえて比べる）
-                self.assertAlmostEqual(float(part), float(cost[(code, "材料費小計")] * FACTOR), places=6)
+                self.assertAlmostEqual(float(part), float(cost[(code, "材料費小計")] * settings.rates().factor), places=6)
             parts = sum((self.dec(r["製造原価への寄与"]) for r in structure), Decimal(0))
-            heads = sum(((cost[(c, "社内加工費")] + cost[(c, "償却費")]) * FACTOR + cost[(c, "直接費")]
+            heads = sum(((cost[(c, "社内加工費")] + cost[(c, "償却費")]) * settings.rates().factor + cost[(c, "直接費")]
                          for c in products), Decimal(0))
             total = Decimal(series["total"])
             self.assertAlmostEqual(float(parts + heads), float(total), places=6)
@@ -244,11 +246,11 @@ class AnalysisBook(EmptyDbCase):
             ("P-1", "N-8", 1, 2, 2, 40), ("P-1", "B-1", 1, 1, 1, 500), ("P-1", "U-1", 1, 1, 1, None)])
         b1 = next(r for r in current if r["部品"] == "B-1")
         self.assertEqual((b1["材料費の単価"], b1["年間台数"]), (500, 100))
-        self.assertAlmostEqual(b1["製造原価への寄与"], float(500 * FACTOR))
-        self.assertAlmostEqual(b1["年間の金額"], float(500 * FACTOR * 100))
+        self.assertAlmostEqual(b1["製造原価への寄与"], float(500 * settings.rates().factor))
+        self.assertAlmostEqual(b1["年間の金額"], float(500 * settings.rates().factor * 100))
         self.assertIsInstance(sheets["製品原価"][0]["値"], (int, float))
         premises = {r["項目"]: r["値"] for r in sheets["前提"]}
-        self.assertAlmostEqual(premises["材料費から製造原価への係数"], 1.1433)
+        self.assertAlmostEqual(premises["材料費から製造原価への係数"], 1.32)
         self.assertEqual(premises["償却費"], "含めた")
 
     def test_trial_rows_add_changes_below_place(self) -> None:

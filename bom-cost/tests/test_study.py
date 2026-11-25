@@ -6,8 +6,11 @@ import json
 import sqlite3
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from decimal import Decimal
 
+import example_settings
+from bomcost import settings
 from bomcost.api import Api
 from bomcost.app import static_response
 from bomcost.importer import load_openpyxl
@@ -351,9 +354,9 @@ class Calculation(StudyCase):
         self.store.save_replaces(self.number, "A", [("K120", "K121")])
         result = calculate(self.store.workspace(self.number), CostHead.MANUFACTURING)
         p1 = result["rows"][0]
-        # 製造原価 ＝ 材料費 × 1.03 × 1.11（直接費・償却費は未登録で 0）
-        self.assertEqual(p1["now"], Decimal("308.691"))
-        self.assertEqual(p1["plans"]["A"], Decimal("354.423"))
+        # 製造原価 ＝ 材料費 × 1.1 × 1.2（直接費・償却費は未登録で 0）
+        self.assertEqual(p1["now"], Decimal("356.4"))
+        self.assertEqual(p1["plans"]["A"], Decimal("409.2"))
 
     def test_processing_and_amortization_heads_are_the_product_own_values(self) -> None:
         # 部品の置き換えで変わるのは材料費だけ。加工（社内加工費）は未登録なら 0、型費（償却費）は未登録なら空で不完全
@@ -508,7 +511,7 @@ class StudyApiFlow(unittest.TestCase):
         self.assertEqual(heads["processing"]["rows"][1]["plans"]["A"], heads["processing"]["rows"][1]["now"])
         # 加工費の差は調整費・間接費を通って製造原価に効く。費目全部の値は1つの費目で出した値と同じ
         total = Decimal(heads["total"]["rows"][0]["plans"]["A"]) - Decimal(heads["total"]["rows"][0]["now"])
-        self.assertEqual(total, (Decimal(1000) - Decimal(now)) * Decimal("1.03") * Decimal("1.11"))
+        self.assertEqual(total, (Decimal(1000) - Decimal(now)) * Decimal("1.1") * Decimal("1.2"))
         single = self.ok("GET", "/api/v2/calc", q + "&head=total")
         self.assertEqual((single["rows"], single["impact"]), (heads["total"]["rows"], heads["total"]["impact"]))
         book = load_openpyxl().load_workbook(io.BytesIO(self.api.handle("GET", "/api/v2/export/study", q, b"").body))
@@ -550,6 +553,9 @@ class StudyApiFlow(unittest.TestCase):
         self.assertEqual(self.ok("GET", "/api/v2/studies")["studies"], [])
 
     def test_flow_with_samples(self) -> None:
+        # 見本の品番は桁の変換をしない
+        self.addCleanup(settings.use, example_settings.EXAMPLE)
+        settings.use(replace(example_settings.EXAMPLE, code_total=None, code_base=None, code_branch=None))
         imported = self.ok("POST", "/api/v2/bom/import", body={"sample": True})
         self.assertEqual(sorted(imported["tables"]), ["bom_line", "cost", "item", "volume"])
         self.assertEqual(imported["warnings"], [])

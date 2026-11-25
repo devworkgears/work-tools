@@ -34,7 +34,8 @@ from .model import (
     Volume,
     overlay_manual,
 )
-from .group import PRODUCT_KIND_CODE, Group, _matches, _Structure, _batches, is_product_kind, part_kind
+from . import settings
+from .group import Group, _matches, _Structure, _batches, is_product_kind, part_kind
 from .masterbook import MasterPlan, apply_plan, book_bytes, plan_book, plan_json, save_book
 from .modelchange import compare_structures
 from .mold import Allocation, MoldCost, ReuseTarget, allocate_mold_cost, part_users, reuse_impact
@@ -45,7 +46,7 @@ from .store import COST_COLUMNS, GroupInfo, bom_subset, retarget
 if TYPE_CHECKING:
     from .api import Api
 
-# 1万行・列の多い CSV が入る大きさ。送る形は base64 なので、要求の本文はこの 4/3 倍になる
+# 送る形は base64 なので、要求の本文はこの 4/3 倍になる
 MAX_UPLOAD_BYTES = 16 * 1024 * 1024
 TABLE_LABELS = {
     "item": "部品マスタ（品目）",
@@ -643,12 +644,12 @@ class Screens:
         return self._group_info(data, key).group_id
 
     def _product_kind(self, group_id: str, version: Version | None = None) -> str:
-        """手入力の製品に付ける区分の記号。グループ（マスタ登録を重ねる）で製品とみなす記号、決まらなければ PRODUCT_KIND_CODE。
+        """手入力の製品に付ける区分の記号。グループ（マスタ登録を重ねる）で製品とみなす記号、決まらなければ設定の製品の記号。
 
         製品群はグループごとに記号を選ぶので、グループの記号に合わせないと手入力の製品が製品の一覧から外れる。
         """
         version = version or self.store.load_group(group_id)
-        return Group.product_kind(version, _Structure(version)) or PRODUCT_KIND_CODE
+        return Group.product_kind(version, _Structure(version)) or settings.product_kind()
 
     def _trials(self, version: Version) -> list[dict[str, Any]]:
         """グループの試算（②の変更でできた新製品）の一覧。1本1行。"""
@@ -690,6 +691,7 @@ class Screens:
                 "heads": [{"id": h.name, "label": h.value} for h in MASTER_HEADS],
                 "items": items,
                 "product_kind": product_kind,
+                "mold_years": _s(settings.mold_years()),
                 "trials": self._trials(version),
                 "volumes": [{"product": v.product, "annual": _s(v.annual), "kind": v.kind.value}
                             for v in manual.volumes.values()],
@@ -788,7 +790,7 @@ class Screens:
         part = to_code(_text_field(body, "part", "部品の品番"))
         original = _original_code(body, "part", "直す元の品番")
         amount = _required_number(body.get("amount"), "型費")
-        years = _required_number(body.get("years", "2"), "償却年数")
+        years = _required_number(body.get("years", _s(settings.mold_years())), "償却年数")
         if amount < 0:
             raise ApiError(400, "型費は 0 以上にする")
         if years <= 0:

@@ -1,5 +1,6 @@
 """風船番号の場所ごとの置換（1か所を複数の部品に）と、その記録・取り消し。品番・数値は架空。"""
 
+import example_settings  # noqa: F401
 from bomcost import BomLine, CostHead, CostRow, Item, Version
 from test_screens import EmptyDbCase
 

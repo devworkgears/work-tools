@@ -1,5 +1,6 @@
 """②構成変更の簡易照会・品番集計・品番一括置換。"""
 
+import example_settings  # noqa: F401
 from bomcost.api import Response
 from bomcost.scenario import Scenario
 from test_group import SampleDbCase

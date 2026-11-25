@@ -9,6 +9,7 @@ from decimal import Decimal
 from pathlib import Path
 from urllib.parse import quote
 
+import example_settings  # noqa: F401
 from bomcost import BomLine, CostHead, CostRow, Item, Version, overlay_manual
 from bomcost.api import Api
 from bomcost.app import static_response
@@ -16,7 +17,7 @@ from bomcost.demo import build_demo
 from bomcost.importer import load_openpyxl
 from bomcost.store import Store
 from bomcost import comparebook, group
-from bomcost.formula import ADJUSTMENT_RATE, INDIRECT_RATE
+from bomcost import settings
 from bomcost.group import Group, _Structure
 from test_screens import SAMPLES, EmptyDbCase, b64
 
@@ -940,7 +941,7 @@ class CompareAnalysis(EmptyDbCase):
 class CompareAnalysisManufacturing(EmptyDbCase):
     """③の分析を製造原価で: 部品の行は率を掛け、製品の費目の行を足すと③の表の製造原価・上のタイルの差にそろう。"""
 
-    RATE = (1 + ADJUSTMENT_RATE) * (1 + INDIRECT_RATE)
+    RATE = settings.rates().factor
 
     def setUp(self) -> None:
         super().setUp()
@@ -1155,7 +1156,7 @@ class ProductRule(unittest.TestCase):
         self.assertIn('cost: "manufacturing"', compare)
         self.assertIn('analysisSeg("cost", [["manufacturing", "製造原価"], ["material", "材料費"]])', compare)
         self.assertIn("/api/group/heads/bulk", compare)
-        self.assertNotIn("1.1433", compare)
+        self.assertNotIn("1.32", compare)
 
 
 if __name__ == "__main__":

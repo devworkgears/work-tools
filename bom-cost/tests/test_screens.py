@@ -6,6 +6,7 @@ import json
 import unittest
 from pathlib import Path
 
+import example_settings  # noqa: F401
 from bomcost import Store
 from bomcost.api import Api, Response
 from bomcost.importer import load_openpyxl
@@ -175,7 +176,7 @@ class SampleProcedure(EmptyDbCase):
             sample("年間台数.csv", "volume", {"product": "製品品番", "annual": "年間生産台数"}),
         ]})
         self.assertEqual(result["counts"], {"items": 6, "lines": 5, "costs": 5, "volumes": 1})
-        self.assertEqual(result["warning_count"], 5)  # 架空の品番は11桁でないので MBOM の変換をしない
+        self.assertEqual(result["warning_count"], 5)  # 見本の品番は設定の桁に合わないので MBOM の変換をしない
 
         g = {"group_id": group}
         self.ok("PUT", "/api/manual/items", body={"code": "X-610", "name": "試作品", "costs": {"MATERIAL": "200"}, **g})

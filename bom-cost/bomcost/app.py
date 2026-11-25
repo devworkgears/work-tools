@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import urlsplit
 
+from . import settings
 from .api import Api, Response, error_response
 from .demo import build_demo
 from .screens import MAX_UPLOAD_BYTES
@@ -44,11 +45,12 @@ def static_response(path: str, web_dir: Path = WEB_DIR) -> Response:
     """web_dir の直下のファイルだけを返す（下の階層・外のパスは出さない）。"""
     if path == "/favicon.ico":  # ブラウザが勝手に要求する。404 だとコンソールにエラーが出る
         return Response(204, b"", "image/x-icon")
-    # 設計検討の画面は web/v2/ に別に置く（中の相対パスが /v2/ から引けるよう、末尾の / へ寄せる）
-    if path == "/v2":
-        return Response(301, b"", "text/plain; charset=utf-8", {"Location": "/v2/"})
-    if path.startswith("/v2/") and web_dir.name != "v2":
-        return static_response(path[3:], web_dir / "v2")
+    # 設計検討（/v2/）と設定（/settings/）の画面は別のフォルダに置く（中の相対パスが引けるよう、末尾の / へ寄せる）
+    for sub in ("v2", "settings") if web_dir.name not in ("v2", "settings") else ():
+        if path == f"/{sub}":
+            return Response(301, b"", "text/plain; charset=utf-8", {"Location": f"/{sub}/"})
+        if path.startswith(f"/{sub}/"):
+            return static_response(path[len(sub) + 1:], web_dir / sub)
     name = "index.html" if path in ("", "/") else path.lstrip("/")
     target = web_dir / name
     if "/" in name or "\\" in name or target.suffix not in STATIC_TYPES or not target.is_file():
@@ -125,6 +127,7 @@ def bind(port: int, handler: type[BaseHTTPRequestHandler]) -> ThreadingHTTPServe
 
 
 def serve(db: Path, port: int = DEFAULT_PORT, open_browser: bool = True) -> None:
+    settings.load(db)
     # sqlite3 の接続は作ったスレッドでしか使えないので、保存と計算は1本のスレッドに寄せる
     worker = ThreadPoolExecutor(max_workers=1)
     store = worker.submit(Store, db).result()
@@ -166,7 +169,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     try:
         serve(args.db, args.port, not args.no_browser)
-    except OldDatabaseError as exc:
+    except (OldDatabaseError, ValueError) as exc:
         print(exc, file=sys.stderr)
         return 1
     return 0

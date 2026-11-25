@@ -9,6 +9,7 @@ import unittest
 from decimal import Decimal
 from pathlib import Path
 
+import example_settings  # noqa: F401
 import example_data as ex
 from bomcost import BomLine, CostHead, CostRow, Item, Scenario, Store, Version
 from bomcost.scenario import Change, ChangeKind

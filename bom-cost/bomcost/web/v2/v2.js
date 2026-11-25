@@ -1553,7 +1553,7 @@ async function resultScreen(main) {
   const compute = async () => {
     try {
       data = await api("GET", "/api/v2/calc", q({ head }));
-      stamp.textContent = `計算日時 ${data.computed_at.replace("T", " ").slice(0, 16).replaceAll("-", "/")}`;
+      stamp.textContent = `計算日時 ${data.computed_at.replace("T", " ").slice(0, 16).replaceAll("-", "/")}　調整費 ${data.rates.adjustment}%・間接費 ${data.rates.indirect}%`;
       draw();
       done("計算しました");
     } catch (e) {
