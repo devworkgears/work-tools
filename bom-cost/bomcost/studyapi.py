@@ -536,22 +536,28 @@ class StudyApi:
     # ⑤ 構成一覧 ---------------------------------------------------------------
 
     def after_list(self, params: dict[str, str]) -> "Response":
-        """行＝対象品番の直下の部品・セル＝製品ごとの変えた後の数量と風船番号。読むだけ。"""
+        """行＝対象品番の直下の（風船番号, 部品）・セル＝製品ごとの変えた後の数量。balloon=0 は部品ごとの行。読むだけ。"""
         ws = self._ws(params)
         items = ws.bom.items
-        # 主対象（無ければ先頭の製品）の風船番号の順。そこに無い部品は、対象品番の順に最初に使う製品の風船番号の順で後ろ
+        by_balloon = params.get("balloon") != "0"
+        # 風船番号の順（同じ風船番号の中は、主対象で使う部品が先）。部品ごとの時は、主対象（無ければ先頭の製品）の風船番号の順で、
+        # そこに無い部品は、対象品番の順に最初に使う製品の風船番号の順で後ろ
         lead = list(dict.fromkeys([*([ws.main_product] if ws.main_product else []), *ws.targets]))
 
-        def order(row: tuple[str, dict[str, ListCell]]) -> tuple[Any, ...]:
-            at = next(i for i, p in enumerate(lead) if p in row[1])
-            return (at, min(_balloon_order(b) for b in row[1][lead[at]].balloons), row[0])
+        def order(row: tuple[SlotKey, dict[str, ListCell]]) -> tuple[Any, ...]:
+            (balloon, part), cells = row
+            at = next(i for i, p in enumerate(lead) if p in cells)
+            if by_balloon:
+                return (_balloon_order(balloon), at, part)
+            return (at, min(_balloon_order(b) for b in cells[lead[at]].balloons), part)
 
         return self._json({"targets": ws.targets, "main_product": ws.main_product, "rows": [
-            {"part": part, "name": items[part].name if part in items else None,
-             "cells": {p: {"balloon": "・".join(b or "－" for b in sorted(c.balloons, key=_balloon_order)),
-                           "quantity": _s(c.quantity), "now": _s(c.now), "changed": c.changed, "problem": c.problem}
+            {"balloon": balloon, "part": part, "name": items[part].name if part in items else None,
+             "specification": items[part].specification if part in items else "",
+             "lifecycle": items[part].lifecycle if part in items else "",
+             "cells": {p: {"quantity": _s(c.quantity), "now": _s(c.now), "changed": c.changed, "problem": c.problem}
                        for p, c in cells.items()}}
-            for part, cells in sorted(after_table(ws, self._plan(params)).items(), key=order)]})
+            for (balloon, part), cells in sorted(after_table(ws, self._plan(params), by_balloon).items(), key=order)]})
 
     def add_plan(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
         """［＋］で空の案を足す。足した案の名前（plan）と検討（案の一覧つき）を返す。"""

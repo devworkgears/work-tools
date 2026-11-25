@@ -1229,12 +1229,12 @@ async function searchReplaceScreen(main, cur) {
 }
 
 // ⑤ 構成一覧 ---------------------------------------------------------------
-// 印の製品の、変えた後の直下の構成を1枚で見る（読むだけ）。行＝部品を全部自動で出す・列＝製品。変えたマスに色。
+// 印の製品の、変えた後の直下の構成を1枚で見る（読むだけ）。行＝風船番号と部品を全部自動で出す（風船を外すと部品ごと）・列＝製品。変えたマスに色。
 // 直すのは ⑪（品番・数量・部品を足す）と ⑧（1製品の構成）
 
 async function listScreen(main) {
   let cols = [];
-  let rows = []; // 出している部品 { part, name, cells: 製品 → { balloon, quantity, now, changed, problem } }
+  let rows = []; // 出している行 { balloon, part, name, specification, lifecycle, cells: 製品 → { quantity, now, changed, problem } }
   let data = { rows: [], main_product: null };
   let balloons = true;
   let onlyChanged = false;
@@ -1243,33 +1243,37 @@ async function listScreen(main) {
   const note = el("span", { class: "mini" });
   const body = el("div", { class: "listview" });
   const load = async () => {
-    if (S.number) data = await api("GET", "/api/v2/after-list", q({ plan: PLAN }));
+    if (S.number) data = await api("GET", "/api/v2/after-list", q({ plan: PLAN, balloon: balloons ? "1" : "0" }));
     await lookup([...S.targets, ...data.rows.map((r) => r.part)]);
   };
   await load();
-  const P = 3; // 製品の列が始まる位置
-  const line = (r) => (balloons ? { row: rows[Math.floor((r - 1) / 2)], kind: r % 2 ? "balloon" : "qty" } : { row: rows[r - 1], kind: "qty" });
+  // 左の列（風船は出し入れする）。その右が製品ごとの数量
+  const left = () => [
+    ...(balloons ? [["風船", (row) => ({ text: row.balloon ?? "—", cls: "c q" })]] : []),
+    ["品番", (row) => ({ text: row.part })],
+    ["名称", (row) => nameCell(row.part)],
+    ["仕様", (row) => ({ text: row.specification, cls: "auto" })],
+    ["状態", (row) => ({ text: row.lifecycle, cls: "auto c q" })],
+  ];
   const model = {
     // 見出しは1段（表の1行目）。製品の列は品番と名称を縦書きにして、列の幅を数量の桁だけにする
-    nRows: () => 1 + (balloons ? 2 : 1) * rows.length,
-    nCols: () => P + cols.length,
+    nRows: () => 1 + rows.length,
+    nCols: () => left().length + cols.length,
     cell(r, c) {
+      const L = left();
+      const P = L.length; // 製品の列が始まる位置
       if (r === 0) {
-        if (c < P) return { text: ["品番 ↓　製品 →", "名称", ""][c], th: true, cls: "foot" };
+        if (c < P) return { text: label(L[c][0]), th: true, cls: "foot" };
         const code = cols[c - P];
         const info = items.get(code);
         const name = info ? (info.registered ? info.name : "未登録") : "";
         const star = code === data.main_product ? "★ " : "";
         return { text: `${star}${code}\n${name}`, th: true, cls: "vh" + (info && !info.registered ? " bad" : ""), title: `${star}${code} ${name}` };
       }
-      const { row, kind } = line(r);
-      const first = !balloons || kind === "balloon";
-      if (c === 0) return { text: first ? row.part : "" };
-      if (c === 1) return first ? nameCell(row.part) : { text: "" };
-      if (c === 2) return kind === "balloon" ? { text: "風船", cls: "auto" } : { text: "数量", cls: "foot" };
+      const row = rows[r - 1];
+      if (c < P) return L[c][1](row);
       const cell = row.cells[cols[c - P]];
-      if (!cell) return { text: "", cls: kind === "balloon" ? "auto c q" : "r q" };
-      if (kind === "balloon") return { text: cell.balloon, cls: "auto c q" };
+      if (!cell) return { text: "", cls: "r q" };
       return {
         text: fmt(cell.quantity), cls: "r q" + (cell.problem ? " bad" : cell.changed ? " own" : ""),
         title: cell.changed || cell.problem ? `今 ${fmt(cell.now)}${cell.problem ? "・要確認（変更一覧）" : ""}` : null,
@@ -1285,7 +1289,7 @@ async function listScreen(main) {
     const used = data.rows.filter((r) => cols.some((p) => r.cells[p]));
     rows = used.filter((r) => (!c || norm(r.part).includes(c)) && (!n || norm(r.name || "").includes(n))
       && (!onlyChanged || cols.some((p) => r.cells[p] && r.cells[p].changed)));
-    note.textContent = rows.length === used.length ? `部品 ${used.length}` : `部品 ${rows.length} / ${used.length}`;
+    note.textContent = rows.length === used.length ? `行 ${used.length}` : `行 ${rows.length} / ${used.length}`;
     grid.render();
   };
   const pick = chooser({ chosen: S.targets, onProducts: (products) => {
@@ -1296,15 +1300,20 @@ async function listScreen(main) {
   await pick.ready;
   cols = pick.ordered();
   const toggle = (text, get, set) => {
-    const button = el("button", { class: "chip" + (get() ? " on" : ""), onclick: () => {
+    const button = el("button", { class: "chip" + (get() ? " on" : ""), onclick: async () => {
       set(!get());
       button.classList.toggle("on", get());
+      try {
+        await load();
+      } catch (e) {
+        fail(e);
+      }
       draw();
     } }, text);
     return button;
   };
   const whereUsed = () => {
-    const at = grid.sel.r >= 1 && rows.length ? line(grid.sel.r).row : null;
+    const at = rows[grid.sel.r - 1];
     if (!at) return alert("品番の行を選んでください");
     whereUsedDialog(at.part);
   };

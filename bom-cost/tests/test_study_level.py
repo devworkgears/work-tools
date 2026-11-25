@@ -74,7 +74,7 @@ class FirstLevel(LevelCase):
             self.store.apply_replace(self.number, "A", "B", "N")
 
     def test_list_counts_the_first_level_only(self) -> None:
-        cells = after_table(self.ws(), "A")["K"]
+        cells = after_table(self.ws(), "A")[("2", "K")]
         self.assertEqual({p: c.quantity for p, c in cells.items()}, {"P1": D(1), "P2": D(4)})
 
     def test_old_deep_changes_are_marked_left_out_and_kept(self) -> None:

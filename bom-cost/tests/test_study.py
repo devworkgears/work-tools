@@ -251,25 +251,28 @@ class ListTable(StudyCase):
 
     def test_every_direct_part_is_listed_with_changed_cells(self) -> None:
         table = after_table(self.store.workspace(self.number), "A")
-        self.assertEqual({p: sorted(c) for p, c in table.items()},
-                         {"U10": ["P1", "P2"], "S50": ["P1", "P2"], "B1": ["P1"], "K120": ["P1", "P2", "P3"]})
+        self.assertEqual({k: sorted(c) for k, c in table.items()}, {
+            ("10", "U10"): ["P1", "P2"], ("20", "S50"): ["P1", "P2"], ("31", "B1"): ["P1"],
+            ("12", "K120"): ["P1", "P2"], ("5", "K120"): ["P3"]})
         self.assertFalse(any(c.changed for cells in table.values() for c in cells.values()))
         self.store.apply_places(self.number, "A", [{"product": "P1", "balloon": "12", "old": "K120", "new": "K121"}])
         self.store.save_quantities(self.number, "A", [{"product": "P2", "balloon": "20", "part": "S50", "quantity": "5"}])
         table = after_table(self.store.workspace(self.number), "A")
-        self.assertEqual(table["K120"]["P1"], (["12"], Decimal(0), Decimal(2), True, False))
-        self.assertEqual(table["K120"]["P2"], (["12"], Decimal(2), Decimal(2), False, False))
-        self.assertEqual(table["K121"], {"P1": (["12"], Decimal(2), Decimal(0), True, False)})
-        self.assertEqual(table["S50"]["P2"], (["20"], Decimal(5), Decimal(2), True, False))
+        self.assertEqual(table[("12", "K120")]["P1"], (["12"], Decimal(0), Decimal(2), True, False))
+        self.assertEqual(table[("12", "K120")]["P2"], (["12"], Decimal(2), Decimal(2), False, False))
+        self.assertEqual(table[("12", "K121")], {"P1": (["12"], Decimal(2), Decimal(0), True, False)})
+        self.assertEqual(table[("20", "S50")]["P2"], (["20"], Decimal(5), Decimal(2), True, False))
 
-    def test_two_places_are_summed_and_problems_are_marked(self) -> None:
+    def test_two_places_are_two_rows_or_summed_without_balloons_and_problems_are_marked(self) -> None:
         self.store.save_temps(self.number, [{"code": "ZZ1"}])
         self.store.add_part(self.number, "A", "ZZ1", "1", ["P1"])
         self.store.save_temps(self.number, [])
         self.store.replace_bom(bom(lines=[BomLine("P1", "1", "B1", 1), BomLine("P1", "2", "B1", 2)]), ["bom_line"])
         table = after_table(self.store.workspace(self.number), "A")
-        self.assertEqual(table["B1"]["P1"], (["1", "2"], Decimal(3), Decimal(3), False, False))
-        self.assertEqual(table["ZZ1"]["P1"], ([None], Decimal(1), Decimal(0), True, True))  # 未登録
+        self.assertEqual({k: c["P1"].quantity for k, c in table.items() if k[1] == "B1"}, {("1", "B1"): Decimal(1), ("2", "B1"): Decimal(2)})
+        flat = after_table(self.store.workspace(self.number), "A", by_balloon=False)
+        self.assertEqual(flat[(None, "B1")]["P1"], (["1", "2"], Decimal(3), Decimal(3), False, False))
+        self.assertEqual(table[(None, "ZZ1")]["P1"], ([None], Decimal(1), Decimal(0), True, True))  # 未登録
 
 
 class Checks(StudyCase):
@@ -483,6 +486,20 @@ class Attributes(unittest.TestCase):
         store.replace_bom(bom(), ALL, {"P1": {"model": "M1", "product_spec": "標準", "drawing": "D1"}})
         self.assertEqual(store.load_attributes()["P1"], {"model": "M1", "product_spec": "標準", "drawing": "D1"})
         self.assertEqual(store.load_attributes()["P2"], {"model": "", "product_spec": "", "drawing": ""})
+        self.assertEqual(store.load_bom().items["P1"].lifecycle, "")
+        conn.close()
+
+    def test_lifecycle_is_kept_in_the_table_and_in_a_released_version(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        store = StudyStore(conn)
+        v = bom()
+        v.add_item(replace(v.items["K120"], lifecycle="D"))
+        store.replace_bom(v, ALL)
+        number = store.create_study("x")
+        store.save_targets(number, ["P1"])
+        store.take_release(number)
+        self.assertEqual(store.workspace(number).bom.items["K120"].lifecycle, "D")
+        self.assertEqual(store.workspace(number, 1).bom.items["K120"].lifecycle, "D")
         conn.close()
 
 
@@ -656,8 +673,11 @@ class StudyApiFlow(unittest.TestCase):
         # セルは変えた後の数量（製品で使っていなければ出さない）
         self.assertEqual({p: (c["quantity"], c["changed"]) for p, c in rows["ST0050-001"].items()}, {P1: ("0", True), P2: ("2", False)})
         self.assertEqual({p: (c["quantity"], c["now"]) for p, c in rows[OLD].items()}, {P1: ("0", "1"), P2: ("0", "1")})
-        self.assertEqual(rows["PL0030-001"], {P2: {"balloon": "－", "quantity": "1", "now": "0", "changed": True, "problem": False}})
-        self.assertEqual(list(rows)[0], "FR0010-001")  # 主対象の風船番号の順
+        self.assertEqual(rows["PL0030-001"], {P2: {"quantity": "1", "now": "0", "changed": True, "problem": False}})
+        self.assertEqual(list(rows)[0], "FR0010-001")  # 風船番号の順
+        plain = self.ok("GET", "/api/v2/after-list", q + "&plan=A&balloon=0")["rows"]
+        self.assertEqual({r["balloon"] for r in plain}, {None})
+        self.assertEqual([r["part"] for r in plain][0], "FR0010-001")  # 主対象の風船番号の順
         changes = self.ok("GET", "/api/v2/changes", q + "&plan=A")["rows"]
         self.assertTrue(any(r["part"] == NEW and r["added"] for r in changes))
         before = self.store.connection.total_changes

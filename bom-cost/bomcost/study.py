@@ -28,7 +28,8 @@ CREATE TABLE IF NOT EXISTS v2_item (
     specification TEXT NOT NULL DEFAULT '',
     model TEXT NOT NULL DEFAULT '',
     product_spec TEXT NOT NULL DEFAULT '',
-    drawing TEXT NOT NULL DEFAULT ''
+    drawing TEXT NOT NULL DEFAULT '',
+    lifecycle TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS v2_line (
     parent TEXT NOT NULL,
@@ -601,7 +602,7 @@ def after_places(ws: Workspace, plan: str) -> list[PartPlace]:
 
 
 class ListCell(NamedTuple):
-    """⑤の1マス（部品×製品）: 変えた後の数量と風船番号（2か所以上なら全部）・今の数量・変えたか・要確認か。"""
+    """⑤の1マス（行×製品）: 変えた後の数量と風船番号（2か所以上なら全部）・今の数量・変えたか・要確認か。"""
 
     balloons: list[str | None]
     quantity: Decimal
@@ -610,19 +611,19 @@ class ListCell(NamedTuple):
     problem: bool
 
 
-def after_table(ws: Workspace, plan: str) -> dict[str, dict[str, ListCell]]:
-    """対象品番の直下の部品 → 製品 → マス。変えた後に無くなった部品も、今あれば入れる。"""
+def after_table(ws: Workspace, plan: str, by_balloon: bool = True) -> dict[SlotKey, dict[str, ListCell]]:
+    """対象品番の直下の（風船番号, 部品）→ 製品 → マス。by_balloon が偽なら部品ごと（風船番号は None）。変えた後に無くなった部品も、今あれば入れる。"""
     bad = {c.change.place for c in check_changes(ws, ws.plan_changes(plan)) if c.problems}
-    table: dict[str, dict[str, ListCell]] = {}
+    table: dict[SlotKey, dict[str, ListCell]] = {}
     for product in ws.targets:
         now, after = after_lines(ws, plan, product)
-        by_part: dict[str, list[LineKey]] = {}
+        rows: dict[SlotKey, list[LineKey]] = {}
         for key, qty in after.items():
             if qty != 0 or now.get(key, Decimal(0)) != 0:
-                by_part.setdefault(key[2], []).append(key)
-        for part, keys in by_part.items():
+                rows.setdefault((key[1] if by_balloon else None, key[2]), []).append(key)
+        for row, keys in rows.items():
             live = [k for k in keys if after[k] != 0] or keys
-            table.setdefault(part, {})[product] = ListCell(
+            table.setdefault(row, {})[product] = ListCell(
                 [k[1] for k in live], sum((after[k] for k in keys), Decimal(0)),
                 sum((now.get(k, Decimal(0)) for k in keys), Decimal(0)),
                 any(after[k] != now.get(k, Decimal(0)) for k in keys), any((product, *k) in bad for k in keys))
@@ -876,7 +877,7 @@ class StudyStore:
         conn.executescript(SCHEMA)
         # 属性の列より前に作った表には列を足す
         present = {r[1] for r in conn.execute("PRAGMA table_info(v2_item)")}
-        for name, _ in ATTRIBUTES:
+        for name in (*(n for n, _ in ATTRIBUTES), "lifecycle"):
             if name not in present:
                 conn.execute(f"ALTER TABLE v2_item ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
         # 置換の組に風船番号の列を足す前に作った表には列を足す（NULL＝全部の箇所）
@@ -898,9 +899,9 @@ class StudyStore:
             if "item" in tables:
                 c.execute("DELETE FROM v2_item")
                 c.executemany(
-                    f"INSERT INTO v2_item (code, name, kind, specification, {', '.join(n for n, _ in ATTRIBUTES)}) "
-                    f"VALUES ({', '.join('?' * (4 + len(ATTRIBUTES)))})",
-                    [(i.code, i.name, i.kind, i.specification,
+                    f"INSERT INTO v2_item (code, name, kind, specification, lifecycle, {', '.join(n for n, _ in ATTRIBUTES)}) "
+                    f"VALUES ({', '.join('?' * (5 + len(ATTRIBUTES)))})",
+                    [(i.code, i.name, i.kind, i.specification, i.lifecycle,
                       *(attributes.get(i.code, {}).get(n, "") for n, _ in ATTRIBUTES)) for i in version.items.values()])
             if "bom_line" in tables:
                 c.execute("DELETE FROM v2_line")
@@ -934,8 +935,8 @@ class StudyStore:
     def load_bom(self) -> Version:
         v = Version("v2")
         q = self._conn.execute
-        for code, name, kind, spec in q("SELECT code, name, kind, specification FROM v2_item ORDER BY rowid"):
-            v.add_item(Item(code, name, kind, specification=spec))
+        for code, name, kind, spec, life in q("SELECT code, name, kind, specification, lifecycle FROM v2_item ORDER BY rowid"):
+            v.add_item(Item(code, name, kind, life, specification=spec))
         v.add_bom_lines(BomLine(p, b, ch, Decimal(qty))
                         for p, b, ch, qty in q("SELECT parent, balloon, child, quantity FROM v2_line ORDER BY rowid"))
         names = ", ".join(n for n, _ in COST_COLUMNS)
@@ -1519,7 +1520,7 @@ def _snapshot(ws: Workspace) -> dict[str, Any]:
         "temp_merged": sorted(ws.temp_merged),
         "owns": {plan: [[p, h, str(v)] for (p, h), v in values.items()] for plan, values in ws.owns.items()},
         "bom": {
-            "items": [[i.code, i.name, i.kind, i.specification, *(ws.attribute(i.code, n) for n, _ in ATTRIBUTES)]
+            "items": [[i.code, i.name, i.kind, i.specification, *(ws.attribute(i.code, n) for n, _ in ATTRIBUTES), i.lifecycle]
                       for i in bom.items.values() if i.code in codes],
             "lines": [[l.parent, l.balloon, l.child, str(l.quantity)] for l in bom.lines if l.parent in codes],
             "costs": [[r.code, *(_txt(r.value(h)) for _, h in COST_COLUMNS)] for r in bom.cost_rows
@@ -1534,7 +1535,8 @@ def _from_snapshot(data: dict[str, Any], version: int) -> Workspace:
     b = data["bom"]
     attributes: Attributes = {}
     for code, name, kind, spec, *extra in b["items"]:
-        bom.add_item(Item(code, name, kind, specification=spec))
+        # 状態は属性の後ろ（足す前に固めた版には無い）
+        bom.add_item(Item(code, name, kind, extra[len(ATTRIBUTES)] if len(extra) > len(ATTRIBUTES) else "", specification=spec))
         attributes[code] = {n: (extra[i] if i < len(extra) else "") for i, (n, _) in enumerate(ATTRIBUTES)}
     bom.add_bom_lines(BomLine(p, bl, ch, Decimal(q)) for p, bl, ch, q in b["lines"])
     for row in b["costs"]:
