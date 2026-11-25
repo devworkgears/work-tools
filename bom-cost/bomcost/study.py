@@ -1383,7 +1383,7 @@ class StudyStore:
     def save_temps(self, number: str, rows: Sequence[Mapping[str, Any]]) -> None:
         """仮品番の行（code・name・material・base）を入れ替える。品番の無い行は飛ばし、同じ品番が2行あれば ValueError。
 
-        key は前に保存した時の品番（品番を打ち替えた行に、流用の中身を引き継ぐ）。流用元を替えた行の中身の変更は消す。
+        key は前に保存した時の品番（品番を打ち替えた行に、流用の中身を引き継ぎ、使っている所も替える）。流用元を替えた行の中身の変更は消す。
         """
         sid = self.study_id(number)
         bom = self.load_bom()
@@ -1408,7 +1408,13 @@ class StudyStore:
                 if not bom.children(base):
                     raise ValueError(f"流用元は、部品表にある組立品を入れてください（{base}）")
             temps.append(Temp(code, str(r.get("name") or "").strip(), material, base, old.lines if same and old else ()))
+        renamed = {str(r["key"]): input_code(r["code"]) for r in rows
+                   if str(r.get("code") or "").strip() and r.get("key") and str(r["key"]) in kept}
+        renamed = {old: new for old, new in renamed.items() if old != new}
+        if renamed:
+            temps = [t._replace(lines=tuple((b, renamed.get(part, part), d) for b, part, d in t.lines)) for t in temps]
         with self._conn:
+            self._rename_changes(sid, renamed)
             self._conn.execute("DELETE FROM v2_temp_item WHERE study_id = ?", (sid,))
             self._conn.execute("DELETE FROM v2_temp_line WHERE study_id = ?", (sid,))
             self._conn.executemany(
@@ -1417,6 +1423,34 @@ class StudyStore:
             for t in temps:
                 self._put_temp_lines(sid, t.code, t.lines)
             self._touch(sid)
+
+    def _rename_changes(self, sid: int, renamed: Mapping[str, str]) -> None:
+        """変更に出てくる仮品番の品番を替える。同じ箇所に替えた後の品番の変更がもうあれば足す。"""
+        if not renamed:
+            return
+        merged: dict[tuple[Any, ...], list[Any]] = {}
+        rows = self._conn.execute("SELECT plan, product, parent, balloon, part, delta, source, origin, seq FROM v2_change "
+                                  "WHERE study_id = ? ORDER BY seq", (sid,)).fetchall()
+        for plan, product, parent, balloon, part, delta, *rest in rows:
+            place = (plan, product, parent, balloon, renamed.get(part, part))
+            if place in merged:
+                merged[place][0] += Decimal(delta)
+            else:
+                merged[place] = [Decimal(delta), *rest]
+        self._conn.execute("DELETE FROM v2_change WHERE study_id = ?", (sid,))
+        self._conn.executemany("INSERT INTO v2_change VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                               [(sid, *place, str(delta), *rest) for place, (delta, *rest) in merged.items() if delta != 0])
+
+    def rename_temp(self, number: str, code: Any, new: Any) -> None:
+        """仮品番の品番を替える。"""
+        old_code, new_code = input_code(code), input_code(new, name="新しい品番")
+        temps = self._temps(self.study_id(number))
+        if old_code not in {t.code for t in temps}:
+            raise ValueError(f"{old_code} は仮品番ではありません")
+        if new_code in self.load_bom().items:
+            raise ValueError(f"{new_code} は部品表にある品番です")
+        self.save_temps(number, [{"key": t.code, "code": new_code if t.code == old_code else t.code, "name": t.name,
+                                  "material": t.material, "base": t.base} for t in temps])
 
     def _put_temp_lines(self, sid: int, code: str, lines: Iterable[TempLine]) -> None:
         self._conn.executemany("INSERT INTO v2_temp_line VALUES (?, ?, ?, ?, ?)",

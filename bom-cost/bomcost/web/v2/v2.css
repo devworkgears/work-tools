@@ -98,6 +98,9 @@ table.grid th, table.grid td { border: 1px solid var(--line); padding: 3px 8px; 
 table.grid th { background: var(--head); color: var(--sub); font-weight: 600; }
 table.grid th.vh { writing-mode: vertical-rl; white-space: pre-line; vertical-align: bottom; height: 150px; padding: 6px 4px; min-width: 0; width: 44px; line-height: 1.3; }
 table.grid th.foot { vertical-align: bottom; }
+/* 左＝現行・右＝変更後 */
+table.grid th.after { background: var(--soft); color: var(--accent); }
+table.grid th.split, table.grid td.split { border-left: 2px solid var(--accent); }
 /* ⑤: 縦に長いので、製品の見出しを残して送る */
 .listview { max-height: 74vh; overflow: auto; }
 .listview table.grid tr:first-child th { position: sticky; top: 0; z-index: 1; }

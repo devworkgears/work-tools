@@ -169,7 +169,22 @@ class ReplaceInside(InsideCase):
             self.apply({"path": ["U-K1"], "old": "N", "new": "U-K1"})
         self.assertEqual([t.code for t in self.ws().temps], ["U-K1"])
 
-    def test_api_asks_for_codes_and_then_saves(self) -> None:
+    def test_rename_carries_the_places_and_the_insides(self) -> None:
+        self.apply({"path": ["U", "V"], "old": "B", "new": "N"})
+        self.store.rename_temp(self.number, "V-K1", "VV")
+        self.store.rename_temp(self.number, "U-K1", "UU")
+        self.assertEqual(self.tops(), {"P1": ["UU"], "P2": ["UU"], "P3": ["UU"]})
+        self.assertEqual(self.inside("UU"), {("11", "K"): D(2), ("12", "VV"): D(1)})
+        self.assertEqual({p: after - now for p, (now, after, _) in self.material().items()}, {"P1": D(6), "P2": D(12), "P3": D(6)})
+        # 仮品番の画面で2つの品番を入れ替えても、使っている所が付いてくる
+        self.store.save_temps(self.number, [{"key": "VV", "code": "UU", "base": "V"}, {"key": "UU", "code": "VV", "base": "U"}])
+        self.assertEqual(self.tops()["P1"], ["VV"])
+        self.assertEqual(self.inside("VV"), {("11", "K"): D(2), ("12", "UU"): D(1)})
+        for code, new, text in (("UU", "K", "部品表にある品番"), ("K", "X", "仮品番ではありません"), ("UU", "VV", "重複"), ("UU", "", "入力してください")):
+            with self.subTest(text), self.assertRaisesRegex(ValueError, text):
+                self.store.rename_temp(self.number, code, new)
+
+    def test_api_gives_codes_and_saves(self) -> None:
         store = Store(":memory:")
         self.addCleanup(store.close)
         api = Api(store)
@@ -184,11 +199,11 @@ class ReplaceInside(InsideCase):
             return r.json()
 
         rows = [{"path": ["U"], "old": "K", "new": "N"}]
-        needs = call("/api/v2/inside/replace", {"rows": rows})["needs"]
-        self.assertEqual(needs, [{"code": "U", "name": "U の名称", "suggested": "U-K1", "changes": ["K → N"], "products": ["P1", "P2"]}])
-        self.assertEqual(study.workspace(number).changes, [])
-        data = call("/api/v2/inside/replace", {"rows": rows, "codes": [{"code": "U", "new": "T9", "name": "U改"}]})
-        self.assertEqual((data["typed"], data["tops"]), ([], {"T9": [{"product": "P1", "balloon": "1"}, {"product": "P2", "balloon": "1"}]}))
+        data = call("/api/v2/inside/replace", {"rows": rows})
+        self.assertEqual(data["made"], [{"code": "U", "new": "U-K1", "name": "U の名称"}])
+        self.assertEqual((data["typed"], data["bases"]), ([], {"U-K1": "U"}))
+        data = call("/api/v2/temp-rename", {"code": "U-K1", "new": "T9"})
+        self.assertEqual(data["tops"], {"T9": [{"product": "P1", "balloon": "1"}, {"product": "P2", "balloon": "1"}]})
         self.assertEqual({p["code"]: p["was"] for p in data["parts"]}["T9"], ["U"])
         self.assertEqual([(r["part"], r["lines"]) for r in data["inside"] if r["path"] == ["T9"]][1],
                          ("N", [{"balloon": "11", "quantity": "2", "was": ["K"]}]))
@@ -196,7 +211,7 @@ class ReplaceInside(InsideCase):
         with store.connection as c:
             c.execute("UPDATE v2_temp_item SET material = '99'")
         data = call("/api/v2/inside/replace", {"rows": [{"path": ["T9"], "old": "N", "new": "S"}]})
-        self.assertEqual(data["typed"], ["T9"])
+        self.assertEqual((data["typed"], data["made"]), (["T9"], []))
 
     def test_stale_codes_are_refused(self) -> None:
         rebuild = self.rebuild({"path": ["U"], "old": "K", "new": "N"})

@@ -303,6 +303,7 @@ class StudyApi:
             ("POST", r"/api/v2/replace/apply", self.apply_replace),
             ("POST", r"/api/v2/replace/revert", self.revert_replace),
             ("POST", r"/api/v2/inside/replace", self.replace_inside),
+            ("POST", r"/api/v2/temp-rename", self.rename_temp),
             ("GET", r"/api/v2/replace", self.replace),
             ("GET", r"/api/v2/replace/groups", self.replace_groups),
             ("PUT", r"/api/v2/replace", self.put_replace),
@@ -585,6 +586,7 @@ class StudyApi:
             "inside": [{"path": r.path, "part": r.part, "name": items[r.part].name if r.part in items else None,
                         "lines": [{"balloon": x.balloon, "quantity": _s(x.quantity), "was": x.was} for x in r.lines]} for r in inside],
             "tops": {code: [{"product": p, "balloon": b} for p, b in places] for code, places in tops.items()},
+            "bases": {t.code: t.base for t in ws.temps if t.base is not None and t.code in ws.temp_merged},
             "places": [{"product": p.product, "balloon": p.balloon, "part": p.part, "quantity": _s(p.quantity), "was": p.was,
                         "before": _s(p.before)} for p in after_places(ws, self._plan(params))]})
 
@@ -602,17 +604,21 @@ class StudyApi:
         return self.after_parts({"number": _number(params), "plan": self._plan(params)})
 
     def replace_inside(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
-        """組立品の中の置き換え。新しい品番が要る組立品があり codes が無ければ、何も保存せずに needs を返す。"""
+        """組立品の中の置き換え。新しい品番が要る組立品には、自動で品番を付ける（made）。"""
         number, plan = _number(params), self._plan(params)
         ws = self.store.workspace(number)
         rebuild = Rebuild(ws, plan, input_edits(_objects(body, "rows")))
-        if rebuild.nodes and body.get("codes") is None:
-            return self._json({"needs": rebuild.needs()})
-        change = rebuild.change(_objects(body, "codes"))
+        made = [{"code": n["code"], "new": n["suggested"], "name": n["name"]} for n in rebuild.needs()]
+        change = rebuild.change(made)
         self.store.save_inside(ws, plan, change.added, change.lines, change.picks)
         # 材料費を打ってある仮品番は、中を替えても金額が変わらない
         typed = [t.code for t in ws.temps if t.code in change.lines and t.material is not None]
-        return self._json({**self.after_parts({"number": number, "plan": plan}).json(), "typed": typed})
+        return self._json({**self.after_parts({"number": number, "plan": plan}).json(), "typed": typed, "made": made})
+
+    def rename_temp(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
+        """仮品番の品番を替える。使っている所（変更・ほかの仮品番の中）も一緒に替わる。"""
+        self.store.rename_temp(_number(params), body.get("code"), body.get("new"))
+        return self.after_parts({"number": _number(params), "plan": self._plan(params)})
 
     def put_quantity(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
         """箇所（product・balloon・part）ごとの、変えた後の数量。"""
