@@ -38,6 +38,7 @@ from .study import (
     StudyStore,
     Temp,
     UNREGISTERED,
+    WAITING,
     Workspace,
     check_changes,
     calculate,
@@ -872,6 +873,7 @@ SHEET_NOTES = (
                    "置き換えは変更前＝元品番の数量・変更後＝新品番の数量"),
     ("金額", "1行＝対象品番×費目。1台あたり。差＝変更後−今、年間の影響＝差×年間台数。費目には内訳と合計が混ざるので足し合わせない"),
     ("不完全", "未登録の原価や計算に入らない変更があり、金額が足りない行"),
+    ("単価待ち", "単価の無い品番を使う変更。置き換えは、単価が分かるまで現行のまま（差なし）で計算する"),
     ("単位", "金額は取り込んだ原価の表と同じ単位、数量は部品表と同じ単位"),
 )
 
@@ -941,7 +943,7 @@ def change_effects(ws: Workspace, plan: str, rows: list[dict[str, Any]]) -> list
 
     式は材料費小計・加工費・償却費・直接費の足し算に率を掛けた物なので、した事ごとに分けて足すと全体の差になる。
     products は製品ごとの1台あたりの差。計算に入らない・単価や年間台数の分からない分は足さず、incomplete の印を付ける
-    （未登録の品番への置き換えは、⑦ の計算と同じく元品番の引きだけが効いた値になる）。
+    （単価の無い品番への置き換えは現行のままなので、差は出さずに「単価待ち」を付ける）。
     """
     rates = ws.use_rates()
     material = material_effects(ws, plan)
@@ -964,16 +966,17 @@ def change_effects(ws: Workspace, plan: str, rows: list[dict[str, Any]]) -> list
     for g in summarize_changes(rows):
         parts = [g["old"], g["new"]] if g["kind"] == "置き換え" else [g["old"] or g["new"]]
         units: dict[str, Decimal | None] = {}
-        unknown = False
+        unknown = waiting = False
         for d in g["details"]:
             for part in parts:
-                value = material[(d["product"], d["parent"], d["balloon"], part)]
+                effect = material[(d["product"], d["parent"], d["balloon"], part)]
                 before = units.setdefault(d["product"], None)
-                if value is None:
+                waiting |= effect.waiting
+                if effect.value is None:
                     unknown = True
                 else:
-                    units[d["product"]] = (before or Decimal(0)) + value * rates.factor
-        add(None, g, units, unknown)
+                    units[d["product"]] = (before or Decimal(0)) + effect.value * rates.factor
+        add(None, {**g, "problems": [*g["problems"], *([WAITING] if waiting else [])]}, units, unknown)
     for key, head in OWN_HEADS.items():
         units = {}
         for r in own_rows(ws, plan):

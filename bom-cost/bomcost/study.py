@@ -156,6 +156,7 @@ OTHER_PART = "元の品番が違う"
 NEGATIVE = "数量がマイナス"
 UNREGISTERED = "未登録"
 PAIR_OUT = "置換の相手が外れた"
+WAITING = "単価待ち"  # 変更の問題ではなく、⑦ と Excel の影響の印
 DEEP = "2階層目の変更"
 # 計算に入れない問題。未登録は入れて、結果に不完全の印を付ける
 EXCLUDING = frozenset({NOT_TARGET, NO_PLACE, OTHER_PART, NEGATIVE, PAIR_OUT, DEEP})
@@ -291,6 +292,7 @@ class Workspace:
     rates: settings.Rates | None = None
     # 2階層目の変更を計算から外すか（外す前に固めた版は、固めた時の計算のまま）
     level1: bool = True
+    hold: bool = True  # 単価の無い品番への置き換えを、現行のまま計算する（False は前の版の写し）
 
     def use_rates(self) -> settings.Rates:
         return self.rates or settings.rates()
@@ -676,29 +678,64 @@ def annual_of(ws: Workspace, product: str) -> Decimal | None:
     return given if given is not None else None if volume is None else volume.annual
 
 
-def material_effects(ws: Workspace, plan: str) -> dict[Place, Decimal | None]:
-    """案の変更1つずつの、製品1台あたりの材料費小計の増減。計算に入らない変更と、単価の分からない変更は None。"""
+def held_changes(ws: Workspace, checked: Iterable[CheckedChange], calc: CostCalculator) -> set[tuple[str, Place]]:
+    """単価の無い品番に置き換えた箇所の、元の品番の引き（案, 箇所）。単価が分かるまで引かない（引くと、ただで付く値になる）。
+
+    組の見方は ⑥ と同じ（同じ箇所で 0 になった品番が1つ・増えた品番が1つ）。2つ以上ある時は、数の合う相手が1つの時だけ。
+    """
+    held: set[tuple[str, Place]] = set()
+    if not ws.hold:
+        return held
+    slots: dict[tuple[str, str, str, str | None], list[CheckedChange]] = {}
+    for c in checked:
+        ch = c.change
+        slots.setdefault((ch.plan, ch.product, ch.parent, ch.balloon), []).append(c)
+    for members in slots.values():
+        up = [c.change for c in members if c.change.delta > 0 and c.change.source != ADD]
+        down = [c.change for c in members if c.change.delta < 0 and c.after == 0]
+        for new in up:
+            if calc.item_cost(new.part) is not None:
+                continue
+            pair = down if len(up) == 1 else [d for d in down if d.delta == -new.delta]
+            if len(pair) == 1:
+                held.add((new.plan, pair[0].place))
+    return held
+
+
+class MaterialEffect(NamedTuple):
+    value: Decimal | None  # 製品1台あたりの材料費小計の増減。計算に入らない変更・単価の無い変更・それを待つ変更は None
+    waiting: bool  # 単価待ち
+
+
+def material_effects(ws: Workspace, plan: str) -> dict[Place, MaterialEffect]:
+    """案の変更1つずつの、材料費小計への効き方。"""
     calc = CostCalculator(ws.bom, CostHead.MATERIAL)
     usages: dict[str, dict[str, Decimal]] = {}
-    out: dict[Place, Decimal | None] = {}
-    for c in check_changes(ws, ws.plan_changes(plan)):
+    out: dict[Place, MaterialEffect] = {}
+    checked = check_changes(ws, ws.plan_changes(plan))
+    held = held_changes(ws, [c for c in checked if c.counted], calc)
+    for c in checked:
         ch = c.change
-        unit = None
+        unit, waiting = None, False
         if c.counted:
+            unit = calc.item_cost(ch.part)
+            waiting = unit is None or (plan, ch.place) in held
             try:
-                if calc.item_cost(ch.product) is not None:  # 今の値が出ない製品は、変えた後の値も出ない
-                    unit = calc.item_cost(ch.part)
+                if waiting or calc.item_cost(ch.product) is None:  # 今の値が出ない製品は、変えた後の値も出ない
+                    unit = None
             except ValueError:
-                pass
+                unit = None
         if ch.product not in usages:
             usages[ch.product] = product_usage(ws.bom, ch.product)
-        out[ch.place] = None if unit is None else ch.delta * usages[ch.product].get(ch.parent, Decimal(0)) * unit
+        out[ch.place] = MaterialEffect(
+            None if unit is None else ch.delta * usages[ch.product].get(ch.parent, Decimal(0)) * unit, waiting)
     return out
 
 
 def calculate_heads(ws: Workspace, heads: Sequence[Head] = COMPARE_HEADS) -> dict[Head, dict[str, Any]]:
     """費目ごとに、対象品番ごとの今と案ごとの原価・年間の影響・台数の加重平均。DB は読むだけ（渡した Workspace だけを見る）。
 
+    単価の無い品番への置き換えは、単価が分かるまで現行のまま（不完全の印を付ける）。
     案の値＝（今の材料費小計＋部品の増減）と、製品自身の値（⑩で書き換えた費目はその値）から式で出す。
     base＝年間の影響に入れた製品の、今の値×年間台数の合計（現行比の元）。
     台数の加重平均＝年間の影響 ÷ 年間の影響に入れた製品の年間台数の合計（1台あたりの増減）。台数の合計が 0 なら None。
@@ -708,6 +745,7 @@ def calculate_heads(ws: Workspace, heads: Sequence[Head] = COMPARE_HEADS) -> dic
     rates = ws.use_rates()
     all_checked = check_changes(ws)
     checked = [c for c in all_checked if c.counted]
+    held = held_changes(ws, checked, calc)
     # 計算から外した変更がある製品・案は、値に不完全の印を付ける
     dropped = {(c.change.plan, c.change.product) for c in all_checked if not c.counted}
     plans = ws.plan_ids()
@@ -744,7 +782,7 @@ def calculate_heads(ws: Workspace, heads: Sequence[Head] = COMPARE_HEADS) -> dic
                 if c.change.plan != plan or c.change.product != product:
                     continue
                 unit = calc.item_cost(c.change.part)
-                if unit is None:
+                if unit is None or (plan, c.change.place) in held:
                     missing = True
                     continue
                 delta += c.change.delta * usage.get(c.change.parent, Decimal(0)) * unit
@@ -1462,6 +1500,7 @@ def _snapshot(ws: Workspace) -> dict[str, Any]:
         # 仮品番は bom の写しにも入る（変更に出る品番は写す）。画面で見せるために元の行も残す
         "temps": [[t.code, t.name, _txt(t.material), t.base, [[b, p, str(d)] for b, p, d in t.lines]] for t in ws.temps],
         "level1": ws.level1,
+        "hold": ws.hold,
         "temp_merged": sorted(ws.temp_merged),
         "owns": {plan: [[p, h, str(v)] for (p, h), v in values.items()] for plan, values in ws.owns.items()},
         "bom": {
@@ -1507,6 +1546,7 @@ def _from_snapshot(data: dict[str, Any], version: int) -> Workspace:
                     tuple((b, p, Decimal(d)) for b, p, d in rest[1]) if rest else ())
                for c, nm, m, *rest in data.get("temps", [])],
         level1=data.get("level1", False),
+        hold=data.get("hold", False),
         temp_merged=set(data.get("temp_merged", [])),
         rates=None if rates is None else settings.Rates(Decimal(rates[0]), Decimal(rates[1])),
         owns={plan: {(p, h): Decimal(v) for p, h, v in rows} for plan, rows in data.get("owns", {}).items()},

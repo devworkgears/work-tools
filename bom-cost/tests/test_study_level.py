@@ -343,12 +343,67 @@ class Effects(LevelCase):
         got = {(e["kind"], e["old"], e["new"], tuple(e["problems"])): e for e in self.effects()}
         swap = got[("置き換え", "K", "N", ())]
         self.assertEqual((swap["impact"], swap["incomplete"]), (D("-396.00"), True))
-        unknown = got[("置き換え", "S", "ZZ", ("未登録",))]
-        # 計算と同じく、元の S 30 の引きだけが効く（足すと全体の差になる）
-        self.assertEqual((unknown["unit_max"], unknown["incomplete"]), (D("-39.60"), True))
+        unknown = got[("置き換え", "S", "ZZ", ("未登録", "単価待ち"))]
+        # 単価が分かるまで現行のまま（元の S 30 も引かない）
+        self.assertEqual((unknown["unit_max"], unknown["impact"], unknown["incomplete"]), (None, None, True))
         self.assertEqual(sum(e["impact"] for e in self.effects() if e["impact"] is not None), calculate(self.ws())["impact"]["A"])
         self.assertIsNone(got[("置き換え", "K", "N", (DEEP,))]["impact"])
         self.assertEqual(len(self.effects()), 3)
+
+
+class HoldUnpriced(LevelCase):
+    """単価の無い品番への置き換えは、単価が分かるまで現行のまま。"""
+
+    def test_empty_temp_is_held_until_priced(self) -> None:
+        self.store.save_temps(self.number, [{"code": "T1", "name": "新しい部品"}])
+        self.store.apply_replace(self.number, "A", "S", "T1")
+        got = self.material()
+        for product in ("P1", "P2"):
+            self.assertEqual(got[product], (got[product][0], got[product][0], True))
+        self.store.save_temps(self.number, [{"code": "T1", "name": "新しい部品", "material": "40"}])
+        for product in ("P1", "P2"):
+            now, after, incomplete = self.material()[product]
+            self.assertEqual((after - now, incomplete), (D(10), False))
+
+    def test_only_the_waiting_pair_is_held(self) -> None:
+        # 同じ製品の、ほかの変更と、足した部品・消した部品は効く
+        self.store.apply_places(self.number, "A", [{"product": "P1", "balloon": "3", "old": "S", "new": "ZZ"},
+                                                   {"product": "P1", "balloon": "2", "old": "K", "new": "N"}])
+        self.store.add_part(self.number, "A", "B", "2", ["P1"])
+        now, after, incomplete = self.material()["P1"]
+        self.assertEqual((after - now, incomplete), (D(-3 + 10), True))
+        self.store.save_quantities(self.number, "A", [{"product": "P2", "balloon": "3", "part": "S", "quantity": "0"}])
+        self.store.add_part(self.number, "A", "ZZ", "1", ["P2"])  # 単価の無い部品を足しただけなら、消した S は引く
+        now, after, incomplete = self.material()["P2"]
+        self.assertEqual((after - now, incomplete), (D(-30), True))
+
+    def test_several_changes_in_one_slot_pair_by_quantity(self) -> None:
+        # 風船番号の無い部品表（同じ箇所とみなす）
+        self.store.replace_bom(bom_of([BomLine("P1", None, "K", 2), BomLine("P1", None, "S", 1)]), ["bom_line"])
+        self.store.apply_places(self.number, "A", [{"product": "P1", "balloon": None, "old": "S", "new": "ZZ"},
+                                                   {"product": "P1", "balloon": None, "old": "K", "new": "N"}])
+        now, after, incomplete = self.material()["P1"]
+        self.assertEqual((after - now, incomplete), (D(2 * 7 - 2 * 10), True))
+
+    def test_version_taken_before_this_keeps_its_value(self) -> None:
+        self.store.apply_places(self.number, "A", [{"product": "P1", "balloon": "3", "old": "S", "new": "ZZ"}])
+        version = self.store.take_release(self.number)
+        now, after, _ = self.material(version)["P1"]
+        self.assertEqual(after, now)
+        snapshot = json.loads(self.conn.execute("SELECT snapshot FROM v2_release").fetchone()[0])
+        del snapshot["hold"]
+        with self.conn:
+            self.conn.execute("UPDATE v2_release SET snapshot = ?", (json.dumps(snapshot),))
+        now, after, _ = self.material(version)["P1"]
+        self.assertEqual(after - now, D(-30))
+
+
+def bom_of(lines: list[BomLine]) -> Version:
+    v = Version("t")
+    for code in sorted({c for l in lines for c in (l.parent, l.child)}):
+        v.add_item(Item(code, code))
+    v.add_bom_lines(lines)
+    return v
 
 
 class StudyApiRows:
