@@ -175,9 +175,10 @@ class Derived(LevelCase):
         self.assertEqual(self.ws().bom.cost_value("T1", CostHead.MATERIAL), D(60))
 
     def test_unknown_part_or_lost_base_is_unregistered(self) -> None:
-        self.temp()
+        self.store.save_temps(self.number, [{"code": "T1", "base": "U"}, {"code": "XX"}])
         rows = [{"balloon": "11", "part": "XX", "quantity": "2"}, {"balloon": "12", "part": "V", "quantity": "1"}]
         self.store.save_temp_lines(self.number, "T1", rows)
+        self.store.save_temps(self.number, [{"code": "T1", "base": "U"}])  # 使った後に XX が消えた
         self.store.apply_replace(self.number, "A", "U", "T1")
         self.assertIsNone(self.ws().bom.cost_value("T1", CostHead.MATERIAL))
         self.assertTrue(self.material()["P1"][2])
@@ -338,7 +339,9 @@ class Effects(LevelCase):
     def test_unknown_price_annual_and_left_out_changes_are_marked(self) -> None:
         self.store.save_conditions(self.number, {"P1": "100"})  # P2 は年間台数が無い
         self.store.apply_replace(self.number, "A", "K", "N")
+        self.store.save_temps(self.number, [{"code": "ZZ"}])
         self.store.apply_places(self.number, "A", [{"product": "P1", "balloon": "3", "old": "S", "new": "ZZ"}])
+        self.store.save_temps(self.number, [])
         self.deep_change()
         got = {(e["kind"], e["old"], e["new"], tuple(e["problems"])): e for e in self.effects()}
         swap = got[("置き換え", "K", "N", ())]
@@ -351,8 +354,46 @@ class Effects(LevelCase):
         self.assertEqual(len(self.effects()), 3)
 
 
+class RefuseUnregistered(LevelCase):
+    """部品表にも仮品番にも無い品番は、打った時に断る。もう構成にある物は、そのまま保存できる。"""
+
+    MESSAGE = "ZZ は部品表にも仮品番にもありません"
+
+    def test_every_input_refuses_and_changes_nothing(self) -> None:
+        self.store.save_temps(self.number, [{"code": "T1", "base": "U"}])
+        good = {"product": "P2", "balloon": "2", "old": "K", "new": "N"}
+        rows = [{"balloon": "1", "part": "U", "quantity": "1"}, {"balloon": "9", "part": "ZZ", "quantity": "1"}]
+        for call in (
+            lambda: self.store.apply_replace(self.number, "A", "K", "ZZ"),
+            lambda: self.store.apply_places(self.number, "A", [good, {**good, "product": "P1", "new": "ZZ"}]),
+            lambda: self.store.add_part(self.number, "A", "ZZ", "1", ["P1"]),
+            lambda: self.store.save_rewrite(self.number, "A", "P3", rows),
+            lambda: self.store.save_temp_lines(self.number, "T1", [{"balloon": "11", "part": "ZZ", "quantity": "2"}]),
+        ):
+            with self.assertRaisesRegex(ValueError, self.MESSAGE):
+                call()
+        self.assertEqual((self.changes(), self.ws().temps[0].lines), ({}, ()))
+        # 仮品番で取れば使える
+        self.store.save_temps(self.number, [{"code": "T1", "base": "U"}, {"code": "ZZ"}])
+        self.store.apply_replace(self.number, "A", "K", "ZZ")
+        self.store.save_temp_lines(self.number, "T1", [{"balloon": "11", "part": "ZZ", "quantity": "2"}])
+
+    def test_parts_lost_later_do_not_block_other_edits(self) -> None:
+        self.store.save_temps(self.number, [{"code": "ZZ"}])
+        self.store.apply_places(self.number, "A", [{"product": "P1", "balloon": "3", "old": "S", "new": "ZZ"}])
+        self.store.save_temps(self.number, [])
+        self.store.save_rewrite(self.number, "A", "P1", [{"balloon": "1", "part": "U", "quantity": "1"}, {"balloon": "2", "part": "K", "quantity": "5"},
+                                                         {"balloon": "3", "part": "ZZ", "quantity": "1"}])
+        self.store.save_quantities(self.number, "A", [{"product": "P1", "balloon": "3", "part": "ZZ", "quantity": "2"}])
+        self.assertEqual(self.changes(), {("P1", "P1", "2", "K"): D(4), ("P1", "P1", "3", "S"): D(-1), ("P1", "P1", "3", "ZZ"): D(2)})
+
+
 class HoldUnpriced(LevelCase):
     """単価の無い品番への置き換えは、単価が分かるまで現行のまま。"""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.store.save_temps(self.number, [{"code": "ZZ"}])  # 材料費は空
 
     def test_empty_temp_is_held_until_priced(self) -> None:
         self.store.save_temps(self.number, [{"code": "T1", "name": "新しい部品"}])

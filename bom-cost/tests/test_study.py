@@ -213,7 +213,7 @@ class LaterWriteWins(StudyCase):
         self.assertEqual(self.changes(), {("P1", "P1", None, "K121"): (Decimal(3), ADD)})
 
     def test_add_part_refuses_and_changes_nothing(self) -> None:
-        for part, quantity, products in (("B1", "1", ["P3", "P1"]), ("K121", "0", ["P1"]), ("K121", "1", []),
+        for part, quantity, products in (("X1", "1", ["P1"]), ("B1", "1", ["P3", "P1"]), ("K121", "0", ["P1"]), ("K121", "1", []),
                                          ("K121", "1", ["P1", "Q9"]), ("P1", "1", ["P1"])):
             with self.subTest(part=part, products=products), self.assertRaises(ValueError):
                 self.store.add_part(self.number, "A", part, quantity, products)
@@ -263,7 +263,9 @@ class ListTable(StudyCase):
         self.assertEqual(table["S50"]["P2"], (["20"], Decimal(5), Decimal(2), True, False))
 
     def test_two_places_are_summed_and_problems_are_marked(self) -> None:
+        self.store.save_temps(self.number, [{"code": "ZZ1"}])
         self.store.add_part(self.number, "A", "ZZ1", "1", ["P1"])
+        self.store.save_temps(self.number, [])
         self.store.replace_bom(bom(lines=[BomLine("P1", "1", "B1", 1), BomLine("P1", "2", "B1", 2)]), ["bom_line"])
         table = after_table(self.store.workspace(self.number), "A")
         self.assertEqual(table["B1"]["P1"], (["1", "2"], Decimal(3), Decimal(3), False, False))
@@ -281,7 +283,9 @@ class Checks(StudyCase):
         return found[0]
 
     def test_same_checks_whichever_input_wrote(self) -> None:
-        self.store.add_part(self.number, "A", "X1", "1", ["P1"])  # 品目に無い
+        self.store.save_temps(self.number, [{"code": "X1"}])
+        self.store.add_part(self.number, "A", "X1", "1", ["P1"])
+        self.store.save_temps(self.number, [])  # 使った後に、仮品番が消えた
         self.store.save_targets(self.number, ["Q9", "P2"], None)
         self.store.save_quantities(self.number, "A", [{"product": "Q9", "balloon": "1", "part": "K120", "quantity": "2"}])
         self.store.save_targets(self.number, ["P1", "P2", "P3"], "P1")  # Q9 は対象品番でない製品になる
@@ -416,6 +420,7 @@ class Calculation(StudyCase):
 
     def test_unregistered_cost_marks_incomplete(self) -> None:
         self.store.save_targets(self.number, ["P1"])
+        self.store.save_temps(self.number, [{"code": "X1"}])
         self.store.add_part(self.number, "A", "X1", "1", ["P1"])
         result = calculate(self.store.workspace(self.number), CostHead.MATERIAL)
         self.assertTrue(result["rows"][0]["incomplete"]["A"])

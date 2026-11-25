@@ -381,6 +381,13 @@ def inside_lines(ws: Workspace, code: str) -> dict[SlotKey, Decimal]:
     return {k: q for k, q in lines.items() if q != 0}
 
 
+def refuse_unregistered(bom: Version, codes: Iterable[str]) -> None:
+    """新しく打った品番に、部品表にも仮品番にも無い物があれば断る。"""
+    lost = [c for c in dict.fromkeys(codes) if c not in bom.items]
+    if lost:
+        raise ValueError(f"{'・'.join(lost)} は部品表にも仮品番にもありません。新しい品番は、先に仮品番で取ってください")
+
+
 def unregistered_parts(ws: Workspace) -> list[str]:
     """変更に出てくる品番のうち、品目の台帳にも仮品番にも無い物（変更に出た順）。"""
     return list(dict.fromkeys(c.part for c in ws.changes if c.part not in ws.bom.items))
@@ -1109,6 +1116,7 @@ class StudyStore:
         if old_code == new_code:
             return
         ws = self.workspace(number)
+        refuse_unregistered(ws.bom, [new_code])
         self._replace_at(ws, plan, [(p.product, p.balloon, old_code, new_code)
                                     for p in after_places(ws, plan) if p.part == old_code])
 
@@ -1126,6 +1134,7 @@ class StudyStore:
                 raise ValueError(f"{product} の {old} が2行あります")
             if old != new:
                 picks.append((*pick, new))
+        refuse_unregistered(ws.bom, [p[3] for p in picks])
         if picks:
             self._replace_at(ws, plan, picks)
 
@@ -1220,6 +1229,7 @@ class StudyStore:
         ws = self.workspace(number)
         sid = self.study_id(number)
         code, amount = input_code(part), input_amount(quantity)
+        refuse_unregistered(ws.bom, [code])
         if amount <= 0:
             raise ValueError(f"数量は0より大きい数で入力してください（{quantity}）")
         codes = list(dict.fromkeys(input_code(p, name="製品") for p in products))
@@ -1309,6 +1319,9 @@ class StudyStore:
             amount = Decimal(0) if qty is None or str(qty).strip() == "" else input_amount(qty)
             after[key] = after.get(key, Decimal(0)) + amount
         current = {c.place: c for c in ws.plan_changes(plan) if c.product == product and c.parent == product}
+        # もう構成にある品番（部品表の取り直しで後から消えた物）は、そのまま保存できる
+        there = {k[2] for k in before} | {p[3] for p in current}
+        refuse_unregistered(ws.bom, [k[2] for k in after if k[2] not in there])
         keys = set(before) | set(after) | {p[1:] for p in current}
         with self._conn:
             self._ensure_plan(sid, plan)
@@ -1411,6 +1424,8 @@ class StudyStore:
             if amount < 0:
                 raise ValueError(f"数量がマイナスです（{key[1]}）")
             after[key] = after.get(key, Decimal(0)) + amount
+        there = {k[1] for k in now} | {part for _, part, _ in temp.lines}
+        refuse_unregistered(bom, [k[1] for k in after if k[1] not in there and k[1] not in temps])
         lines = tuple((*k, after.get(k, Decimal(0)) - now.get(k, Decimal(0))) for k in dict.fromkeys([*now, *after]))
         lines = tuple(x for x in lines if x[2] != 0)
         # 仮品番の中に自分が（別の仮品番を通しても）入ると、材料費が決まらない
