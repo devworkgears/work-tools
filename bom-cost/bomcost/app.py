@@ -1,11 +1,14 @@
 """手元で立てる画面のサーバー。127.0.0.1 だけで待ち、画面（bomcost/web/）と API（JSON）を出す。
 
 使い方:
-    python -m bomcost.app --db bom-cost.sqlite [--port N] [--no-browser]
+    python -m bomcost.app --db bom-cost.sqlite [--port N] [--no-browser] [--minimize]
     python -m bomcost.app --demo --db demo.sqlite   # 架空の例を入れた DB を作って終わる
 """
 
 import argparse
+import ctypes
+import http.client
+import json
 import os
 import sys
 import webbrowser
@@ -126,7 +129,51 @@ def bind(port: int, handler: type[BaseHTTPRequestHandler]) -> ThreadingHTTPServe
         return _Server((HOST, 0), handler)
 
 
-def serve(db: Path, port: int = DEFAULT_PORT, open_browser: bool = True) -> None:
+def port_file(db: Path) -> Path:
+    """動いているサーバーのポートを書くファイル（DB の隣）。"""
+    return db.with_name(db.name + ".port")
+
+
+def running_port(db: Path) -> int | None:
+    """この DB で動いているサーバーのポート。無ければ None（窓を閉じて止めるとファイルが残るので、聞いて確かめる）。"""
+    try:
+        port = int(port_file(db).read_text(encoding="ascii"))
+        if not 0 < port < 65536:
+            return None
+        conn = http.client.HTTPConnection(HOST, port, timeout=5)
+        try:
+            conn.request("GET", "/api/running")
+            data = json.loads(conn.getresponse().read())
+        finally:
+            conn.close()
+    except (OSError, ValueError, http.client.HTTPException):
+        return None
+    return port if isinstance(data, dict) and data.get("db") == str(db.resolve()) else None
+
+
+def minimize_console() -> None:
+    """Windows の黒い窓を最小化する。できなければ何もしない。"""
+    if os.name != "nt":
+        return
+    try:
+        window = ctypes.windll.kernel32.GetConsoleWindow()
+        if window:
+            ctypes.windll.user32.ShowWindow(window, 6)  # SW_MINIMIZE
+    except (AttributeError, OSError):
+        pass
+
+
+def open_page(port: int) -> None:
+    webbrowser.open(f"http://{HOST}:{port}/v2/")
+
+
+def serve(db: Path, port: int = DEFAULT_PORT, open_browser: bool = True, minimize: bool = False) -> None:
+    running = running_port(db)
+    if running is not None:
+        print(f"もう動いています: http://{HOST}:{running}/", flush=True)
+        if open_browser:
+            open_page(running)
+        return
     settings.load(db)
     # sqlite3 の接続は作ったスレッドでしか使えないので、保存と計算は1本のスレッドに寄せる
     worker = ThreadPoolExecutor(max_workers=1)
@@ -139,14 +186,21 @@ def serve(db: Path, port: int = DEFAULT_PORT, open_browser: bool = True) -> None
     server = bind(port, make_handler(call))
     url = f"http://{HOST}:{server.server_address[1]}/"
     print(f"BOM 原価モック: {url}  （DB: {db}・止めるには Ctrl+C）", flush=True)
+    try:
+        port_file(db).write_text(str(server.server_address[1]), encoding="ascii")
+    except OSError:
+        pass  # 書けなくても使える（二重の起動を止められないだけ）
+    if minimize:
+        minimize_console()
     if open_browser:
-        webbrowser.open(url)
+        open_page(server.server_address[1])
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
         server.server_close()
+        port_file(db).unlink(missing_ok=True)
         worker.submit(store.close).result()
         worker.shutdown()
 
@@ -156,6 +210,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--db", required=True, type=Path, help="SQLite のファイル（無ければ空で作る）")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"待つポート（既定 {DEFAULT_PORT}）")
     parser.add_argument("--no-browser", action="store_true", help="ブラウザを開かない")
+    parser.add_argument("--minimize", action="store_true", help="起動したら黒い窓を最小化する（Windows）")
     parser.add_argument("--demo", action="store_true", help="架空の例を入れた DB を --db に作って終わる")
     args = parser.parse_args(argv)
     if args.demo:
@@ -168,7 +223,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"立てるには: python -m bomcost.app --db {args.db}")
         return 0
     try:
-        serve(args.db, args.port, not args.no_browser)
+        serve(args.db, args.port, not args.no_browser, args.minimize)
     except (OldDatabaseError, ValueError) as exc:
         print(exc, file=sys.stderr)
         return 1

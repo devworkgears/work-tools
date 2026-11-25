@@ -100,17 +100,17 @@ class BuildDist(unittest.TestCase):
         text = data.decode("ascii")
         self.assertNotIn("\n", text.replace("\r\n", ""))
         self.assertIn('set "HERE=%~dp0"', text)
-        self.assertIn('"%HERE%python\\python.exe" -E -m bomcost.app --db "%HERE%data\\bom-cost.sqlite"', text)
+        self.assertIn('"%HERE%python\\python.exe" -E -m bomcost.app --db "%HERE%data\\bom-cost.sqlite" --minimize\r\n', text)
         self.assertIn('if not exist "%HERE%data" mkdir "%HERE%data"', text)
         self.assertNotRegex(text, r"[A-Za-z]:\\")
-        self.assertIn("\r\ntitle bom-cost\r\n", text)
+        self.assertIn("\r\ntitle bom-cost - close this window to quit\r\n", text)
 
     def test_version_goes_into_version_file_and_title(self) -> None:
         commit = "0123456789abcdef0123456789abcdef01234567"
         target = build_dist.build(self.cache, self.tmp / "dist", self.app, version="bom-cost-v0.1.2", commit=commit)
         with zipfile.ZipFile(target) as z:
             self.assertEqual(z.read("bom-cost/VERSION.txt"), f"bom-cost-v0.1.2\r\n{commit}\r\n".encode("ascii"))
-            self.assertIn("\r\ntitle bom-cost bom-cost-v0.1.2\r\n", z.read("bom-cost/start.bat").decode("ascii"))
+            self.assertIn("\r\ntitle bom-cost bom-cost-v0.1.2 - close this window to quit\r\n", z.read("bom-cost/start.bat").decode("ascii"))
 
     def test_no_version_means_no_version_file(self) -> None:
         self.assertNotIn("bom-cost/VERSION.txt", self.build().namelist())

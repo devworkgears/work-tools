@@ -439,6 +439,7 @@ class Api:
     def __init__(self, store: Store) -> None:
         self.store = store
         self._routes: list[tuple[str, re.Pattern[str], Handler]] = [
+            ("GET", re.compile(r"/api/running"), self.running),
             ("GET", re.compile(r"/api/meta"), self.meta),
             ("GET", re.compile(r"/api/groups"), self.groups),
             ("GET", re.compile(r"/api/items"), self.items),
@@ -501,6 +502,10 @@ class Api:
             return error_response(500, f"サーバーの中で失敗した: {type(exc).__name__}: {exc}")
 
     # 一覧 ------------------------------------------------------------------
+
+    def running(self, params: dict[str, str]) -> Response:
+        """この DB で動いている印（もう一度起動した時に、2つ目を立てないために聞く）。"""
+        return _json_response({"db": None if self.store.path is None else str(self.store.path.resolve())})
 
     def meta(self, params: dict[str, str]) -> Response:
         return _json_response(

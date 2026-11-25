@@ -49,11 +49,11 @@ def launcher(version: str | None = None) -> str:
     return "\r\n".join([
         "@echo off",
         "setlocal",
-        f"title {title}",
+        f"title {title} - close this window to quit",
         'set "HERE=%~dp0"',
         'cd /d "%HERE%"',
         'if not exist "%HERE%data" mkdir "%HERE%data"',
-        '"%HERE%python\\python.exe" -E -m bomcost.app --db "%HERE%data\\bom-cost.sqlite"',
+        '"%HERE%python\\python.exe" -E -m bomcost.app --db "%HERE%data\\bom-cost.sqlite" --minimize',
         "if errorlevel 1 pause",
         "",
     ])

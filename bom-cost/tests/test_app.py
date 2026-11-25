@@ -3,9 +3,15 @@
 import contextlib
 import io
 import json
+import os
 import socket
+import subprocess
+import sys
 import tempfile
+import threading
+import time
 import unittest
+from unittest import mock
 from decimal import Decimal
 from pathlib import Path
 
@@ -14,7 +20,8 @@ import example_data as ex
 from bomcost import BomLine, CostHead, CostRow, Item, Scenario, Store, Version
 from bomcost.scenario import Change, ChangeKind
 from bomcost.api import Api, Response
-from bomcost.app import HOST, bind, main, make_handler, static_response
+from bomcost import app
+from bomcost.app import HOST, bind, main, make_handler, port_file, running_port, static_response
 from bomcost.demo import build_demo
 from bomcost.importer import load_openpyxl
 
@@ -355,6 +362,69 @@ class StaticAndServer(unittest.TestCase):
                 self.assertNotEqual(server.server_address[1], port)
             finally:
                 server.server_close()
+
+
+class SecondStart(unittest.TestCase):
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.db = Path(tmp.name) / "t.sqlite"
+
+    def start(self) -> subprocess.Popen:
+        root = Path(__file__).resolve().parent.parent
+        p = subprocess.Popen([sys.executable, "-X", "utf8", "-m", "bomcost.app", "--db", str(self.db), "--port", "0", "--no-browser"],
+                             cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8")
+        self.addCleanup(p.stdout.close)
+        self.addCleanup(p.wait)
+        self.addCleanup(p.kill)
+        return p
+
+    def wait_port(self) -> int:
+        for _ in range(150):
+            port = running_port(self.db)
+            if port is not None:
+                return port
+            time.sleep(0.2)
+        self.fail("起動しない")
+
+    def test_second_start_opens_the_running_one(self) -> None:
+        first = self.start()
+        port = self.wait_port()
+        with mock.patch.object(app.webbrowser, "open") as opened, contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(main(["--db", str(self.db)]), 0)
+        opened.assert_called_once_with(f"http://{HOST}:{port}/v2/")
+        first.kill()  # 窓を閉じた時: ファイルは残るが、動いていないと分かる
+        first.wait()
+        self.assertTrue(port_file(self.db).exists())
+        self.assertIsNone(running_port(self.db))
+        self.start()
+        self.wait_port()
+
+    def test_other_server_on_the_port_is_not_taken_for_ours(self) -> None:
+        for body in (b'{"db": "other.sqlite"}', b"[]", b"not json"):
+            server = bind(0, make_handler(lambda *args, body=body: Response(200, body)))
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            try:
+                port_file(self.db).write_text(str(server.server_address[1]), encoding="ascii")
+                self.assertIsNone(running_port(self.db), body)
+            finally:
+                server.shutdown()
+                server.server_close()
+        for text in ("", "x", "0", "99999"):
+            port_file(self.db).write_text(text, encoding="ascii")
+            self.assertIsNone(running_port(self.db), text)
+
+    def test_window_is_minimized_only_after_a_good_start(self) -> None:
+        (self.db.parent / "settings.json").write_text("{", encoding="utf-8")
+        with mock.patch.object(app, "minimize_console") as minimized, contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(main(["--db", str(self.db), "--no-browser", "--minimize"]), 1)
+        minimized.assert_not_called()
+        self.assertFalse(port_file(self.db).exists())
+
+    @unittest.skipUnless(os.name == "nt", "Windows だけ")
+    def test_minimize_does_not_raise(self) -> None:
+        with mock.patch.object(app.ctypes.windll.user32, "ShowWindow", create=True):
+            app.minimize_console()
 
 
 if __name__ == "__main__":
