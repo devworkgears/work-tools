@@ -40,18 +40,18 @@ from bomcost.studyapi import changes_by_product, summarize_changes
 ALL = ("item", "bom_line", "cost", "volume")
 # 設計検討の見本（samples_v2）の品番
 P1, P2 = "PR1001-001", "PR1002-001"
-OLD, NEW = "KB0120-001", "KB0121-001"  # 全製品に効く共通部品と、置き換え先
+OLD, NEW = "CV0210-001", "CV0230-001"  # 6製品が直下で使う部品と、置き換え先
 
 
 def bom(k121_cost: str = "120", lines: list[BomLine] | None = None) -> Version:
-    """P1・P2 は組立品 U10（K120×2）を持つ。P3 は K120 を直に持つ。"""
+    """P1・P2・P3 は K120 を直に持つ。P1・P2 は組立品 U10 も持つ（中の変更は test_study_level）。"""
     v = Version("t")
     for code, name in (("P1", "製品1"), ("P2", "製品2"), ("P3", "製品3"), ("U10", "組立"), ("K120", "ブラケット"),
                        ("K121", "ブラケット改"), ("B1", "ボルト"), ("S50", "ステー"), ("Q9", "外の製品")):
         v.add_item(Item(code, name))
     v.add_bom_lines(lines if lines is not None else [
         BomLine("P1", "10", "U10", 1), BomLine("P1", "20", "S50", 1), BomLine("P1", "31", "B1", 4),
-        BomLine("U10", "12", "K120", 2), BomLine("U10", "13", "B1", 4),
+        BomLine("P1", "12", "K120", 2), BomLine("P2", "12", "K120", 2), BomLine("U10", "13", "B1", 4),
         BomLine("P2", "10", "U10", 1), BomLine("P2", "20", "S50", 2),
         BomLine("P3", "5", "K120", 1),
         BomLine("Q9", "1", "K120", 3),
@@ -94,10 +94,10 @@ class ReplaceInput(StudyCase):
     def test_replace_writes_minus_and_plus_for_every_target(self) -> None:
         self.store.save_replaces(self.number, "A", [("K120", "K121")])
         self.assertEqual(self.changes(), {
-            ("P1", "U10", "12", "K120"): (Decimal(-2), REPLACE),
-            ("P1", "U10", "12", "K121"): (Decimal(2), REPLACE),
-            ("P2", "U10", "12", "K120"): (Decimal(-2), REPLACE),
-            ("P2", "U10", "12", "K121"): (Decimal(2), REPLACE),
+            ("P1", "P1", "12", "K120"): (Decimal(-2), REPLACE),
+            ("P1", "P1", "12", "K121"): (Decimal(2), REPLACE),
+            ("P2", "P2", "12", "K120"): (Decimal(-2), REPLACE),
+            ("P2", "P2", "12", "K121"): (Decimal(2), REPLACE),
             ("P3", "P3", "5", "K120"): (Decimal(-1), REPLACE),
             ("P3", "P3", "5", "K121"): (Decimal(1), REPLACE),
         })
@@ -140,8 +140,8 @@ class LaterWriteWins(StudyCase):
         self.store.save_replaces(self.number, "A", [("K120", "K121")])
         self.store.save_grid(self.number, "A", ["P2"], ["K121"], [{"product": "P2", "part": "K121", "value": "1"}])
         got = self.changes()
-        self.assertEqual(got[("P2", "U10", "12", "K121")], (Decimal(1), GRID))
-        self.assertEqual(got[("P1", "U10", "12", "K121")], (Decimal(2), REPLACE))
+        self.assertEqual(got[("P2", "P2", "12", "K121")], (Decimal(1), GRID))
+        self.assertEqual(got[("P1", "P1", "12", "K121")], (Decimal(2), REPLACE))
         ws = self.store.workspace(self.number)
         self.assertEqual(replace_overridden(ws, "A"), {("K120", "K121", None): True})
 
@@ -153,15 +153,14 @@ class LaterWriteWins(StudyCase):
         self.store.save_replaces(self.number, "A", [("K120", "K121")])
         self.store.save_grid(self.number, "A", ["P2"], ["K121"], [{"product": "P2", "part": "K121", "value": "1"}])
         self.store.save_replaces(self.number, "A", [("K120", "K121")])
-        self.assertEqual(self.changes()[("P2", "U10", "12", "K121")], (Decimal(1), GRID))
+        self.assertEqual(self.changes()[("P2", "P2", "12", "K121")], (Decimal(1), GRID))
 
     def test_rewrite_over_grid_replaces_the_amount(self) -> None:
         self.store.save_grid(self.number, "A", ["P1"], ["S50"], [{"product": "P1", "part": "S50", "value": "-1"}])
         rows = [{"parent": "P1", "balloon": "10", "part": "U10", "quantity": "1"},
                 {"parent": "P1", "balloon": "20", "part": "S50", "quantity": "3"},
                 {"parent": "P1", "balloon": "31", "part": "B1", "quantity": "4"},
-                {"parent": "U10", "balloon": "12", "part": "K120", "quantity": "2"},
-                {"parent": "U10", "balloon": "13", "part": "B1", "quantity": "4"}]
+                {"balloon": "12", "part": "K120", "quantity": "2"}]  # 親を省けば製品の直下
         self.store.save_rewrite(self.number, "A", "P1", rows)
         self.assertEqual(self.changes(), {("P1", "P1", "20", "S50"): (Decimal(2), REWRITE)})
 
@@ -187,8 +186,8 @@ class LaterWriteWins(StudyCase):
             {"product": "P1", "part": "K121", "value": "2", "row": 1},
             {"product": "P1", "part": "K120", "value": "0", "row": 0},  # 今 2 → 0
         ])
-        self.assertEqual(self.changes(), {("P1", "U10", "12", "K120"): (Decimal(-2), GRID),
-                                          ("P1", "U10", "12", "K121"): (Decimal(2), GRID)})
+        self.assertEqual(self.changes(), {("P1", "P1", "12", "K120"): (Decimal(-2), GRID),
+                                          ("P1", "P1", "12", "K121"): (Decimal(2), GRID)})
 
     def test_grid_stores_header_and_rows(self) -> None:
         self.store.save_grid(self.number, "A", ["P1", "P2"], ["B1"], [])
@@ -215,8 +214,7 @@ class Checks(StudyCase):
         self.store.save_rewrite(self.number, "A", "P2", [
             {"parent": "P2", "balloon": "10", "part": "U10", "quantity": "1"},
             {"parent": "P2", "balloon": "20", "part": "S50", "quantity": "-1"},
-            {"parent": "U10", "balloon": "12", "part": "K120", "quantity": "2"},
-            {"parent": "U10", "balloon": "13", "part": "B1", "quantity": "4"}])
+            {"balloon": "12", "part": "K120", "quantity": "2"}])
         got = self.problems()
         self.assertEqual(got[("P1", "P1", "20", "S50")], (NEGATIVE,))
         self.assertEqual(self.by_part("P1", "X1"), (UNREGISTERED,))
@@ -227,11 +225,11 @@ class Checks(StudyCase):
         self.store.save_replaces(self.number, "A", [("K120", "K121")])
         self.store.save_grid(self.number, "A", ["P1"], ["S50"], [{"product": "P1", "part": "S50", "value": "-1"}])
         changed = [BomLine("P1", "10", "U10", 1), BomLine("P1", "31", "B1", 4),
-                   BomLine("U10", "12", "K125", 2), BomLine("U10", "13", "B1", 4),
+                   BomLine("P1", "12", "K125", 2), BomLine("P2", "12", "K120", 2), BomLine("U10", "13", "B1", 4),
                    BomLine("P2", "10", "U10", 1), BomLine("P2", "20", "S50", 2), BomLine("P3", "5", "K120", 1)]
         self.store.replace_bom(bom(lines=changed), ["bom_line"])
         got = self.problems()
-        self.assertEqual(got[("P1", "U10", "12", "K120")], (OTHER_PART,))
+        self.assertEqual(got[("P1", "P1", "12", "K120")], (OTHER_PART,))
         self.assertEqual(got[("P1", "P1", "20", "S50")], (NO_PLACE,))
         self.assertEqual(got[("P3", "P3", "5", "K120")], ())
         ws = self.store.workspace(self.number)
@@ -241,28 +239,27 @@ class Checks(StudyCase):
         self.assertEqual(p1["plans"]["A"], p1["now"])
         self.assertTrue(p1["incomplete"]["A"])
 
-    def test_parent_outside_the_product_is_no_place(self) -> None:
-        self.store.save_rewrite(self.number, "A", "P3", [
-            {"parent": "P3", "balloon": "5", "part": "K120", "quantity": "1"},
-            {"parent": "U99", "balloon": "1", "part": "B1", "quantity": "1"}])
-        self.assertEqual(self.problems()[("P3", "U99", "1", "B1")], (NO_PLACE,))
+    def test_rewrite_takes_only_the_rows_right_under_the_product(self) -> None:
+        with self.assertRaisesRegex(ValueError, "組立品の中"):
+            self.store.save_rewrite(self.number, "A", "P1", [{"parent": "U10", "balloon": "13", "part": "B1", "quantity": "9"}])
+        self.assertEqual(self.changes(), {})
 
 
 class ApplyReplace(StudyCase):
     def test_replace_moves_the_after_quantity_in_every_target_and_undoes_by_replacing_back(self) -> None:
         self.store.apply_replace(self.number, "A", "K120", "K121")
         self.assertEqual(self.changes(), {
-            ("P1", "U10", "12", "K120"): (Decimal(-2), REPLACE), ("P1", "U10", "12", "K121"): (Decimal(2), REPLACE),
-            ("P2", "U10", "12", "K120"): (Decimal(-2), REPLACE), ("P2", "U10", "12", "K121"): (Decimal(2), REPLACE),
+            ("P1", "P1", "12", "K120"): (Decimal(-2), REPLACE), ("P1", "P1", "12", "K121"): (Decimal(2), REPLACE),
+            ("P2", "P2", "12", "K120"): (Decimal(-2), REPLACE), ("P2", "P2", "12", "K121"): (Decimal(2), REPLACE),
             ("P3", "P3", "5", "K120"): (Decimal(-1), REPLACE), ("P3", "P3", "5", "K121"): (Decimal(1), REPLACE)})
         self.assertEqual(self.store.workspace(self.number).replaces, {})  # 決まりとしては残さない
-        parts = {code: (users, was) for code, users, was in after_parts(self.store.workspace(self.number), "A")}
+        parts = {p.code: (p.users, p.was) for p in after_parts(self.store.workspace(self.number), "A")}
         self.assertEqual(parts["K121"], (["P1", "P2", "P3"], ["K120"]))
         self.assertNotIn("K120", parts)
         # 後から直した数量も、そのまま置き換えに乗る（変えた後の構成で動く）
         self.store.save_grid(self.number, "A", ["P1"], ["K121"], [{"product": "P1", "part": "K121", "value": "3"}])
         self.store.apply_replace(self.number, "A", "K121", "K120")
-        self.assertEqual(self.changes(), {("P1", "U10", "12", "K120"): (Decimal(1), REPLACE)})
+        self.assertEqual(self.changes(), {("P1", "P1", "12", "K120"): (Decimal(1), REPLACE)})
         with self.assertRaises(ValueError):
             self.store.apply_replace(self.number, "A", "ZZ1", "K121")
 
@@ -270,7 +267,7 @@ class ApplyReplace(StudyCase):
     def test_revert_leaves_the_products_that_already_used_the_new_part(self) -> None:
         # 今の部品表で S50 を使う P1・P2 と、P3 の K120 を S50 に替えた所が1行にまとまる
         self.store.apply_replace(self.number, "A", "K120", "S50")
-        self.assertEqual(dict((c, u) for c, u, _ in after_parts(self.store.workspace(self.number), "A"))["S50"],
+        self.assertEqual({p.code: p.users for p in after_parts(self.store.workspace(self.number), "A")}["S50"],
                          ["P1", "P2", "P3"])
         self.store.revert_replace(self.number, "A", "S50")
         self.assertEqual(self.changes(), {})
@@ -321,7 +318,7 @@ class Calculation(StudyCase):
         result = calculate(self.store.workspace(self.number), CostHead.MATERIAL)
         rows = {r["product"]: r for r in result["rows"]}
         self.assertEqual(result["plans"], ["A", "B"])
-        # P1 = U10(2×100 + 4×5) + 30 + 4×5
+        # P1 = U10(4×5) + 2×100 + 30 + 4×5
         self.assertEqual(rows["P1"]["now"], Decimal(270))
         self.assertEqual(rows["P1"]["plans"], {"A": Decimal(310), "B": Decimal(270)})
         self.assertEqual(rows["P2"]["plans"], {"A": Decimal(320), "B": Decimal(250)})
@@ -413,9 +410,9 @@ class Attributes(unittest.TestCase):
 
 class WhereUsed(unittest.TestCase):
     def test_inside_and_outside_the_targets(self) -> None:
-        inside, outside = where_used(bom(), "K120", ["P1", "P3"])
-        self.assertEqual(inside, ["P1", "P3"])
-        self.assertEqual(outside, ["P2", "Q9"])
+        self.assertEqual(where_used(bom(), "K120", ["P1", "P3"]), (["P1", "P3"], ["P2", "Q9"], 0))
+        # 組立品の中でだけ使う製品は、件数だけ（P2 は U10 の中）
+        self.assertEqual(where_used(bom(), "B1", ["P1", "P2", "P3"]), (["P1"], [], 1))
 
 
 class StudyApiFlow(unittest.TestCase):
@@ -469,8 +466,10 @@ class StudyApiFlow(unittest.TestCase):
         # 仮品番に新品番と同じ材料費を入れると、新品番に置き換えた時と同じ値で、不完全の印が外れる
         got = self.ok("PUT", "/api/v2/temp-items", q, {"rows": [{"code": tmp, "name": "仮の部品", "material": price},
                                                                {"code": NEW, "name": "台帳にある品番"}, {"code": ""}]})
-        self.assertEqual(got["rows"], [{"code": tmp, "name": "仮の部品", "material": price, "master": False},
-                                       {"code": NEW, "name": "台帳にある品番", "material": None, "master": True}])
+        self.assertEqual(got["rows"], [{"code": tmp, "name": "仮の部品", "material": price, "master": False, "base": None,
+                                        "changed": 0, "derived": None},
+                                       {"code": NEW, "name": "台帳にある品番", "material": None, "master": True, "base": None,
+                                        "changed": 0, "derived": None}])
         self.assertEqual(got["unregistered"], [])
         looked = self.ok("POST", "/api/v2/lookup", q, {"codes": [tmp, NEW]})["items"]
         self.assertEqual((looked[tmp]["name"], looked[tmp]["temp"], looked[NEW]["temp"]), ("仮の部品", True, False))
@@ -578,7 +577,7 @@ class StudyApiFlow(unittest.TestCase):
         self.assertEqual(grid["rows"][0]["cells"], {P1: "0", P2: "2"})
         self.assertIn({"part": OLD, "origin": 1, "cells": {P1: "0", P2: "0"}, "problems": {}, "locked": {}},
                       [{k: v for k, v in r.items() if k not in ("balloons", "now")} for r in grid["rows"]])
-        self.assertEqual(next(r for r in grid["rows"] if r["part"] == OLD)["now"], {P1: "2", P2: "2"})
+        self.assertEqual(next(r for r in grid["rows"] if r["part"] == OLD)["now"], {P1: "1", P2: "1"})
         # 風船の行: 列の製品ごとに、その製品でのその品番の風船番号
         self.assertEqual(sorted(next(r for r in grid["rows"] if r["part"] == OLD)["balloons"]), [P1, P2])
         changes = self.ok("GET", "/api/v2/changes", q + "&plan=A")["rows"]
@@ -589,13 +588,15 @@ class StudyApiFlow(unittest.TestCase):
         self.assertEqual([r["product"] for r in result["rows"]], [P1, P2, "ZZ9999-001"])
         rewrite = self.ok("GET", "/api/v2/rewrite", q + f"&plan=A&product={P1}")["rows"]
         self.assertIn(NEW, [r["part"] for r in rewrite])
-        # 親ごとにまとまり（製品→フレーム→ヒンジの順）、同じ親の中は風船の順
-        parents = [r["parent"] for r in rewrite]
-        self.assertEqual(list(dict.fromkeys(parents)), [P1, "FR0010-001", "HG0040-001"])
-        self.assertEqual(parents, sorted(parents, key=[P1, "FR0010-001", "HG0040-001"].index))
-        self.assertEqual([r["balloon"] for r in rewrite if r["parent"] == P1], ["10", "20", "30", "31", "40"])
+        # 製品の直下だけを、風船の順に出す。組立品には中を見られる印
+        self.assertEqual([(r["parent"], r["balloon"], r["assembly"]) for r in rewrite],
+                         [(P1, "10", True), (P1, "20", False), (P1, "30", False), (P1, "31", False), (P1, "40", False)])
+        inside = self.ok("GET", "/api/v2/inside", q + "&code=FR0010-001")["rows"]
+        self.assertEqual([(r["balloon"], r["part"], r["assembly"]) for r in inside],
+                         [("11", "HG0040-001", True), ("12", "KB0120-001", False), ("13", "BT0008-001", False),
+                          ("14", "PL0030-001", False)])
         used = self.ok("GET", "/api/v2/where-used", q + f"&code={OLD}")
-        self.assertEqual((used["inside"], used["outside"]), (2, 8))
+        self.assertEqual((used["inside"], used["outside"], used["deep"]), (2, 4, 0))
         released = self.ok("POST", "/api/v2/release", q, {})
         self.assertEqual((released["version"], released["versions"]), (1, [1]))
         self.assertEqual(self.ok("GET", "/api/v2/calc", q + "&version=1&head=material"), {
@@ -623,7 +624,8 @@ class StudyApiFlow(unittest.TestCase):
         self.ok("PUT", "/api/v2/targets", q, {"products": products})
         self.ok("PUT", "/api/v2/replace", q + "&plan=A", {"rows": [{"old": OLD, "new": NEW}]})
         changes = self.ok("GET", "/api/v2/changes", q + "&plan=A")["rows"]
-        self.assertEqual({r["product"] for r in changes}, set(products))
+        users = {"PR1001-001", "PR1002-001", "PR1003-001", "PR1004-001", "PR1501-001", "PR1502-001"}
+        self.assertEqual({r["product"] for r in changes}, users)
         self.assertTrue(all(not r["problems"] for r in changes))
         for head in ("total", "material"):
             result = self.ok("GET", "/api/v2/calc", q + f"&head={head}")
@@ -631,7 +633,10 @@ class StudyApiFlow(unittest.TestCase):
                 with self.subTest(head=head, product=row["product"]):
                     self.assertGreater(Decimal(row["now"]), 0)
                     self.assertGreater(Decimal(row["plans"]["A"]), 0)
-                    self.assertLess(Decimal(row["plans"]["A"]), Decimal(row["now"]))  # 置き換え先が安い
+                    if row["product"] in users:
+                        self.assertLess(Decimal(row["plans"]["A"]), Decimal(row["now"]))  # 置き換え先が安い
+                    else:
+                        self.assertEqual(row["plans"]["A"], row["now"])
                     self.assertFalse(row["now_incomplete"] or row["incomplete"]["A"])
                     self.assertGreater(Decimal(row["annual"]), 0)
             self.assertFalse(result["impact_incomplete"]["A"])
@@ -655,7 +660,7 @@ class StudyApiFlow(unittest.TestCase):
         users = {p: where_used(v, p, [])[1] for p in ("HT0090-001", "CV0230-001")}
         self.assertEqual(users, {"HT0090-001": ["PR1002-001"], "CV0230-001": ["PR1503-001"]})
         # 5) 多くの箇所・製品で使う部品
-        self.assertEqual(len(where_used(v, "BT0008-001", [])[1]), 10)
+        self.assertEqual([len(where_used(v, "BT0008-001", [])[1]), where_used(v, "BT0008-001", [])[2]], [9, 1])
         self.assertGreaterEqual(len(balloons(P1, "BT0008-001")), 3)
         # 6) ASSY の下にさらに ASSY・品番
         self.assertIn(("HG0040-001", "1"), balloons(P1, "PN0041-001"))

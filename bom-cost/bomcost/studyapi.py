@@ -25,31 +25,40 @@ from .normalize import to_code
 from .rollup import CostCalculator
 from .study import (
     ATTRIBUTES,
+    DEEP,
     HEADS,
+    NEGATIVE,
     OWN_HEADS,
     NO_PLACE,
     OTHER_PART,
     Attributes,
     REPLACE,
+    SlotKey,
     StudyStore,
+    Temp,
+    UNREGISTERED,
     Workspace,
     check_changes,
     calculate,
     calculate_heads,
     own_rows,
     after_parts,
+    after_places,
+    deep_parts,
+    direct_lines,
     grid_balloon,
     grid_locked,
     input_code,
     input_optional_code,
+    inside_lines,
     nfkc,
     occurrences,
     pair_key,
     parts_of,
     problem_count,
-    product_lines,
     replace_groups,
     replace_overridden,
+    temp_lines,
     unregistered_parts,
     where_used,
 )
@@ -91,6 +100,22 @@ def _balloon_order(balloon: str | None) -> tuple[int, int, str]:
     if balloon.isascii() and balloon.isdigit():
         return (0, int(balloon), "")
     return (1, 0, balloon)
+
+
+def _slot_rows(now: dict[SlotKey, Decimal], deltas: dict[SlotKey, Decimal]) -> list[dict[str, Any]]:
+    """直下の行に増減を当てた行（風船の順）。0 になった行と同じ風船に足した品番があれば、置き換えとして元の行に出す。"""
+    rows: list[dict[str, Any]] = []
+    added = {k: d for k, d in deltas.items() if k not in now}
+    for (balloon, part), qty in now.items():
+        after = qty + deltas.get((balloon, part), Decimal(0))
+        swap = next((k for k in added if k[0] == balloon), None) if after == 0 and (balloon, part) in deltas else None
+        rows.append({"balloon": balloon, "part": part if swap is None else swap[1],
+                     "quantity": _s(after if swap is None else added.pop(swap)),
+                     "before_part": part, "before_quantity": _s(qty), "changed": (balloon, part) in deltas})
+    for (balloon, part), delta in added.items():
+        rows.append({"balloon": balloon, "part": part, "quantity": _s(delta), "before_part": None, "before_quantity": None,
+                     "changed": True})
+    return [r for _, r in sorted(enumerate(rows), key=lambda x: (_balloon_order(x[1]["balloon"]), x[0]))]
 
 
 def _list(body: dict[str, Any], key: str) -> list[Any]:
@@ -242,6 +267,10 @@ class StudyApi:
             ("GET", r"/api/v2/changes", self.changes),
             ("GET", r"/api/v2/own", self.own),
             ("PUT", r"/api/v2/own", self.put_own),
+            ("GET", r"/api/v2/inside", self.inside),
+            ("POST", r"/api/v2/changes/drop-deep", self.drop_deep),
+            ("GET", r"/api/v2/temp-inside", self.temp_inside),
+            ("PUT", r"/api/v2/temp-inside", self.put_temp_inside),
             ("GET", r"/api/v2/temp-items", self.temp_items),
             ("PUT", r"/api/v2/temp-items", self.put_temp_items),
             ("GET", r"/api/v2/conditions", self.conditions),
@@ -480,16 +509,26 @@ class StudyApi:
     def after_parts(self, params: dict[str, str]) -> "Response":
         ws = self._ws(params)
         items = ws.bom.items
+        found = after_parts(ws, self._plan(params))
         return self._json({"parts": [
-            {"code": code, "name": items[code].name if code in items else None, "used": len(users), "products": users,
-             "was": was} for code, users, was in after_parts(ws, self._plan(params))]})
+            {"code": p.code, "name": items[p.code].name if p.code in items else None, "used": len(p.users),
+             "before": p.before, "products": p.users, "was": p.was} for p in found],
+            "deep": [{"code": c, "name": items[c].name if c in items else None, "used": n}
+                     for c, n in deep_parts(ws, (p.code for p in found))],
+            "places": [{"product": p.product, "balloon": p.balloon, "part": p.part, "quantity": _s(p.quantity), "was": p.was}
+                       for p in after_places(ws, self._plan(params))]})
 
     def apply_replace(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
-        self.store.apply_replace(_number(params), self._plan(params), body.get("old"), body.get("new"))
+        """old を new に、対象品番の全製品で置き換える。rows（product・balloon・old・new）があれば、その箇所だけ。"""
+        if "rows" in body:
+            self.store.apply_places(_number(params), self._plan(params), _objects(body, "rows"))
+        else:
+            self.store.apply_replace(_number(params), self._plan(params), body.get("old"), body.get("new"))
         return self.after_parts({"number": _number(params), "plan": self._plan(params)})
 
     def revert_replace(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
-        self.store.revert_replace(_number(params), self._plan(params), body.get("part"))
+        place = (body.get("product"), body.get("balloon")) if "product" in body else None
+        self.store.revert_replace(_number(params), self._plan(params), body.get("part"), place)
         return self.after_parts({"number": _number(params), "plan": self._plan(params)})
 
     # ⑤ 一覧入力 ---------------------------------------------------------------
@@ -508,7 +547,7 @@ class StudyApi:
         for c in changes:
             if c.product not in columns:
                 columns.append(c.product)
-            if c.part not in rows:
+            if c.parent == c.product and c.part not in rows:
                 rows.append(c.part)
         replace_index = {pair_key(o, n, b): i + 1 for i, (o, n, b) in enumerate(ws.replaces.get(plan, []))}
         now: dict[str, dict[str, Decimal]] = {}
@@ -524,6 +563,8 @@ class StudyApi:
                     now.setdefault(r, {})[p] = sum((line.quantity for line in found), Decimal(0))
                     cells.setdefault(r, {})[p] = now[r][p]
         for c in changes:
+            if c.parent != c.product:
+                continue  # 2階層目の変更（⑥ に出す）
             cells.setdefault(c.part, {})
             cells[c.part][c.product] = cells[c.part].get(c.product, Decimal(0)) + c.delta
             if c.source == REPLACE and c.origin in replace_index:
@@ -565,45 +606,29 @@ class StudyApi:
     # ⑧ 書き換え -------------------------------------------------------------
 
     def rewrite(self, params: dict[str, str]) -> "Response":
-        """1製品の全構成に案の変更を当てた行。置き換えた箇所は元の行の位置に新しい品番を出す。"""
+        """1製品の直下に案の変更を当てた行。置き換えた箇所は元の行の位置に新しい品番を出す。assembly は中を見られる組立品。"""
         ws = self._ws(params)
         plan = self._plan(params)
         product = input_code(params.get("product") or (ws.targets[0] if ws.targets else ""), name="対象品番")
-        changes = {c.place[1:]: c for c in ws.plan_changes(plan) if c.product == product}
-        lines = product_lines(ws.bom, product)
-        rows: list[dict[str, Any]] = []
-        used: set[tuple[str, str | None, str]] = set()
-        added = [k for k, c in changes.items() if not any(l.key == k for l in lines)]
-        for line in lines:
-            c = changes.get(line.key)
-            qty = line.quantity + (c.delta if c else 0)
-            used.add(line.key)
-            if qty == 0 and c is not None:
-                swap = next((k for k in added if k[0] == line.parent and k[1] == line.balloon and k not in used), None)
-                if swap is not None:
-                    used.add(swap)
-                    rows.append({"parent": line.parent, "balloon": line.balloon, "part": swap[2],
-                                 "quantity": _s(changes[swap].delta), "before_part": line.child,
-                                 "before_quantity": _s(line.quantity), "changed": True})
-                    continue
-            rows.append({"parent": line.parent, "balloon": line.balloon, "part": line.child, "quantity": _s(qty),
-                         "before_part": line.child, "before_quantity": _s(line.quantity), "changed": c is not None})
-        for k in added:
-            if k in used:
-                continue
-            rows.append({"parent": k[0], "balloon": k[1], "part": k[2], "quantity": _s(changes[k].delta),
-                         "before_part": None, "before_quantity": None, "changed": True})
-        # 親ごとにまとめる。親の並びは構成の木で出てくる順（製品→その子の組立品→孫…）、同じ親の中は風船の順
-        rank = {p: i for i, p in enumerate(dict.fromkeys([product, *(l.parent for l in lines)]))}
-        rows = [r for _, r in sorted(enumerate(rows), key=lambda x: (
-            rank.get(x[1]["parent"], len(rank)), x[1]["parent"] if x[1]["parent"] not in rank else "",
-            _balloon_order(x[1]["balloon"]), x[0]))]
+        deltas = {(c.balloon, c.part): c.delta for c in ws.plan_changes(plan) if c.product == product and c.parent == product}
+        rows = [{**r, "parent": product, "assembly": bool(inside_lines(ws, r["part"]))}
+                for r in _slot_rows(direct_lines(ws.bom, product), deltas)]
         return self._json({"product": product, "targets": ws.targets, "rows": rows})
 
     def put_rewrite(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
         product = input_code(body.get("product") or "", name="対象品番")
         self.store.save_rewrite(_number(params), self._plan(params), product, _objects(body, "rows"))
         return self.rewrite({"number": _number(params), "plan": self._plan(params), "product": product})
+
+    def inside(self, params: dict[str, str]) -> "Response":
+        """組立品の中（直下）を見る。保存しない。"""
+        ws = self._ws(params)
+        code = input_code(params.get("code", ""))
+        items = ws.bom.items
+        rows = [{"balloon": b, "part": part, "name": items[part].name if part in items else None, "quantity": _s(qty),
+                 "assembly": bool(inside_lines(ws, part))} for (b, part), qty in inside_lines(ws, code).items()]
+        rows.sort(key=lambda r: _balloon_order(r["balloon"]))
+        return self._json({"code": code, "name": items[code].name if code in items else None, "rows": rows})
 
     # ⑥ 変更一覧 -------------------------------------------------------------
 
@@ -649,7 +674,15 @@ class StudyApi:
         summary = summarize_changes(rows)
         product = params.get("product", "").strip()
         targets = [p for p in self._ws(params).targets if not product or p == product]
-        return self._json({"rows": rows, "summary": summary, "by_product": changes_by_product(summary, targets)})
+        ws = self._ws(params)
+        return self._json({"rows": rows, "summary": summary, "by_product": changes_by_product(summary, targets),
+                           "deep": sum(1 for r in rows if DEEP in r["problems"]),
+                           "temps": {t.code: {"base": t.base, "name": t.name, "changes": temp_changes(ws, t)}
+                                     for t in ws.temps if t.base is not None and t.code in ws.temp_merged}})
+
+    def drop_deep(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
+        self.store.drop_deep_changes(_number(params), self._plan(params))
+        return self.changes({"number": _number(params), "plan": self._plan(params)})
 
     # ⑩ 製品の費目 -----------------------------------------------------------
 
@@ -672,13 +705,32 @@ class StudyApi:
         """仮品番の行（master: 品目の台帳に同じ品番があり、台帳の値を使う）と、変更に出る未登録の品番。"""
         ws = self._ws(params)
         return self._json({
-            "rows": [{"code": c, "name": nm, "material": _s(m), "master": c not in ws.temp_merged} for c, nm, m in ws.temps],
+            "rows": [{"code": t.code, "name": t.name, "material": _s(t.material), "master": t.code not in ws.temp_merged,
+                      "base": t.base, "changed": len(temp_changes(ws, t)) if t.base is not None else 0,
+                      # 流用元から計算した材料費（材料費を打った行と、分からない時は空）
+                      "derived": _s(ws.bom.cost_value(t.code, CostHead.MATERIAL))
+                      if t.base is not None and t.material is None and t.code in ws.temp_merged else None}
+                     for t in ws.temps],
             "unregistered": unregistered_parts(ws),
         })
 
     def put_temp_items(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
         self.store.save_temps(_number(params), _objects(body, "rows"))
         return self.temp_items({"number": _number(params)})
+
+    def temp_inside(self, params: dict[str, str]) -> "Response":
+        """流用した仮品番の直下（流用元に中の変更を当てた行）。"""
+        ws = self._ws(params)
+        code = input_code(params.get("code", ""))
+        temp = next((t for t in ws.temps if t.code == code and t.base is not None), None)
+        if temp is None:
+            raise ValueError(f"{code} は流用した仮品番ではありません")
+        deltas = {(b, part): d for b, part, d in temp.lines}
+        return self._json({"code": code, "base": temp.base, "rows": _slot_rows(direct_lines(ws.bom, temp.base or ""), deltas)})
+
+    def put_temp_inside(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
+        self.store.save_temp_lines(_number(params), body.get("code"), _objects(body, "rows"))
+        return self.temp_inside({"number": _number(params), "code": str(body.get("code"))})
 
     # ⑦ 結果・計算条件 -------------------------------------------------------
 
@@ -731,10 +783,10 @@ class StudyApi:
         """件数を先に返し、group（inside・outside）を付けた時だけその品番の一覧を返す。保存しない。"""
         ws = self._ws(params)
         code = input_code(params.get("code", ""))
-        inside, outside = where_used(ws.bom, code, ws.targets)
+        inside, outside, deep = where_used(ws.bom, code, ws.targets)
         group = params.get("group", "")
         data: dict[str, Any] = {"code": code, "inside": len(inside),
-                                "outside": len(outside)}
+                                "outside": len(outside), "deep": deep}
         if group in ("inside", "outside"):
             codes = inside if group == "inside" else outside
             data["products"] = [{"code": c, "name": ws.bom.items[c].name if c in ws.bom.items else None}
@@ -793,6 +845,13 @@ class StudyApi:
             ("金額", ["対象品番", "名称", "費目", "今", "変更後", "差", "年間台数", "年間の影響", "不完全"], money),
             ("計算条件", ["種類", "対象", "項目", "値", "備考"], self._condition_rows(ws, plan)),
         ]
+        inner = [[t.code, t.name, t.base, s["kind"], s["old"], s["old_name"], s["new"], s["new_name"], d["balloon"],
+                  _num(d["before"]), _num(d["after"])]
+                 for t in ws.temps if t.base is not None and t.code in ws.temp_merged
+                 for s in temp_changes(ws, t) for d in s["details"]]
+        if inner:
+            sheets.insert(3, ("仮品番の中", ["仮品番", "名称", "流用元", "変更", "元品番", "元の名称", "新品番", "新の名称", "風船",
+                                          "変更前", "変更後"], inner))
         return self._xlsx(f"検討_{ws.number}", sheets)
 
     @staticmethod
@@ -806,8 +865,11 @@ class StudyApi:
             given = ws.conditions.get(p)
             value = given if given is not None else None if volume is None else volume.annual
             rows.append(["年間台数", p, None, value, "検討で入力" if given is not None else "部品表" if value is not None else "未登録"])
-        rows += [["仮品番", code, name, material, "" if code in ws.temp_merged else "品目の台帳の値を使う"]
-                 for code, name, material in ws.temps]
+        for t in ws.temps:
+            note = "" if t.base is None else f"流用元 {t.base}" + ("（材料費は入力した値）" if t.material is not None else " から計算")
+            master = t.code not in ws.temp_merged
+            rows.append(["仮品番", t.code, t.name, t.material if master else ws.bom.cost_value(t.code, CostHead.MATERIAL),
+                         "品目の台帳の値を使う" if master else note])
         for r in own_rows(ws, plan):
             rows += [["製品の費目", r["product"], OWN_HEADS[k].value, v["after"],
                       "台帳に値なし" if v["now"] is None else f"台帳の値 {v['now']}"]
@@ -894,6 +956,19 @@ def summarize_changes(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             texts.setdefault(d["quantity"], set()).add(d["product"])
         g["quantity"] = next(iter(texts)) if len(texts) == 1 else "・".join(f"{t}（{len(p)}製品）" for t, p in texts.items())
     return list(groups.values())
+
+
+def temp_changes(ws: Workspace, temp: Temp) -> list[dict[str, Any]]:
+    """流用した仮品番の中の変更を、した事ごとに1行（流用元からの差）。"""
+    now, after = temp_lines(ws.bom, temp)
+    items = ws.bom.items
+    return summarize_changes([{
+        "product": temp.code, "parent": temp.base, "balloon": balloon, "part": part,
+        "name": items[part].name if part in items else None, "before": _s(now.get((balloon, part), Decimal(0))),
+        "after": _s(after[(balloon, part)]), "delta": _s(delta), "added": (balloon, part) not in now,
+        "problems": ([] if part in items else [UNREGISTERED]) + ([NEGATIVE] if after[(balloon, part)] < 0 else []),
+        "source": "temp",
+    } for balloon, part, delta in temp.lines])
 
 
 def changes_by_product(summary: list[dict[str, Any]], targets: list[str]) -> list[dict[str, Any]]:

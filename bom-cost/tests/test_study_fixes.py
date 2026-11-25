@@ -103,11 +103,10 @@ class PairAndIncomplete(FixCase):
 
 
 class GrPlaces(FixCase):
-    TWO_PARENTS = [BomLine("X", "1", "A1", 1), BomLine("X", "2", "A2", 2),
-                   BomLine("A1", "5", "B", 2), BomLine("A2", "5", "B", 2)]
+    TWO_PLACES = [BomLine("X", "1", "B", 1), BomLine("X", "2", "B", 2)]
 
-    def test_d_part_under_two_parents_is_locked_in_grid(self) -> None:
-        self.open(self.TWO_PARENTS, ["X"])
+    def test_d_part_at_two_places_is_locked_in_grid(self) -> None:
+        self.open(self.TWO_PLACES, ["X"])
         self.store.save_replaces(self.number, "A", [("B", "NEW")])
         self.assertTrue(grid_locked(self.store.workspace(self.number), "A", "X", "B"))
         before = self.changes()
@@ -119,7 +118,7 @@ class GrPlaces(FixCase):
         store = Store(":memory:")
         self.addCleanup(store.close)
         api = Api(store)
-        StudyStore(store.connection).replace_bom(version(self.TWO_PARENTS, COSTS), ALL)
+        StudyStore(store.connection).replace_bom(version(self.TWO_PLACES, COSTS), ALL)
         number = json.loads(api.handle("POST", "/api/v2/studies", "", b"{}").body)["header"]["number"]
         api.handle("PUT", "/api/v2/targets", f"number={number}", json.dumps({"products": ["X"]}).encode())
         api.handle("PUT", "/api/v2/replace", f"number={number}",
@@ -131,7 +130,7 @@ class GrPlaces(FixCase):
         store = Store(":memory:")
         self.addCleanup(store.close)
         api = Api(store)
-        StudyStore(store.connection).replace_bom(version(self.TWO_PARENTS + [BomLine("Y", "1", "B", 1)], COSTS), ALL)
+        StudyStore(store.connection).replace_bom(version(self.TWO_PLACES + [BomLine("Y", "1", "B", 1)], COSTS), ALL)
         number = json.loads(api.handle("POST", "/api/v2/studies", "", b"{}").body)["header"]["number"]
         before = store.connection.total_changes
         r = api.handle("POST", "/api/v2/grid/locked", f"number={number}&plan=A",
@@ -150,12 +149,12 @@ class GrPlaces(FixCase):
         self.assertEqual(self.changes()[("X", "X", None, "ADD")], ("1", GRID))
 
     def test_e_new_part_right_below_a_minus_takes_its_place(self) -> None:
-        lines = [BomLine("X", "1", "A1", 3), BomLine("A1", "5", "OLD", 1)]
+        lines = [BomLine("X", "1", "A1", 3), BomLine("X", "5", "OLD", 1)]
         self.open(lines, ["X"])
         self.store.save_grid(self.number, "A", ["X"], ["OLD", "NEW"], [
             {"product": "X", "part": "OLD", "value": "-1", "row": 0},
             {"product": "X", "part": "NEW", "value": "1", "row": 1}])
-        self.assertEqual(self.changes()[("X", "A1", "5", "NEW")], ("1", GRID))
+        self.assertEqual(self.changes()[("X", "X", "5", "NEW")], ("1", GRID))
 
 
 class Inputs(FixCase):
@@ -229,7 +228,8 @@ class ApiShapes(unittest.TestCase):
     def test_messages_are_polite(self) -> None:
         cases = (
             ("PUT", "/api/v2/replace", {"rows": [{"old": "OLD", "new": ""}]}, "元品番と新品番を入力してください（1行目）"),
-            ("PUT", "/api/v2/rewrite", {"product": "X", "rows": [{"part": "S", "quantity": "1"}]}, "親を入力してください"),
+            ("PUT", "/api/v2/rewrite", {"product": "X", "rows": [{"parent": "A1", "part": "S", "quantity": "1"}]},
+             "組立品の中はここでは変えられません。仮品番で流用して作り、直下で置き換えてください"),
             ("PUT", "/api/v2/grid", {"cells": [{"product": "X", "part": "S", "value": "abc"}]}, "数量は数で入力してください（abc）"),
         )
         for method, path, body, message in cases:

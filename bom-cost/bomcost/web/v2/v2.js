@@ -344,6 +344,7 @@ if (channel) channel.onmessage = (e) => {
 window.addEventListener("focus", async () => {
   if (!stale || !current || !S.number) return;
   if ((Grid.active && Grid.active.editing) || (current.saver && current.saver.pending)) return;
+  if (document.querySelector(".overlay")) return; // 窓を開いている間は下の画面を描き直さない（閉じた後に読み直す）
   stale = false;
   items.clear();
   try {
@@ -889,31 +890,54 @@ async function importDialog(after) {
 }
 
 // ⑪ 置換 -----------------------------------------------------------------
-// 対象品番の変えた後の構成にある部品を、品番か名称で絞って品番ごとに1行で出す。品番を打ち替えると、
-// 対象品番の全製品のその箇所を置き換える（1回きりの操作で、決まりとしては残さない）。
+// 対象品番の直下（1階層目）の、変えた後の部品を、品番か名称で絞って出す。品番を打ち替えると置き換える（1回きりの操作で、決まりとしては残さない）。
+// まとめる＝部品ごとに1行・使う製品の全部で替わる。製品ごと＝部品×製品×風船番号に1行・その行だけ替わる。見せ方だけの違いで、変更は同じ物。
 // 戻す時は「置き換える前」を押す（打ち替えて戻すと、もともとその品番だった製品まで変わる）。
-// 一部の製品・風船番号だけ替える時は ⑤ か ⑧ で直す
+// 組立品の中は替えない（⑨ で流用した仮品番を作り、ここで組立品ごと置き換える）
 
 async function searchReplaceScreen(main, cur) {
   const ro = !canWrite();
   const plan = PLAN;
-  let parts = []; // { code, name, used, products, was: 置き換える前の品番 }
+  let each = false; // false＝まとめる・true＝製品ごと
+  let parts = []; // { code, name, used, before: 今の部品表で使う製品の数, products, was: 置き換える前の品番 }
+  let places = []; // { product, balloon, part, quantity, was }
+  let deep = []; // 組立品の中にだけある部品 { code, name, used }
   let shown = [];
-  if (S.number) parts = (await api("GET", "/api/v2/after-parts", q({ plan }))).parts;
+  const take = (d) => ({ parts, places, deep } = d);
+  if (S.number) take(await api("GET", "/api/v2/after-parts", q({ plan })));
   const codeBox = el("input", { class: "in" });
   const nameBox = el("input", { class: "in" });
+  const productBox = el("input", { class: "in" });
+  const productNameBox = el("input", { class: "in" });
+  const productFilter = el("span", { class: "row", style: "margin:0" }, el("label", { class: "f" }, "製品の品番", productBox), el("label", { class: "f" }, "製品の名称", productNameBox));
   const note = el("span", { class: "mini" });
   const norm = (s) => clean(s).toLowerCase();
-  // 置き換えた品番は検索に関係なく上に出す。その下に、検索に当たる部品
+  const nameOf = (code) => (items.get(code) && items.get(code).name) || "";
+  const hit = (text, word) => !word || norm(text || "").includes(word);
+  // 置き換えた行は検索に関係なく上に出す。その下に、検索に当たる行
   const refilter = async () => {
     const c = norm(codeBox.value);
     const n = norm(nameBox.value);
-    const replaced = parts.filter((p) => p.was.length);
-    const hits = c || n ? parts.filter((p) => !p.was.length && (!c || norm(p.code).includes(c)) && (!n || norm(p.name || "").includes(n))) : [];
+    const names = new Map(parts.map((p) => [p.code, p.name]));
+    let searched = c || n;
+    let found;
+    if (each) {
+      await lookup(S.targets);
+      const pc = norm(productBox.value);
+      const pn = norm(productNameBox.value);
+      searched = searched || pc || pn;
+      found = places.filter((p) => !p.was.length && hit(p.part, c) && hit(names.get(p.part), n) && hit(p.product, pc) && hit(nameOf(p.product), pn));
+      // 部品の順にまとめる（同じ部品の中は対象品番の順）
+      found = found.map((p, i) => [p, i]).sort(([x, i], [y, j]) => x.part.localeCompare(y.part) || i - j).map(([p]) => p);
+    } else found = parts.filter((p) => !p.was.length && hit(p.code, c) && hit(p.name, n));
+    const replaced = (each ? places : parts).filter((p) => p.was.length);
+    const hits = searched ? found : [];
     shown = [...replaced, ...hits];
-    note.textContent = c || n ? `置き換えた品番 ${replaced.length}・検索に当たる部品 ${hits.length}`
-      : `置き換えた品番 ${replaced.length}（品番か名称で絞ると、対象品番の全製品の部品が出ます）`;
-    await lookup(shown.flatMap((p) => [p.code, ...p.was]));
+    const below = c || n ? deep.filter((p) => hit(p.code, c) && hit(p.name, n)).length : 0;
+    note.textContent = searched
+      ? `置き換えた${each ? "行" : "品番"} ${replaced.length}・検索に当たる${each ? "行" : "部品"} ${hits.length}${below ? `・組立品の中に ${below}（仮品番で流用して替える）` : ""}`
+      : `置き換えた${each ? "行" : "品番"} ${replaced.length}（${each ? "部品か製品" : "品番か名称"}で絞ると、対象品番の直下の部品が出ます）`;
+    await lookup(shown.flatMap((p) => [p.code ?? p.part, ...p.was]));
     grid.render();
   };
   const usersDialog = async (p) => {
@@ -927,30 +951,47 @@ async function searchReplaceScreen(main, cur) {
       fail(e);
     }
   };
-  const apply = async (p, code) => {
+  const send = async (path, body, text) => {
     try {
-      const d = await api("POST", "/api/v2/replace/apply", { number: S.number, plan }, { old: p.code, new: code });
-      parts = d.parts;
+      take(await api("POST", path, { number: S.number, plan }, body));
       tell("saved");
-      done(`${p.code} を ${code} に置き換えました（${p.used} 製品）`);
+      done(text);
     } catch (e) {
       fail(e);
     }
-    await refilter();
+    await refilter().catch(fail);
   };
-  const revert = async (p) => {
-    if (!confirm(`${p.code} に置き換えた箇所を、今の部品表（${p.was.join("・")}）に戻します。よろしいですか？`)) return;
-    try {
-      parts = (await api("POST", "/api/v2/replace/revert", { number: S.number, plan }, { part: p.code })).parts;
-      tell("saved");
-      done(`${p.code} に置き換えた箇所を今の部品表に戻しました`);
-    } catch (e) {
-      fail(e);
+  // 貼り付けでは打ち替えが続けて来るので、溜めて changed() で1回に送る
+  let typed = new Map(); // 行 → 新品番
+  const apply = () => {
+    const work = [...typed];
+    typed = new Map();
+    if (!work.length) return;
+    if (each) {
+      send("/api/v2/replace/apply", { rows: work.map(([p, code]) => ({ product: p.product, balloon: p.balloon, old: p.part, new: code })) },
+        `${work.length} 行を置き換えました`);
+      return;
     }
-    await refilter();
+    (async () => {
+      for (const [p, code] of work) await send("/api/v2/replace/apply", { old: p.code, new: code }, `${p.code} を ${code} に置き換えました（${p.used} 製品）`);
+    })();
   };
-  const body = el("div");
-  const model = {
+  const revert = (p) => {
+    const code = each ? p.part : p.code;
+    const where = each ? `${p.product} の ` : "";
+    if (!confirm(`${where}${code} に置き換えた箇所を、今の部品表（${p.was.join("・")}）に戻します。よろしいですか？`)) return;
+    send("/api/v2/replace/revert", each ? { part: code, product: p.product, balloon: p.balloon } : { part: code }, `${where}${code} に置き換えた箇所を今の部品表に戻しました`);
+  };
+  const materialCell = (code) => {
+    const info = items.get(code);
+    return { text: info && info.material != null ? fmt(info.material) : "", cls: "r" };
+  };
+  const wasCell = (p) => ({ text: p.was.join("・"), cls: !ro && p.was.length ? "auto link" : "auto", title: !ro && p.was.length ? "押すと今の部品表に戻す" : null });
+  const set = (r, c, value) => {
+    const p = shown[r];
+    if (c === 1 && p && value && value !== (p.code ?? p.part)) typed.set(p, value);
+  };
+  const together = {
     head: () => ["", "品番", "名称", { text: "使う製品", cls: "r" }, { text: "材料費", cls: "r" }, "置き換える前"],
     nRows: () => shown.length,
     nCols: () => 6,
@@ -959,29 +1000,63 @@ async function searchReplaceScreen(main, cur) {
       if (c === 0) return { text: String(r + 1), cls: "n" };
       if (c === 1) return { text: p.code, editable: !ro, title: ro ? null : "打ち替えると、使う製品の全部で置き換える" };
       if (c === 2) return nameCell(p.code);
-      if (c === 3) return { text: String(p.used), cls: "r link", title: "押すと製品の一覧" };
-      if (c === 4) {
-        const info = items.get(p.code);
-        return { text: info && info.material != null ? fmt(info.material) : "", cls: "r" };
-      }
-      return { text: p.was.join("・"), cls: !ro && p.was.length ? "auto link" : "auto", title: !ro && p.was.length ? "押すと今の部品表に戻す" : null };
+      // 今の部品表で使う数より減っていれば、一部の製品だけ替えてある
+      if (c === 3) return { text: p.used < p.before ? `${p.used}（全${p.before}）` : String(p.used), cls: "r link", title: "押すと製品の一覧" };
+      if (c === 4) return materialCell(p.code);
+      return wasCell(p);
     },
-    set(r, c, value) {
-      const p = shown[r];
-      if (c !== 1 || !p || !value || value === p.code) return;
-      apply(p, value);
-    },
+    set,
+    changed: apply,
     action(r, c) {
       if (c === 3 && shown[r]) usersDialog(shown[r]);
       if (c === 5 && !ro && shown[r] && shown[r].was.length) revert(shown[r]);
       return false;
     },
   };
-  const grid = new Grid(body, model);
-  codeBox.addEventListener("input", () => refilter().catch(fail));
-  nameBox.addEventListener("input", () => refilter().catch(fail));
+  const perProduct = {
+    head: () => ["", "品番", "名称", "製品", "名称", { text: "風船", cls: "c" }, { text: "数量", cls: "r" }, "置き換える前"],
+    nRows: () => shown.length,
+    nCols: () => 8,
+    cell(r, c) {
+      const p = shown[r];
+      switch (c) {
+        case 0: return { text: String(r + 1), cls: "n" };
+        case 1: return { text: p.part, editable: !ro, title: ro ? null : "打ち替えると、この行だけ置き換える" };
+        case 2: return nameCell(p.part);
+        case 3: return { text: p.product };
+        case 4: return nameCell(p.product);
+        case 5: return { text: p.balloon ?? "—", cls: "c" };
+        case 6: return { text: fmt(p.quantity), cls: "r" };
+        default: return wasCell(p);
+      }
+    },
+    set,
+    changed: apply,
+    action(r, c) {
+      if (c === 7 && !ro && shown[r] && shown[r].was.length) revert(shown[r]);
+      return false;
+    },
+  };
+  const body = el("div");
+  let grid = new Grid(body, together);
+  const modes = el("div", { class: "chips" });
+  const drawModes = () => {
+    productFilter.hidden = !each;
+    productFilter.style.display = each ? "" : "none";
+    fill(modes, [[false, "まとめる"], [true, "製品ごと"]].map(([k, text]) => el("button", { class: "chip" + (each === k ? " on" : ""), onclick: async () => {
+      if (Grid.active) Grid.active.commit();
+      each = k;
+      shown = [];
+      grid = new Grid(body, each ? perProduct : together);
+      drawModes();
+      await refilter().catch(fail);
+      grid.focus();
+    } }, text)));
+  };
+  drawModes();
+  for (const box of [codeBox, nameBox, productBox, productNameBox]) box.addEventListener("input", () => refilter().catch(fail));
   main.append(card("置換", [], [
-    el("div", { class: "row" }, el("label", { class: "f" }, "品番", codeBox), el("label", { class: "f" }, "名称", nameBox), note),
+    el("div", { class: "row" }, modes, el("label", { class: "f" }, "品番", codeBox), el("label", { class: "f" }, "名称", nameBox), productFilter, note),
     body,
   ]));
   await refilter();
@@ -1251,7 +1326,8 @@ async function whereUsedDialog(code, onAdd = null) {
         el("tr", {}, el("td", {}, "範囲内"), el("td", { class: "r" }, d.inside),
           el("td", {}, el("button", { class: "btn", disabled: !d.inside, onclick: () => open("inside") }, "開く"))),
         el("tr", {}, el("td", {}, "範囲外"), el("td", { class: "r" }, d.outside),
-          el("td", {}, el("button", { class: "btn", disabled: !d.outside, onclick: () => open("outside") }, "開く")))),
+          el("td", {}, el("button", { class: "btn", disabled: !d.outside, onclick: () => open("outside") }, "開く"))),
+        d.deep ? el("tr", {}, el("td", {}, "組立品の中"), el("td", { class: "r" }, d.deep), el("td", {}, "")) : null),
       list,
     ], [el("span", { class: "sp" }), el("button", { class: "btn", onclick: () => box.close() }, "閉じる")]);
   } catch (e) {
@@ -1302,6 +1378,8 @@ async function conditionsDialog() {
 
 // ⑧ 書き換え -------------------------------------------------------------
 
+// 1つの製品の直下（1階層目）だけを直す。組立品の中は「中を見る」で見るだけ（替える時は ⑨ で流用した仮品番を作る）
+
 async function rewriteScreen(main, cur) {
   const ro = !canWrite();
   const plan = PLAN;
@@ -1318,10 +1396,10 @@ async function rewriteScreen(main, cur) {
   await load();
   const body = el("div");
   const model = {
-    head: () => ["", "親", { text: "風船", cls: "c" }, "品番", "名称", { text: "数量", cls: "r" }],
+    head: () => ["", { text: "風船", cls: "c" }, "品番", "名称", { text: "数量", cls: "r" }, ""],
     nRows: () => rows.length + (ro || !product ? 0 : 1),
     grow: ro || !product ? undefined : () => {
-      rows.push({ parent: "", balloon: "", part: "", quantity: "", before_part: null, before_quantity: null, fresh: true });
+      rows.push({ balloon: "", part: "", quantity: "", before_part: null, before_quantity: null, fresh: true });
       return true;
     },
     nCols: () => 6,
@@ -1329,30 +1407,35 @@ async function rewriteScreen(main, cur) {
       const row = rows[r];
       const fresh = !row || row.fresh;
       if (c === 0) return { text: String(r + 1), cls: "n" };
-      if (c === 1) return { text: row ? row.parent : "", editable: !ro && fresh };
-      if (c === 2) return { text: row ? row.balloon : "", editable: !ro && fresh, cls: "c" };
-      if (c === 3) {
+      if (c === 1) return { text: row ? row.balloon : "", editable: !ro && fresh, cls: "c" };
+      if (c === 2) {
         const own = row && (row.fresh || row.part !== row.before_part);
         return { text: row ? row.part : "", editable: !ro, cls: own ? "own" : "" };
       }
-      if (c === 4) return nameCell(row && row.part);
+      if (c === 3) return nameCell(row && row.part);
+      if (c === 5) return row && row.assembly ? { text: "中を見る", cls: "link" } : { text: "" };
       const own = row && (row.fresh || !same(row.quantity, row.before_quantity));
       const bad = row && row.quantity !== "" && (!isNumber(row.quantity) || Number(row.quantity) < 0);
       return { text: row ? row.quantity : "", editable: !ro, cls: "r" + (bad ? " bad" : own ? " own" : "") };
     },
     set(r, c, text) {
-      if (c < 1 || c === 4 || c > 5) return;
+      if (![1, 2, 4].includes(c)) return;
       if (r >= rows.length) {
         if (!text) return;
-        rows.push({ parent: "", balloon: "", part: "", quantity: "", before_part: null, before_quantity: null, fresh: true });
+        rows.push({ balloon: "", part: "", quantity: "", before_part: null, before_quantity: null, fresh: true });
       }
       const row = rows[r];
-      const field = { 1: "parent", 2: "balloon", 3: "part", 5: "quantity" }[c];
-      if ((c === 1 || c === 2) && !row.fresh) return;
+      const field = { 1: "balloon", 2: "part", 4: "quantity" }[c];
+      if (c === 1 && !row.fresh) return;
       // 数でない数量はその場で弾く（入れずに元の値のまま）
-      if (c === 5 && text !== "" && !isNumber(text)) return alert(`数量は数で入力してください（${row.part || "品番なし"}「${text}」）`);
+      if (c === 4 && text !== "" && !isNumber(text)) return alert(`数量は数で入力してください（${row.part || "品番なし"}「${text}」）`);
       row[field] = text;
+      if (c === 2) row.assembly = false; // 打ち替えた品番が組立品かは、開き直した時に分かる
       saver.schedule();
+    },
+    action(r, c) {
+      if (c === 5 && rows[r] && rows[r].assembly) insideDialog(rows[r].part);
+      return false;
     },
     changed() {
       lookup(rows.map((r) => r.part)).then((got) => got && grid.render()).catch(fail);
@@ -1373,11 +1456,10 @@ async function rewriteScreen(main, cur) {
     },
   });
   await pick.ready;
-  // 親と品番のそろった行だけを送る（親の無い行は打ちかけとして画面に残す）
+  // 品番のある行だけを送る（品番の無い行は打ちかけとして画面に残す）
   const saver = autosaver(cur, async () => {
     if (!product) return;
-    const send = rows.filter((r) => r.part && r.parent)
-      .map((r) => ({ parent: r.parent, balloon: r.balloon, part: r.part, quantity: r.quantity }));
+    const send = rows.filter((r) => r.part).map((r) => ({ balloon: r.balloon, part: r.part, quantity: r.quantity }));
     await api("PUT", "/api/v2/rewrite", { number: S.number, plan }, { product, rows: send });
   }, async () => {
     await load();
@@ -1385,6 +1467,21 @@ async function rewriteScreen(main, cur) {
   });
   main.append(card("書き換え", [], el("div", { class: "chooser two" }, pick.left, el("div", { class: "work" }, body))));
   grid.focus();
+}
+
+// 組立品の中（直下）を見る。中の組立品は、押すと続けて中へ降りる
+async function insideDialog(code, path = []) {
+  try {
+    const d = await api("GET", "/api/v2/inside", q({ code }));
+    const box = dialog(`中を見る ${[...path, code].join(" ＞ ")}`, [
+      el("div", { class: "mini" }, d.name ?? "未登録"),
+      el("table", { class: "list" }, el("tr", {}, el("th", {}, "風船"), el("th", {}, "品番"), el("th", {}, "名称"), el("th", { class: "r" }, "数量"), el("th", {}, "")),
+        d.rows.map((r) => el("tr", {}, el("td", {}, r.balloon ?? "—"), el("td", {}, r.part), el("td", {}, r.name ?? "未登録"), el("td", { class: "r" }, fmt(r.quantity)),
+          el("td", {}, r.assembly ? el("button", { class: "btn quiet", onclick: () => { box.close(); insideDialog(r.part, [...path, code]); } }, "中を見る") : null)))),
+    ], [el("span", { class: "sp" }), el("button", { class: "btn", onclick: () => box.close() }, "閉じる")]);
+  } catch (e) {
+    fail(e);
+  }
 }
 
 // ⑥ 変更一覧 -------------------------------------------------------------
@@ -1399,9 +1496,17 @@ async function changesScreen(main) {
   let rows = [];
   let byProduct = [];
   let owns = [];
+  let temps = {}; // 流用した仮品番 → { base, name, changes }
   const ownBox = el("div");
+  const deepBox = el("div");
+  const ro = !canWrite();
   const load = async () => {
     const d = await api("GET", "/api/v2/changes", q({ plan, product }));
+    temps = d.temps;
+    fill(deepBox, d.deep ? el("div", { class: "row" },
+      el("span", { class: "pill warn" }, `2階層目の変更 ${d.deep} 件は計算に入りません`),
+      el("span", { class: "mini" }, "組立品の中を替える時は、仮品番で流用して作り、直下で置き換えます"),
+      ro ? null : el("button", { class: "btn", onclick: dropDeep }, "2階層目の変更を消す")) : null);
     rows = d.summary;
     byProduct = d.by_product;
     owns = d.rows.filter((r) => r.source === "own");
@@ -1411,7 +1516,6 @@ async function changesScreen(main) {
       owns.map((r) => el("tr", {}, el("td", {}, r.product), el("td", {}, nameCell(r.product).text), el("td", {}, r.part),
         el("td", { class: "r" }, r.before === null ? "—" : fmt(r.before)), el("td", { class: "r" }, fmt(r.after)))))] : []);
   };
-  await load();
   const detailDialog = (row) => {
     const box = dialog(`${row.kind} ${[row.old, row.new].filter(Boolean).join(" → ")}`,
       el("table", { class: "list" }, el("tr", {}, ["製品", "名称", "親", "風船", row.new && row.old ? `元 ${row.old}` : "変更前", row.new && row.old ? `新 ${row.new}` : "変更後"].map((t) => el("th", {}, t))),
@@ -1419,6 +1523,32 @@ async function changesScreen(main) {
           el("td", {}, d.balloon ?? "—"), el("td", { class: "r" }, d.before === null ? "—" : fmt(d.before)), el("td", { class: "r" }, fmt(d.after))))),
       [el("span", { class: "sp" }), el("button", { class: "btn", onclick: () => box.close() }, "閉じる")]);
   };
+  const dropDeep = async () => {
+    if (!confirm("2階層目の変更を全部の製品から消します。よろしいですか？")) return;
+    try {
+      await api("POST", "/api/v2/changes/drop-deep", { number: S.number, plan }, {});
+      tell("saved");
+      await load();
+      grid.render();
+      done("2階層目の変更を消しました");
+    } catch (e) {
+      fail(e);
+    }
+  };
+  // 流用した仮品番の中の違い（流用元から）
+  const tempDialog = (code) => {
+    const info = temps[code];
+    const box = dialog(`${code} の中（流用元 ${info.base}）`, info.changes.length
+      ? el("table", { class: "list" }, el("tr", {}, ["変更", "風船", "元品番", "名称", "新品番", "名称", "数量", ""].map((x) => el("th", {}, x))),
+        info.changes.flatMap((s) => s.details.map((d) => el("tr", {}, el("td", {}, s.kind), el("td", {}, d.balloon ?? "—"),
+          el("td", {}, s.old ?? ""), el("td", {}, named(s.old, s.old_name).text), el("td", {}, s.new ?? ""), el("td", {}, named(s.new, s.new_name).text),
+          el("td", { class: "r" }, d.quantity),
+          el("td", {}, s.new && temps[s.new] ? el("button", { class: "btn quiet", onclick: () => { box.close(); tempDialog(s.new); } }, "中の違い") : s.problems.join("・"))))))
+      : el("div", { class: "mini" }, "流用元と同じです"),
+    [el("span", { class: "sp" }), el("button", { class: "btn", onclick: () => box.close() }, "閉じる")]);
+  };
+  // 新品番のセル。流用した仮品番なら、押すと中の違い
+  const newCell = (row) => (row.new && temps[row.new] ? { text: row.new, cls: "link", title: `流用元 ${temps[row.new].base}。押すと中の違い` } : { text: row.new ?? "" });
   const named = (code, name) => (code === null ? { text: "" } : name === null ? { text: "未登録", cls: "bad" } : { text: name });
   const body = el("div");
   const problemCell = (row) => ({ text: row.problems.join("・"), cls: row.problems.length ? "bad" : "" });
@@ -1433,7 +1563,7 @@ async function changesScreen(main) {
         case 1: return { text: row.kind };
         case 2: return { text: row.old ?? "" };
         case 3: return named(row.old, row.old_name);
-        case 4: return { text: row.new ?? "" };
+        case 4: return newCell(row);
         case 5: return named(row.new, row.new_name);
         case 6: return { text: row.quantity, cls: "r" };
         case 7: return { text: String(row.products.length), cls: "r link", title: "押すと製品ごとの箇所" };
@@ -1443,6 +1573,7 @@ async function changesScreen(main) {
     set() {},
     action(r, c) {
       if (c === 7 && rows[r]) detailDialog(rows[r]);
+      if (c === 4 && rows[r] && temps[rows[r].new]) tempDialog(rows[r].new);
       return false;
     },
   };
@@ -1461,7 +1592,7 @@ async function changesScreen(main) {
         case 3: return { text: row.kind };
         case 4: return { text: row.old ?? "" };
         case 5: return named(row.old, row.old_name);
-        case 6: return { text: row.new ?? "" };
+        case 6: return newCell(row);
         case 7: return named(row.new, row.new_name);
         case 8: return { text: row.quantity, cls: "r" };
         case 9: return { text: row.parent ?? "" };
@@ -1470,7 +1601,12 @@ async function changesScreen(main) {
       }
     },
     set() {},
+    action(r, c) {
+      if (c === 6 && byProduct[r] && temps[byProduct[r].new]) tempDialog(byProduct[r].new);
+      return false;
+    },
   };
+  await load();
   let grid = new Grid(body, partModel);
   const views = el("div", { class: "chips" });
   const drawViews = () => fill(views, [["part", "部品から"], ["product", "製品から"]].map(([k, text]) =>
@@ -1490,7 +1626,7 @@ async function changesScreen(main) {
   });
   main.append(card("変更一覧", [productSelect,
     el("button", { class: "btn", onclick: () => exportStudy().catch(fail) }, "Excel"),
-  ], [el("div", { class: "row" }, views), body, ownBox]));
+  ], [deepBox, el("div", { class: "row" }, views), body, ownBox]));
   grid.focus();
 }
 
@@ -1645,16 +1781,19 @@ async function ownScreen(main, cur) {
 }
 
 // ⑨ 仮品番 -------------------------------------------------------------
-// 品目の台帳に無い品番の名称と材料費（1個あたり）。この検討の計算にだけ使う（部品の原価は製品の材料費にだけ入るので材料費だけ）
+// 品目の台帳に無い品番の名称と材料費（1個あたり）。この検討の計算にだけ使う（部品の原価は製品の材料費にだけ入るので材料費だけ）。
+// 流用元（部品表の組立品）を入れると、その中（直下）を変えた組立品になる。材料費は空なら流用元から計算する
 
 async function tempScreen(main, cur) {
   const ro = !canWrite();
-  const blank = () => ({ code: "", name: "", material: "", master: false, mark: false });
+  const blank = () => ({ key: "", code: "", name: "", base: "", savedBase: "", material: "", derived: null, changed: 0, master: false, mark: false });
   let rows = [];
   let unregistered = [];
+  // サーバーで決まる値（流用元から計算した材料費・中の変更の数・台帳にあるか）を行に移す
+  const take = (row, got) => Object.assign(row, { key: got.code, savedBase: got.base ?? "", derived: got.derived, changed: got.changed, master: got.master });
   const load = async () => {
     const d = await api("GET", "/api/v2/temp-items", q());
-    rows = d.rows.map((r) => ({ ...blank(), code: r.code, name: r.name, material: r.material ?? "", master: r.master }));
+    rows = d.rows.map((r) => take({ ...blank(), code: r.code, name: r.name, base: r.base ?? "", material: r.material ?? "" }, r));
     unregistered = d.unregistered;
   };
   await load();
@@ -1672,33 +1811,42 @@ async function tempScreen(main, cur) {
   const model = {
     head: () => [
       { text: rows.length && rows.every((r) => r.mark) ? "☑" : "☐", cls: "c", title: "全部の行に印", action: ro ? null : markAll },
-      "", "品番", "名称", { text: "材料費", cls: "r" }, "",
+      "", "品番", "名称", "流用元", { text: "材料費", cls: "r" }, { text: "流用元から計算", cls: "r" }, "中", "",
     ],
     nRows: () => rows.length + (ro ? 0 : 1),
     grow: ro ? undefined : () => { rows.push(blank()); return true; },
-    nCols: () => 6,
+    nCols: () => 9,
     cell(r, c) {
       const row = rows[r];
       if (c === 0) return { text: row ? (row.mark ? "☑" : "☐") : "", cls: "act" };
       if (c === 1) return { text: String(r + 1), cls: "n" };
       if (c === 2) return { text: row ? row.code : "", editable: !ro };
       if (c === 3) return { text: row ? row.name : "", editable: !ro };
-      if (c === 4) return { text: row ? row.material : "", editable: !ro, cls: "r" };
+      if (c === 4) return { text: row ? row.base : "", editable: !ro, title: "部品表にある組立品の品番" };
+      if (c === 5) return { text: row ? row.material : "", editable: !ro, cls: "r" };
+      if (c === 6) {
+        if (!row || !row.savedBase || row.material !== "" || row.master) return { text: "" };
+        return row.derived === null ? { text: "不明", cls: "r bad", title: "流用元か、中の部品の材料費が分かりません" } : { text: fmt(row.derived), cls: "r auto" };
+      }
+      if (c === 7) return row && row.savedBase ? { text: row.changed ? `${row.changed} 件` : ro ? "変更なし" : "変える", cls: "link" } : { text: "" };
       return row && row.master ? { text: "台帳にあり（台帳の値を使う）", cls: "bad" } : { text: "" };
     },
     set(r, c, text) {
-      if (c < 2 || c > 4) return;
+      if (c < 2 || c > 5) return;
       // 数でない材料費はその場で弾く（入れずに元の値のまま）
-      if (c === 4 && text !== "" && !isNumber(text)) return alert(`材料費は数で入力してください（「${text}」）`);
+      if (c === 5 && text !== "" && !isNumber(text)) return alert(`材料費は数で入力してください（「${text}」）`);
       if (r >= rows.length) {
         if (!text) return;
         rows.push(blank());
       }
-      rows[r][["code", "name", "material"][c - 2]] = text;
+      const row = rows[r];
+      if (c === 4 && row.changed && text !== row.savedBase && !confirm(`${row.code} の流用元を替えると、中の変更 ${row.changed} 件が消えます。よろしいですか？`)) return;
+      row[["code", "name", "base", "material"][c - 2]] = text;
       saver.schedule();
     },
     action(r, c) {
       const row = rows[r];
+      if (row && c === 7 && row.savedBase) openInside(row);
       if (!row || ro || c !== 0) return false;
       row.mark = !row.mark;
       return true;
@@ -1708,9 +1856,11 @@ async function tempScreen(main, cur) {
   // 品番を打った行だけを送る（名称だけ打った行は画面に残す）。台帳にあるかの印と未登録の一覧は返ってきた物で直す
   const saver = autosaver(cur, async () => {
     const d = await api("PUT", "/api/v2/temp-items", { number: S.number },
-      { rows: rows.filter((r) => r.code).map((r) => ({ code: r.code, name: r.name, material: r.material })) });
-    const master = new Map(d.rows.map((x) => [x.code, x.master]));
-    for (const r of rows) r.master = master.get(r.code) ?? false;
+      { rows: rows.filter((r) => r.code).map((r) => ({ key: r.key || undefined, code: r.code, name: r.name, base: r.base, material: r.material })) });
+    const got = new Map(d.rows.map((x) => [x.code, x]));
+    for (const r of rows) {
+      if (got.has(r.code)) take(r, got.get(r.code));
+    }
     unregistered = d.unregistered;
     items.clear();
     drawNote();
@@ -1720,6 +1870,79 @@ async function tempScreen(main, cur) {
     drawNote();
     grid.render();
   });
+  // 流用した仮品番の中（直下）。打つたびに一時保存し、閉じたら材料費を計算し直す
+  const openInside = async (row) => {
+    try {
+      if (Grid.active) Grid.active.commit();
+      await saver.flush();
+      const code = row.key;
+      let lines = [];
+      const read = (d) => { lines = d.rows.map((x) => ({ ...x, balloon: x.balloon ?? "", fresh: x.before_part === null })); };
+      read(await api("GET", "/api/v2/temp-inside", q({ code })));
+      await lookup(lines.map((x) => x.part));
+      const box = el("div");
+      const fresh = () => ({ balloon: "", part: "", quantity: "", before_part: null, before_quantity: null, fresh: true });
+      const inner = {
+        head: () => ["", { text: "風船", cls: "c" }, "品番", "名称", { text: "数量", cls: "r" }, "流用元の品番"],
+        nRows: () => lines.length + (ro ? 0 : 1),
+        grow: ro ? undefined : () => { lines.push(fresh()); return true; },
+        nCols: () => 6,
+        cell(r, c) {
+          const x = lines[r];
+          const isNew = !x || x.fresh;
+          if (c === 0) return { text: String(r + 1), cls: "n" };
+          if (c === 1) return { text: x ? x.balloon : "", editable: !ro && isNew, cls: "c" };
+          if (c === 2) return { text: x ? x.part : "", editable: !ro, cls: x && (x.fresh || x.part !== x.before_part) ? "own" : "" };
+          if (c === 3) return nameCell(x && x.part);
+          if (c === 4) return { text: x ? x.quantity : "", editable: !ro, cls: "r" + (x && (x.fresh || !same(x.quantity, x.before_quantity)) ? " own" : "") };
+          return { text: x && x.before_part !== null && x.part !== x.before_part ? x.before_part : "", cls: "auto" };
+        },
+        set(r, c, text) {
+          if (![1, 2, 4].includes(c)) return;
+          if (c === 4 && text !== "" && (!isNumber(text) || Number(text) < 0)) return alert(`数量は 0 以上の数で入力してください（「${text}」）`);
+          if (r >= lines.length) {
+            if (!text) return;
+            lines.push(fresh());
+          }
+          if (c === 1 && !lines[r].fresh) return;
+          lines[r][{ 1: "balloon", 2: "part", 4: "quantity" }[c]] = text;
+          keep.schedule();
+        },
+        changed() {
+          lookup(lines.map((x) => x.part)).then((got) => got && insideGrid.render()).catch(fail);
+        },
+      };
+      const insideGrid = new Grid(box, inner);
+      const keep = autosaver(cur, () => api("PUT", "/api/v2/temp-inside", { number: S.number },
+        { code, rows: lines.filter((x) => x.part).map((x) => ({ balloon: x.balloon, part: x.part, quantity: x.quantity })) }),
+      async () => {
+        read(await api("GET", "/api/v2/temp-inside", q({ code })));
+        insideGrid.render();
+      });
+      // × で閉じても、打ちかけを確定して送ってから表を直す
+      const frame = dialog(`${code} の中（流用元 ${row.savedBase}）`, box, [el("span", { class: "sp" }), el("button", { class: "btn", onclick: () => close() }, "閉じる")]);
+      const close = async () => {
+        insideGrid.commit();
+        await keep.flush();
+        frame.close();
+        cur.saver = saver;
+        Grid.active = grid;
+        items.clear();
+        const d = await api("GET", "/api/v2/temp-items", q());
+        const got = new Map(d.rows.map((x) => [x.code, x]));
+        for (const r of rows) if (got.has(r.key)) take(r, got.get(r.key));
+        unregistered = d.unregistered;
+        drawNote();
+        grid.render();
+        grid.focus();
+      };
+      const cross = frame.overlay.querySelector(".close");
+      cross.replaceWith(el("button", { class: "close", onclick: () => close().catch(fail) }, "×"));
+      insideGrid.focus();
+    } catch (e) {
+      fail(e);
+    }
+  };
   const addUnregistered = el("button", { class: "btn", disabled: ro }, "未登録を表に入れる");
   addUnregistered.addEventListener("click", () => {
     if (Grid.active) Grid.active.commit();
