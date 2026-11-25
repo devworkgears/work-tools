@@ -1,16 +1,13 @@
 """語の読み替え: 効く所（画面の文字・取り込みの見出し・Excel の見出し）と、読み替えられる語の一覧。語は架空。"""
 
 import io
-import json
 import unittest
-from pathlib import Path
 
 import example_settings
-from bomcost import settings
+from bomcost import Store, settings
+from bomcost.api import Api
 from bomcost.importer import guess_columns, load_openpyxl, save_workbook
-from bomcost.masterbook import PART, SHEETS, book_bytes, plan_book
 from bomcost.words import word_groups
-from test_screens import EmptyDbCase
 
 try:
     load_openpyxl()
@@ -18,7 +15,6 @@ try:
 except ImportError:
     HAS_OPENPYXL = False
 
-WEB = Path(__file__).resolve().parent.parent / "bomcost" / "web"
 
 
 class WordsCase(unittest.TestCase):
@@ -72,41 +68,12 @@ class Excel(WordsCase):
         self.assertEqual(read["B2"].data_type, "s")
 
 
-@unittest.skipUnless(HAS_OPENPYXL, "openpyxl が無い")
-class MasterBookWords(EmptyDbCase):
-    def setUp(self) -> None:
-        super().setUp()
-        self.addCleanup(settings.use, example_settings.EXAMPLE)
-        self.group = self.new_group()
-        self.ok("PUT", "/api/manual/items", body={"code": "Q-1", "name": "部品", "role": "part", "group_id": self.group,
-                                                  "costs": {"MATERIAL": "10"}})
-
-    def test_book_with_replaced_headers_is_read_back(self) -> None:
-        settings.use(settings.parse({**example_settings.EXAMPLE.to_json(), "labels": {"品番": "部番", "材料費": "資材費"}}))
-        data = book_bytes(self.store, "S", self.group)
-        head = [c.value for c in load_openpyxl().load_workbook(io.BytesIO(data))[PART][1]]
-        self.assertEqual(head[:4], ["部番", "名称", "区分", "資材費"])
-        plan = plan_book(self.store, "S", data, self.group)
-        self.assertEqual((plan.errors, plan.total("unchanged"), plan.total("changed")), ([], 1, 0))
-        settings.use(example_settings.EXAMPLE)
-        self.assertEqual(plan_book(self.store, "S", book_bytes(self.store, "S", self.group), self.group).errors, [])
-        self.assertEqual(SHEETS[PART][0], "品番")
-
-
-class Page(WordsCase):
-    def test_both_screens_use_the_same_rule(self) -> None:
-        for name in ("app.js", "v2/grid.js"):
-            text = (WEB / name).read_text(encoding="utf-8")
-            self.assertIn('const at = text.indexOf("（");', text, name)
-        self.assertIn("relabelPage();", (WEB / "app.js").read_text(encoding="utf-8"))
-
-
-class Api(EmptyDbCase):
+class SettingsApi(WordsCase):
     def test_settings_list_the_words(self) -> None:
-        data = self.ok("GET", "/api/settings")
+        with Store(":memory:") as store:
+            data = Api(store).handle("GET", "/api/settings").json()
         self.assertEqual([(g["name"], g["imports"]) for g in data["words"]][:2],
                          [("取り込みの見出し（部品マスタ）", True), ("取り込みの見出し（構成マスタ）", True)])
-        json.dumps(data)
 
 
 if __name__ == "__main__":

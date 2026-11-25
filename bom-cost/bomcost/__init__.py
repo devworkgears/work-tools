@@ -1,4 +1,4 @@
-"""BOM（部品構成）から製品の原価を計算する中心の層。取り込み（CSV／Excel）と SQLite への保存も持つ。"""
+"""BOM（部品構成）から製品の原価を計算する中心の層と、取り込み（CSV／Excel）。"""
 
 from .doublecount import (
     DEFAULT_NEAR_TOLERANCE,
@@ -59,16 +59,16 @@ from .scenario import (
     ChangeRecord,
     Scenario,
 )
-from .store import GroupInfo, OldDatabaseError, PartMapRow, ScenarioInfo, Store
+from .store import Store
 
 __all__ = [
     "Allocation", "BASIC_HEADS", "BomConflict", "BomLine", "Change", "ChangeKind", "ChangeRecord",
     "ColumnMap", "CostCalculator", "CostHead", "CostResult", "CostRow",
     "DEFAULT_NEAR_TOLERANCE", "DEFAULT_SMALL_RATIO", "FieldSpec", "ImportWarning", "Item", "Judgement",
-    "GroupInfo", "MANUAL_VERSION_ID", "ManualOverlap", "MatchKind", "MissingColumnsError",
-    "MoldAllocation", "MoldCost", "PartMapRow", "PartUser", "ProductShare", "ReuseImpact", "ReuseTarget", "Scenario",
-    "ScenarioInfo", "Scope", "ScopePolicy", "Source", "Store", "StructureRow", "TABLE_FIELDS", "Table",
-    "OldDatabaseError", "Verdict", "Version", "VersionImport", "Volume",
+    "MANUAL_VERSION_ID", "ManualOverlap", "MatchKind", "MissingColumnsError",
+    "MoldAllocation", "MoldCost", "PartUser", "ProductShare", "ReuseImpact", "ReuseTarget", "Scenario",
+    "Scope", "ScopePolicy", "Source", "Store", "StructureRow", "TABLE_FIELDS", "Table",
+    "Verdict", "Version", "VersionImport", "Volume",
     "VolumeKind", "allocate_mold_cost", "base_code", "calculate_cost", "compare_structures",
     "judge_double_counting", "mbom_to_ebom", "overlay_manual", "part_users", "read_csv", "read_table",
     "read_xlsx", "reuse_impact", "tally", "to_code", "to_decimal", "to_flag", "to_optional_code",

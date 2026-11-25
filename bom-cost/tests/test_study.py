@@ -12,7 +12,6 @@ from decimal import Decimal
 import example_settings
 from bomcost import settings
 from bomcost.api import Api
-from bomcost.app import static_response
 from bomcost.importer import load_openpyxl
 from bomcost.model import BomLine, CostHead, CostRow, Item, Version, Volume
 from bomcost.store import Store
@@ -896,18 +895,6 @@ class StudyApiFlow(unittest.TestCase):
         response = self.api.handle("GET", "/api/v2/study", "number=D-0404")
         self.assertEqual(response.status, 404)
         self.assertIn("error", response.json())
-
-
-class StaticV2(unittest.TestCase):
-    def test_v2_page_and_files(self) -> None:
-        page = static_response("/v2/")
-        self.assertEqual(page.status, 200)
-        self.assertIn(b"v2.js", page.body)
-        for name in ("v2.js", "grid.js", "v2.css"):
-            self.assertEqual(static_response(f"/v2/{name}").status, 200, name)
-        self.assertEqual(static_response("/v2").status, 301)
-        self.assertEqual(static_response("/v2/../app.js").status, 404)
-        self.assertEqual(static_response("/").status, 200)
 
 
 if __name__ == "__main__":

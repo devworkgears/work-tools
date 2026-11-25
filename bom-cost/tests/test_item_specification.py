@@ -1,15 +1,11 @@
-"""仕様の取込・登録・照会。データはすべて架空。"""
+"""仕様の取込。データはすべて架空。"""
 
 import io
 import unittest
-from dataclasses import replace
-from unittest.mock import patch
 
 import example_settings  # noqa: F401
-from bomcost import ColumnMap, Item, Store, Version, VersionImport
+from bomcost import ColumnMap, Version, VersionImport
 from bomcost.importer import TABLE_FIELDS, load_openpyxl, read_table_bytes
-from bomcost.masterbook import SHEETS, apply_plan, book_bytes, plan_book
-from test_group import SampleDbCase
 
 try:
     load_openpyxl()
@@ -49,71 +45,3 @@ class ItemImport(unittest.TestCase):
         self.check_import("items.xlsx", out.getvalue())
 
 
-class ItemSpecificationApi(SampleDbCase):
-    def test_register_products_parts_and_lookup_candidates(self) -> None:
-        for role, code, spec, costs in (("product", "X-1", "φ20", {"MATERIAL": "0", "MANUFACTURING": "12.5"}),
-                                         ("part", "X-2", "M6", {})):
-            result = self.ok("PUT", "/api/manual/items", body={
-                "group_id": "2026-10", "role": role, "code": code, "name": "照会用", "specification": spec,
-                "costs": costs})
-            item = next(i for i in result["items"] if i["code"] == code)
-            self.assertEqual((item["role"], item["specification"]), (role, spec))
-            self.assertEqual(self.store.load_manual("2026-10").items[code].specification, spec)
-            self.assertNotIn(code, self.store.load_bom("2026-10").items)
-        candidates = self.ok("GET", "/api/lookup", "group=2026-10&q=照会用")["candidates"]
-        self.assertEqual([{k: c[k] for k in ("code", "name", "specification", "material")} for c in candidates], [
-            {"code": "X-1", "name": "照会用", "specification": "φ20", "material": "0"},
-            {"code": "X-2", "name": "照会用", "specification": "M6", "material": None}])
-        self.assertEqual(candidates[1]["manufacturing"], None)
-        item = self.ok("GET", "/api/lookup", "group=2026-10&q=X-1")["item"]
-        self.assertEqual(item["specification"], "φ20")
-        self.ok("PUT", "/api/manual/items", body={"group_id": "2026-10", "code": "X-1", "name": "照会用", "specification": ""})
-        self.assertEqual(self.store.load_manual("2026-10").items["X-1"].specification, "")
-
-    def test_structure_filter_and_comparison_labels(self) -> None:
-        version = self.store.load_group("2026-10", with_manual=False)
-        for code in ("A-100", "B-200"):
-            version.add_item(replace(version.items[code], specification=f"寸法 {code}"))
-        self.swap_bom(version)
-        self.assertEqual(self.parts("&part=B-200")["rows"][0]["part_specification"], "寸法 B-200")
-        tree = self.ok("GET", "/api/group/tree", "group=2026-10&product=A-100")
-        self.assertEqual(next(n for n in tree["children"] if n["code"] == "B-200")["specification"], "寸法 B-200")
-        self.change("A-100", kind="REPLACE", part="B-200", replacement="X-610", quantity="2")
-        table = self.ok("GET", "/api/group/compare/table", 'group=2026-10&names=["群の検討"]&ignore_amortization=1')
-        self.assertEqual(table["products"][0]["specification"], "寸法 A-100")
-
-
-class MasterSpecification(unittest.TestCase):
-    def test_plan_and_apply_specification_only_change(self) -> None:
-        with Store(":memory:") as store:
-            manual = Version("manual")
-            manual.add_item(Item("P-1", "製品", "S", specification="旧寸法"))
-            store.save_group(Version("D-1"))
-            store.save_manual(manual, "D-1")
-            sheets = {name: [list(headers)] for name, headers in SHEETS.items()}
-            sheets["製品"].append(["P-1", "製品", *([None] * (len(SHEETS["製品"]) - 3)), "新寸法"])
-            with patch("bomcost.masterbook._read_sheets", return_value=sheets):
-                plan = plan_book(store, "S", b"", "D-1")
-                self.assertEqual(plan.errors, [])
-                self.assertEqual(plan.total("changed"), 1)
-                apply_plan(store, plan)
-                self.assertEqual(store.load_manual("D-1").items["P-1"].specification, "新寸法")
-                self.assertEqual(plan_book(store, "S", b"", "D-1").total("unchanged"), 1)
-
-    @unittest.skipUnless(HAS_OPENPYXL, "openpyxl が無い")
-    def test_excel_round_trip_products_parts_and_blank(self) -> None:
-        with Store(":memory:") as source, Store(":memory:") as target:
-            manual = Version("manual")
-            manual.add_items([Item("P-1", "製品", "S", specification="φ20"),
-                              Item("P-2", "部品", "B", specification="M6 × 20"), Item("P-3", "空欄", "B")])
-            source.save_group(Version("D-1"))
-            target.save_group(Version("D-1"))
-            source.save_manual(manual, "D-1")
-            data = book_bytes(source, "S", "D-1")
-            plan = plan_book(target, "S", data, "D-1")
-            self.assertEqual(plan.errors, [])
-            apply_plan(target, plan)
-            self.assertEqual({c: i.specification for c, i in target.load_manual("D-1").items.items()},
-                             {"P-1": "φ20", "P-2": "M6 × 20", "P-3": ""})
-            again = plan_book(target, "S", book_bytes(target, "S", "D-1"), "D-1")
-            self.assertEqual((again.total("added"), again.total("changed"), again.total("unchanged")), (0, 0, 3))

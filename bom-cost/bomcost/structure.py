@@ -1,4 +1,4 @@
-"""構成の箇所（/v2/ の ⑧構成変更・⑤構成一覧）: 製品の直下と、組立品の中を、現行と変えた後の組で並べる。"""
+"""構成の箇所（⑧構成変更・⑤構成一覧）: 製品の直下と、組立品の中を、現行と変えた後の組で並べる。"""
 
 from decimal import Decimal
 from typing import Collection, Mapping, NamedTuple, Sequence

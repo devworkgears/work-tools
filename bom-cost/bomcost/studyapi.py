@@ -1,4 +1,4 @@
-"""設計検討（/v2/）の API。検討は検討番号（number）と版（version: 空なら仮）で指す。"""
+"""設計検討の API。検討は検討番号（number）と版（version: 空なら仮）で指す。"""
 
 from collections import Counter
 from dataclasses import replace
@@ -62,6 +62,7 @@ from .study import (
     unregistered_parts,
     where_used,
 )
+from .upload import preview, read_upload
 
 if TYPE_CHECKING:
     from .api import Api, Response
@@ -277,11 +278,8 @@ class StudyApi:
         return self._store
 
     def drop_old_bom(self) -> bool:
-        """設定が変わっていれば部品表を消す。列の対応づけも、前の語で当てた物が残らないように消す。"""
-        dropped = self.store.drop_old_bom()
-        if dropped:
-            self.api.store.clear_column_maps()
-        return dropped
+        """設定が変わっていれば部品表を消す。"""
+        return self.store.drop_old_bom()
 
     def routes(self) -> list[tuple[str, str, Callable[..., "Response"]]]:
         return [
@@ -350,20 +348,17 @@ class StudyApi:
 
     def bom_preview(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
         """送られたファイルの見出しと先頭の行、表ごとの項目と列の当たり（保存した対応づけがあれば saved）。"""
-        from .screens import Screens
-
-        data = Screens(self.api).import_preview(params, body).json()
+        table, data = preview(body)
         tables = []
         scores: dict[str, int] = {}
         for kind, fields in BOM_FIELDS.items():
-            guess, scores[kind] = guess_columns(kind, data["headers"], fields)
+            guess, scores[kind] = guess_columns(kind, table.headers, fields)
             tables.append({"id": kind, "label": TABLE_NAMES[kind], "guess": guess,
                            "fields": [{"name": f.name, "label": f.label, "required": f.required} for f in fields],
-                           "saved": self.store.find_columns(data["headers"], kind)})
+                           "saved": self.store.find_columns(table.headers, kind)})
         saved = next((t["id"] for t in tables if t["saved"] is not None), None)
         guessed = max(scores, key=lambda k: scores[k])
-        return self._json({**{k: data[k] for k in ("filename", "sheets", "sheet", "headers", "row_count", "sample")},
-                           "tables": tables, "suggested": saved or (guessed if scores[guessed] else None)})
+        return self._json({**data, "tables": tables, "suggested": saved or (guessed if scores[guessed] else None)})
 
     def bom_import(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
         """files（filename・content の base64）か、sample: true で見本の CSV を取り込む。入った表だけ入れ替える。
@@ -371,8 +366,6 @@ class StudyApi:
         files の1件に table と columns（項目 → 見出し）があればその対応で読み、決定の時に対応を保存する。無ければ見出しから
         表の種類を当てる。sheet は Excel のシート名。check: true は読んだ件数・警告・数量の食い違いを返すだけで、何も保存しない。
         """
-        from .screens import Screens
-
         tables: list[Table] = []
         maps: list[BomMap | None] = []
         if body.get("sample"):
@@ -383,9 +376,8 @@ class StudyApi:
             files = body.get("files")
             if not isinstance(files, list) or not files:
                 raise ValueError("取り込むファイルを選んでください")
-            screens = Screens(self.api)
             for f in files:
-                table, _, _ = screens._read_upload(f)
+                table, _, _ = read_upload(f)
                 tables.append(table)
                 maps.append(chosen_columns(f, table) if f.get("columns") is not None else None)
         version, kinds, warnings, attributes = import_tables(tables, maps)

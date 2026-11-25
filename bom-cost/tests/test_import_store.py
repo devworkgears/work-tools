@@ -1,11 +1,9 @@
-"""品番の変換・取り込み（CSV／.xlsx・列の対応づけ）・SQLite への保存と読み戻し。データはすべて架空。"""
+"""品番の変換・取り込み（CSV／.xlsx・列の対応づけ）・手入力の重ね方。データはすべて架空。"""
 
 import csv
 import io
-import sqlite3
 import tempfile
 import unittest
-from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -15,34 +13,22 @@ from bomcost import (
     MANUAL_VERSION_ID,
     Allocation,
     BomLine,
-    Change,
-    ChangeKind,
     ColumnMap,
     CostHead,
     CostRow,
-    ImportWarning,
     Item,
     ManualOverlap,
     MissingColumnsError,
     MoldCost,
-    PartMapRow,
-    ReuseTarget,
-    Scenario,
-    Scope,
-    ScopePolicy,
     Source,
-    Store,
     Version,
-    OldDatabaseError,
     VersionImport,
     Volume,
     VolumeKind,
     allocate_mold_cost,
     base_code,
-    calculate_cost,
     mbom_to_ebom,
     overlay_manual,
-    read_table,
 )
 
 M = CostHead.MATERIAL
@@ -216,10 +202,6 @@ class ImportFiles(TempDir):
         self.assertEqual(len(imp.version.lines), 3)
         self.assertEqual([(c.key, c.quantities) for c in imp.version.conflicts],
                          [(("U1", "1", "C1"), (d(2), d(3)))])
-        with Store(":memory:") as store:
-            store.save_group(imp.version)
-            back = store.load_group("t")
-        self.assertEqual(back.conflicts, imp.version.conflicts)
 
     def test_bad_row_is_skipped_with_warning(self) -> None:
         path = self.dir / "bom.csv"
@@ -241,23 +223,6 @@ class ImportFiles(TempDir):
 
 
 class ColumnMapping(TempDir):
-    def test_saved_map_applies_to_same_headers_only(self) -> None:
-        with Store(":memory:") as store:
-            store.save_column_map(ColumnMap("bom_line", BOM_HEADERS, BOM_MAP))
-            path = self.dir / "bom.csv"
-            write_csv(path, BOM_HEADERS, BOM_ROWS, "utf-8")
-            table = read_table(path)
-            found = store.find_column_map(table.headers)
-            self.assertIsNotNone(found)
-            self.assertEqual((found.table, dict(found.columns)), ("bom_line", BOM_MAP))
-            imp = VersionImport(Version("t"))
-            imp.add_table(table, found)
-            self.assertEqual(len(imp.version.lines), 3)
-            # 並びが違えば当たらない
-            self.assertIsNone(store.find_column_map(list(reversed(BOM_HEADERS))))
-            self.assertIsNone(store.find_column_map(BOM_HEADERS + ["増えた列"]))
-            self.assertIsNone(store.find_column_map(BOM_HEADERS, table="cost"))
-
     def test_missing_columns_listed(self) -> None:
         with self.assertRaises(MissingColumnsError) as caught:
             ColumnMap("bom_line", ["親品番", "子品番", "その他"], {"parent": "親品番", "child": "子品番"})
@@ -280,35 +245,21 @@ class ColumnMapping(TempDir):
 
 
 class ManualVersion(unittest.TestCase):
-    def setUp(self) -> None:
-        self.store = Store(":memory:")
-        for version in (ex.imported_2026_10(), ex.imported_2026_12()):
-            self.store.save_group(version)
-            self.store.save_manual(ex.manual(), version.version_id)
-        self.store.save_scope_policy(ex.policy())
-
-    def tearDown(self) -> None:
-        self.store.close()
-
     def test_manual_overlays_any_version(self) -> None:
-        v10 = self.store.load_group("2026-10")
-        v12 = self.store.load_group("2026-12")
-        for v in (v10, v12):
+        for v in (ex.version_2026_10(), ex.version_2026_12()):
             self.assertIs(v.items["X-610"].source, Source.MANUAL)
             self.assertEqual(v.cost_value("X-610", M), d(200))
             self.assertIs(v.volume("V-110").kind, VolumeKind.PLAN)
-        self.assertIs(v10.volume("K-200").kind, VolumeKind.ACTUAL)
-        self.assertNotIn("X-610", self.store.load_group("2026-10", with_manual=False).items)
+        self.assertIs(ex.version_2026_10().volume("K-200").kind, VolumeKind.ACTUAL)
 
     def test_master_wins_per_head_and_overlap_reported(self) -> None:
-        manual = self.store.load_manual("2026-10")
+        manual = ex.manual()
         manual.add_cost(CostRow("C-300", {M: 450}))
         manual.add_cost(CostRow("B-200", {CostHead.DIRECT: 7}))
         manual.add_bom_lines([BomLine("A-100", "1", "B-200", 1)])
         manual.add_item(Item("B-200", "部品B（登録）"))
         manual.add_volume(Volume("K-200", 6000))
-        self.store.save_manual(manual, "2026-10")
-        v = self.store.load_group("2026-10")
+        v = overlay_manual(ex.imported_2026_10(), manual)
         # 値のある費目はマスタ登録、空の費目は BOM
         self.assertEqual((v.cost_value("C-300", M), v.cost_value("B-200", M), v.cost_value("B-200", CostHead.DIRECT)),
                          (d(450), d(1600), d(7)))
@@ -319,207 +270,6 @@ class ManualVersion(unittest.TestCase):
         self.assertEqual(set(v.manual_overlaps),
                          {ManualOverlap("cost", "C-300"), ManualOverlap("bom_line", "A-100"),
                           ManualOverlap("item", "B-200"), ManualOverlap("volume", "K-200")})
-        # ほかのグループには重ならない
-        self.assertEqual(self.store.load_group("2026-12").cost_value("C-300", M), d(520))
-
-
-class SaveAndLoad(unittest.TestCase):
-    def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.path = Path(self._tmp.name) / "bom.sqlite"
-        with Store(self.path) as store:
-            imported = ex.imported_2026_10()
-            imported.imported_at = datetime(2026, 10, 1, 9, 30)
-            imported.source_name = "cost.csv"
-            store.save_group(imported)
-            store.save_group(ex.imported_2026_12())
-            store.save_manual(ex.manual(), "2026-10")
-            store.save_manual(ex.manual(), "2026-12")
-            store.save_scope_policy(ex.policy())
-            store.save_mold_cost(ex.mold_x610(), "2026-10")
-            store.add_reuse_target(ex.reuse_k200(), "2026-10")
-
-    def tearDown(self) -> None:
-        self._tmp.cleanup()
-
-    def test_example_values_after_reload(self) -> None:
-        with Store(self.path) as store:
-            v10, v12 = store.load_group("2026-10"), store.load_group("2026-12")
-            policy = store.load_scope_policy()
-            self.assertEqual(calculate_cost(v10, "A-100", M, policy).total, d(4900))
-            self.assertEqual(calculate_cost(v10, "V-110", M, policy).total, d(4650))
-            self.assertEqual(calculate_cost(v12, "V-110", M, policy).total, d(4690))
-            s = Scenario("V-110 検討", "A-100", "V-110", v10, M, policy)
-            for change in (Change(ChangeKind.ADD, "F-600"), Change(ChangeKind.REMOVE, "C-300"),
-                           Change(ChangeKind.REPLACE, "F-600", replacement="X-610")):
-                s.apply(change)
-            mold = store.mold_costs("2026-10")["X-610"]
-            shares = allocate_mold_cost(v10, mold, Allocation.BY_USAGE, store.reuse_targets("2026-10"), s.overrides())
-            self.assertEqual((shares.annual_count, shares.per_part), (d(20000), d(60)))
-            self.assertEqual(s.calculate().total + shares.share_for("V-110").per_unit, d(4660))
-            info = next(i for i in store.list_groups() if i.group_id == "2026-10")
-            self.assertEqual((info.group_id, info.imported_at, info.source_name),
-                             ("2026-10", datetime(2026, 10, 1, 9, 30), "cost.csv"))
-
-    def test_decimal_and_blank_round_trip(self) -> None:
-        v = Version("t")
-        v.add_bom_lines([BomLine("P", None, "Q", "0.1"), BomLine("P", "2", "R", -2)])
-        v.add_cost(CostRow("Q", {M: "1600.5", CostHead.DIRECT: "", CostHead.INDIRECT: 0}, mbom_code="Q0"))
-        v.add_volume(Volume("P", "0.1"))
-        with Store(self.path) as store:
-            store.save_group(v)
-            back = store.load_group("t", with_manual=False)
-        self.assertEqual([(l.key, l.quantity) for l in back.lines], [(l.key, l.quantity) for l in v.lines])
-        self.assertEqual(str(back.lines[0].quantity), "0.1")
-        self.assertEqual(back.lines[1].quantity, d(-2))
-        row = back.cost_row("Q")
-        self.assertEqual(str(row.value(M)), "1600.5")
-        self.assertIsNone(row.value(CostHead.DIRECT))
-        self.assertIsNone(row.value(CostHead.MANUFACTURING))
-        self.assertEqual(row.value(CostHead.INDIRECT), d(0))
-        self.assertEqual(row.mbom_code, "Q0")
-        self.assertEqual(back.volume("P").annual, d("0.1"))
-
-    def test_settings_round_trip(self) -> None:
-        with Store(self.path) as store:
-            store.add_part_map("2026-10", "A-100", "V-110", "C-300", "X-610")
-            store.set_label("kind", "P", "製品")
-            policy = ScopePolicy({CostHead.DIRECT: Scope.OWN_ONLY})
-            policy.set_item("A-100", M, Scope.OWN_ONLY)
-            store.save_scope_policy(policy)
-        with Store(self.path) as store:
-            self.assertEqual(store.part_map("2026-10", "A-100", "V-110"), {"C-300": "X-610"})
-            self.assertEqual(store.part_map("2026-12", "A-100", "V-110"), {})
-            self.assertEqual(store.labels("kind"), {"P": "製品"})
-            loaded = store.load_scope_policy()
-            self.assertIs(loaded.scope_for("A-100", M), Scope.OWN_ONLY)
-            self.assertIs(loaded.scope_for("B-200", M), Scope.INCLUDES_CHILDREN)
-            self.assertIs(loaded.scope_for("B-200", CostHead.DIRECT), Scope.OWN_ONLY)
-            self.assertEqual(store.reuse_targets("2026-10", "X-610"), [ex.reuse_k200()])
-            self.assertEqual(store.mold_costs("2026-10"), {"X-610": ex.mold_x610()})
-            self.assertEqual((store.reuse_targets("2026-12"), store.mold_costs("2026-12")), ([], {}))
-
-
-class VersionsAndScenarios(unittest.TestCase):
-    def setUp(self) -> None:
-        self.store = Store(":memory:")
-        for version in (ex.imported_2026_10(), ex.imported_2026_12()):
-            self.store.save_group(version)
-            self.store.save_manual(ex.manual(), version.version_id)
-        self.store.save_scope_policy(ex.policy())
-
-    def tearDown(self) -> None:
-        self.store.close()
-
-    def scenario(self) -> Scenario:
-        s = Scenario("V-110 検討", "A-100", "V-110", self.store.load_group("2026-10"), M,
-                     self.store.load_scope_policy(), note="架空")
-        times = [datetime(2026, 10, 29, 10, i) for i in range(3)]
-        s.apply(Change(ChangeKind.ADD, "F-600"), times[0])
-        s.apply(Change(ChangeKind.REMOVE, "C-300", "1.5"), times[1])
-        s.apply(Change(ChangeKind.REPLACE, "F-600", replacement="X-610"), times[2])
-        return s
-
-    def test_scenario_round_trip(self) -> None:
-        s = self.scenario()
-        scenario_id = self.store.save_scenario(s)
-        back = self.store.load_scenario(scenario_id)
-        self.assertEqual(back.history, s.history)
-        self.assertEqual((back.note, back.base, back.version.version_id), ("架空", "A-100", "2026-10"))
-        self.assertEqual((back.product_code, back.head), (s.product_code, s.head))
-        self.assertEqual(back.calculate().total, s.calculate().total)
-        self.assertEqual(self.store.load_scenario(scenario_id).calculate().total, s.calculate().total)
-        # 取り消して保存し直すと履歴も縮む
-        back.undo()
-        self.store.save_scenario(back)
-        self.assertEqual(len(self.store.load_scenario(scenario_id).history), 2)
-
-    def test_one_scenario_per_group_and_product(self) -> None:
-        self.store.save_scenario(self.scenario())
-        with self.assertRaises(ValueError) as caught:
-            self.store.save_scenario(self.scenario())
-        self.assertIn("A-100", str(caught.exception))
-        other = Scenario("", "A-100", "V-110", self.store.load_group("2026-12"), M, self.store.load_scope_policy())
-        self.store.save_scenario(other)  # 別のグループなら同じ製品も持てる
-        self.assertEqual([(s.base, s.group_id) for s in self.store.list_scenarios()],
-                         [("A-100", "2026-10"), ("A-100", "2026-12")])
-        self.assertEqual([s.group_id for s in self.store.list_scenarios("2026-12")], ["2026-12"])
-
-    def test_delete_group_removes_its_contents_only(self) -> None:
-        self.store.save_scenario(self.scenario())
-        self.store.save_mold_cost(ex.mold_x610(), "2026-10")
-        self.store.delete_group("2026-10")
-        self.assertEqual([g.group_id for g in self.store.list_groups()], ["2026-12"])
-        for table in ("item", "bom_line", "cost", "volume", "mold_cost", "scenario", "change"):
-            self.assertEqual(self.store._conn.execute(f"SELECT COUNT(*) FROM {table} WHERE "
-                                                      + ("scenario_id > 0" if table == "change" else
-                                                         "group_id = '2026-10'")).fetchone()[0], 0, table)
-        self.assertIn("X-610", self.store.load_group("2026-12").items)
-        with self.assertRaises(KeyError):
-            self.store.load_group("2026-10")
-        with self.assertRaises(KeyError):
-            self.store.delete_group("2026-10")
-
-    def test_versions_are_kept_without_limit(self) -> None:
-        for n in range(15):
-            self.store.save_group(Version(f"v{n:02d}", datetime(2027, 1, 1 + n)))
-        self.assertEqual(len(self.store.list_groups()), 17)
-
-
-class MissingColumns(unittest.TestCase):
-    """取り込みで保存する欄（台数・載せ方・風船番号・検証の結果）。"""
-
-    setUp = VersionsAndScenarios.setUp
-    tearDown = VersionsAndScenarios.tearDown
-    scenario = VersionsAndScenarios.scenario
-
-    def test_change_keeps_volume_and_allocation(self) -> None:
-        s = self.scenario()  # 台数・載せ方を渡さない呼び方
-        self.assertEqual([(r.volume, r.allocation) for r in s.history], [(None, None)] * 3)
-        s.apply(Change(ChangeKind.ADD, "F-600"), datetime(2026, 10, 29, 11, 0),
-                volume="1200", allocation=Allocation.BY_USAGE)
-        scenario_id = self.store.save_scenario(s)
-        back = self.store.load_scenario(scenario_id)
-        self.assertEqual(back.history, s.history)
-        self.assertEqual([(r.volume, r.allocation) for r in back.history],
-                         [(None, None)] * 3 + [(Decimal(1200), Allocation.BY_USAGE)])
-
-    def test_part_map_balloons(self) -> None:
-        self.store.add_part_map("2026-10", "A-100", "A-200", "C-300", "C-310", "12", "15")
-        self.store.add_part_map("2026-10", "A-100", "A-200", "D-400", "D-410")
-        self.assertEqual(self.store.part_map("2026-10", "A-100", "A-200"), {"C-300": "C-310", "D-400": "D-410"})
-        self.assertEqual(
-            self.store.part_map_rows("2026-10", "A-100", "A-200"),
-            [PartMapRow("C-300", "C-310", "12", "15"), PartMapRow("D-400", "D-410", None, None)],
-        )
-
-    def test_version_warnings_round_trip(self) -> None:
-        imp = VersionImport(Version("2027-01", datetime(2027, 1, 5)))
-        imp.warnings.append(ImportWarning("bom.csv", 3, "数量が空"))
-        imp.warnings.append(ImportWarning("cost.csv", None, "見出しが多い"))
-        self.store.save_group(imp.version, warnings=imp.warnings)
-        self.assertEqual(self.store.load_group("2027-01").warnings, tuple(imp.warnings))
-        counts = {i.group_id: i.warning_count for i in self.store.list_groups()}
-        self.assertEqual((counts["2027-01"], counts["2026-10"]), (2, 0))
-        self.assertEqual(self.store.load_group("2026-10").warnings, ())
-
-
-class OldDb(TempDir):
-    def test_old_shape_db_stops_with_a_message(self) -> None:
-        path = self.dir / "old.sqlite"
-        conn = sqlite3.connect(path)
-        conn.execute("CREATE TABLE version (version_id TEXT PRIMARY KEY)")
-        conn.commit()
-        conn.close()
-        with self.assertRaises(OldDatabaseError) as caught:
-            Store(path)
-        self.assertIn("作り直", str(caught.exception))
-        # 新しい DB は2回目に開いても同じ
-        fresh = self.dir / "new.sqlite"
-        with Store(fresh) as store:
-            store.save_group(Version("g", dev_number="D-1"))
-        with Store(fresh) as store:
-            self.assertEqual([g.dev_number for g in store.list_groups()], ["D-1"])
 
 
 if __name__ == "__main__":

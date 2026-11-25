@@ -9,10 +9,9 @@ from decimal import Decimal
 from pathlib import Path
 
 import example_settings
-from bomcost import ColumnMap, Store, settings
+from bomcost import Store, settings
 from bomcost.api import Api
 from bomcost.app import main, static_response
-from bomcost.demo import DEMO_SETTINGS, build_demo
 from bomcost.formula import Head, OwnValues, breakdown
 from bomcost.model import base_code, mbom_to_ebom
 from bomcost.study import StudyStore
@@ -84,13 +83,6 @@ class LoadAndSave(SettingsCase):
         settings.save(None, settings.Settings(product_kind="Z"))
         self.assertEqual(settings.product_kind(), "Z")
 
-    def test_demo_puts_made_up_settings_only_when_there_is_none(self) -> None:
-        build_demo(self.db)
-        self.assertEqual(settings.load(self.db), DEMO_SETTINGS)
-        settings.save(self.db, example_settings.EXAMPLE)
-        build_demo(self.dir / "other.sqlite")
-        self.assertEqual(settings.load(self.db), example_settings.EXAMPLE)
-
 
 class Codes(SettingsCase):
     def test_without_digits_codes_are_kept(self) -> None:
@@ -138,16 +130,6 @@ class SettingsApi(SettingsCase):
         self.assertEqual(r.status, 409)
         self.assertIn("settings.json", r.json()["error"])
 
-    def test_mold_years_default_comes_from_settings(self) -> None:
-        self.store.create_group("D-1", group_id="g")
-        body = {"group_id": "g", "part": "Q-1", "amount": "100"}
-        got = self.call("PUT", "/api/molds", body).json()
-        self.assertEqual((got["molds"][0]["years"], got["mold_years"]), ("5", "5"))
-        settings.use(settings.Settings())
-        r = self.call("PUT", "/api/molds", body)
-        self.assertEqual(r.status, 400)
-        self.assertIn("償却年数", r.json()["error"])
-
     def counts(self, api: Api | None = None) -> int:
         r = (api or self.api).handle("GET", "/api/v2/bom", "", b"")
         return sum(r.json()["counts"].values())
@@ -161,16 +143,13 @@ class SettingsApi(SettingsCase):
         self.call("POST", "/api/v2/bom/import", {"sample": True})
         full = self.counts()
         self.assertGreater(full, 0)
-        self.store.save_column_map(ColumnMap("volume", ("a", "b"), {"product": "a", "annual": "b"}))
         study = StudyStore(self.store.connection)
         study.save_columns(("a", "b"), "volume", {"product": "a", "annual": "b"})
         self.assertFalse(self.save())  # 同じ中身の保存では消さない
         self.assertEqual(self.counts(), full)
-        self.assertIsNotNone(self.store.find_column_map(("a", "b")))
         self.assertIsNotNone(study.find_columns(("a", "b"), "volume"))
         self.assertTrue(self.save(labels={"系列": "型式"}))
         self.assertEqual(self.counts(), 0)
-        self.assertIsNone(self.store.find_column_map(("a", "b")))
         self.assertIsNone(study.find_columns(("a", "b"), "volume"))
 
     def test_studies_and_versions_survive_the_drop(self) -> None:
@@ -242,10 +221,10 @@ class Page(unittest.TestCase):
         self.assertEqual(static_response("/settings").status, 301)
         for name in ("", "settings.js"):
             self.assertEqual(static_response(f"/settings/{name}").status, 200, name)
-        for bad in ("/settings/../app.js", "/settings/v2/v2.js", "/v2/settings/settings.js"):
+        for bad in ("/settings/../v2.js", "/settings/v2.js", "/v2/settings/settings.js", "/settings/settings/settings.js"):
             self.assertEqual(static_response(bad).status, 404, bad)
         web = Path(__file__).resolve().parent.parent / "bomcost" / "web"
-        for path in [*web.glob("*.*"), *(web / "v2").glob("*.*")]:
+        for path in web.glob("*.*"):
             self.assertNotIn("/settings", path.read_text(encoding="utf-8"), path.name)
 
 

@@ -25,7 +25,7 @@ from bomcost.study import (
 )
 
 ALL = ("item", "bom_line", "cost", "volume")
-WEB = Path(__file__).resolve().parent.parent / "bomcost" / "web" / "v2"
+WEB = Path(__file__).resolve().parent.parent / "bomcost" / "web"
 
 
 def version(lines: list[BomLine], costs: dict[str, str]) -> Version:

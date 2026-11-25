@@ -6,12 +6,9 @@ from decimal import Decimal
 from unittest.mock import patch
 
 import example_settings  # noqa: F401
+import example_data as ex
 import bomcost.scenario as scenario_module
-from bomcost.group import replayed_batches
-
 from bomcost import BomLine, Change, ChangeKind, CostCalculator, CostHead, CostRow, Scenario, Version, calculate_cost
-from bomcost.api import change_problem
-from bomcost.demo import demo_policy, demo_versions
 
 M = CostHead.MATERIAL
 
@@ -95,22 +92,22 @@ class NoNegativeUsage(unittest.TestCase):
     """見本の V-110 は A-100 ×1、A-100 は B-200 ×2（製品1台あたり B-200 は 2）。"""
 
     def scenario(self) -> Scenario:
-        return Scenario("t", "V-110", "V-110#", demo_versions()[0], CostHead.MATERIAL, demo_policy())
+        return Scenario("t", "V-110", "V-110#", ex.imported_2026_10(), CostHead.MATERIAL, ex.policy())
 
     def accepted(self, s: Scenario, change: Change) -> None:
-        self.assertIsNone(change_problem(s, [change]))
+        self.assertIsNone(s.negative_usage(change))
         s.apply(change)
 
     def test_removing_more_than_built_in_refused(self) -> None:
         s = self.scenario()
-        self.assertRegex(change_problem(s, [Change(ChangeKind.REMOVE, "B-200", 5)]) or "", "負")
-        self.assertRegex(change_problem(s, [Change(ChangeKind.REPLACE, "B-200", 5, "F-600")]) or "", "負")
+        self.assertRegex(s.negative_usage(Change(ChangeKind.REMOVE, "B-200", 5)) or "", "負")
+        self.assertRegex(s.negative_usage(Change(ChangeKind.REPLACE, "B-200", 5, "F-600")) or "", "負")
 
     def test_removing_twice_past_zero_refused(self) -> None:
         s = self.scenario()
         self.accepted(s, Change(ChangeKind.REMOVE, "B-200", 1))
         self.accepted(s, Change(ChangeKind.REMOVE, "B-200", 1))
-        self.assertRegex(change_problem(s, [Change(ChangeKind.REMOVE, "B-200", 1)]) or "", "負")
+        self.assertRegex(s.negative_usage(Change(ChangeKind.REMOVE, "B-200", 1)) or "", "負")
 
     def test_part_wide_and_place_change_of_same_part_past_zero_refused_both_orders(self) -> None:
         place = Change(ChangeKind.REPLACE, "B-200", 1, "F-600", parent="A-100", balloon="1")
@@ -119,7 +116,7 @@ class NoNegativeUsage(unittest.TestCase):
             with self.subTest(first=first.parent):
                 s = self.scenario()
                 self.accepted(s, first)
-                self.assertRegex(change_problem(s, [second]) or "", "負")
+                self.assertRegex(s.negative_usage(second) or "", "負")
 
     def test_within_built_in_quantity_still_accepted(self) -> None:
         s = self.scenario()
@@ -131,7 +128,7 @@ class NoNegativeUsage(unittest.TestCase):
 
 class ReplayCost(unittest.TestCase):
     def scenario(self) -> Scenario:
-        s = Scenario("t", "V-110", "V-110#", demo_versions()[0], CostHead.MATERIAL, demo_policy())
+        s = Scenario("t", "V-110", "V-110#", ex.imported_2026_10(), CostHead.MATERIAL, ex.policy())
         at = datetime(2026, 1, 1)
         for change in (Change(ChangeKind.SET_QUANTITY, "F-600", 2, parent="V-110", balloon="2"),
                        Change(ChangeKind.SET_QUANTITY, "C-300", 1, parent="A-100", balloon="2"),
@@ -164,8 +161,7 @@ class ReplayCost(unittest.TestCase):
             {"F-600": "F-600", "C-300": "C-300", "B-200": "B-200"},
             {"V-110": "V-110 の #2 F-600", "A-100": "A-100 の #2 C-300"},
         ))
-        replayed = [(r.sequence, r.cost_before, r.cost_after) for b in replayed_batches(s) for r in b]
-        self.assertEqual(replayed, [(1, Decimal(4650), Decimal(4900)), (2, Decimal(4900), Decimal(3900)),
+        self.assertEqual([(r.sequence, r.cost_before, r.cost_after) for r in s.history], [(1, Decimal(4650), Decimal(4900)), (2, Decimal(4900), Decimal(3900)),
                                     (3, Decimal(3900), Decimal(2300)), (4, Decimal(2300), Decimal(2300)),
                                     (5, Decimal(2300), Decimal(2300))])
 

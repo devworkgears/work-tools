@@ -25,7 +25,7 @@ def settings_routes(api: "Api") -> list[tuple[str, str, Callable[..., "Response"
     def put(params: dict[str, str], body: dict[str, Any]) -> "Response":
         """settings の中身で書き換える。check: true は形を確かめて整えた中身を返すだけで、何も保存しない。
 
-        設定が変わったら、取り込んだ部品表（/v2/）を消す（bom_dropped）。
+        設定が変わったら、取り込んだ部品表を消す（bom_dropped）。
         """
         new = settings.parse(body.get("settings"))
         if body.get("check"):

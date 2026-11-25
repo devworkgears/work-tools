@@ -2,7 +2,6 @@
 
 使い方:
     python -m bomcost.app --db bom-cost.sqlite [--port N] [--no-browser] [--minimize]
-    python -m bomcost.app --demo --db demo.sqlite   # 架空の例を入れた DB を作って終わる
 """
 
 import argparse
@@ -20,9 +19,8 @@ from urllib.parse import urlsplit
 
 from . import settings
 from .api import Api, Response, error_response
-from .demo import build_demo
-from .screens import MAX_UPLOAD_BYTES
-from .store import OldDatabaseError, Store
+from .store import Store
+from .upload import MAX_UPLOAD_BYTES
 
 HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
@@ -48,12 +46,15 @@ def static_response(path: str, web_dir: Path = WEB_DIR) -> Response:
     """web_dir の直下のファイルだけを返す（下の階層・外のパスは出さない）。"""
     if path == "/favicon.ico":  # ブラウザが勝手に要求する。404 だとコンソールにエラーが出る
         return Response(204, b"", "image/x-icon")
-    # 設計検討（/v2/）と設定（/settings/）の画面は別のフォルダに置く（中の相対パスが引けるよう、末尾の / へ寄せる）
-    for sub in ("v2", "settings") if web_dir.name not in ("v2", "settings") else ():
-        if path == f"/{sub}":
-            return Response(301, b"", "text/plain; charset=utf-8", {"Location": f"/{sub}/"})
-        if path.startswith(f"/{sub}/"):
-            return static_response(path[len(sub) + 1:], web_dir / sub)
+    # 前の版の画面の場所。覚えたまま残らないように、302 で送る
+    if path in ("/v2", "/v2/"):
+        return Response(302, b"", "text/plain; charset=utf-8", {"Location": "/"})
+    # 設定（/settings/）の画面は別のフォルダに置く（中の相対パスが引けるよう、末尾の / へ寄せる）
+    if web_dir.name != "settings":
+        if path == "/settings":
+            return Response(301, b"", "text/plain; charset=utf-8", {"Location": "/settings/"})
+        if path.startswith("/settings/"):
+            return static_response(path[len("/settings"):], web_dir / "settings")
     name = "index.html" if path in ("", "/") else path.lstrip("/")
     target = web_dir / name
     if "/" in name or "\\" in name or target.suffix not in STATIC_TYPES or not target.is_file():
@@ -164,7 +165,7 @@ def minimize_console() -> None:
 
 
 def open_page(port: int) -> None:
-    webbrowser.open(f"http://{HOST}:{port}/v2/")
+    webbrowser.open(f"http://{HOST}:{port}/")
 
 
 def serve(db: Path, port: int = DEFAULT_PORT, open_browser: bool = True, minimize: bool = False) -> None:
@@ -211,20 +212,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"待つポート（既定 {DEFAULT_PORT}）")
     parser.add_argument("--no-browser", action="store_true", help="ブラウザを開かない")
     parser.add_argument("--minimize", action="store_true", help="起動したら黒い窓を最小化する（Windows）")
-    parser.add_argument("--demo", action="store_true", help="架空の例を入れた DB を --db に作って終わる")
     args = parser.parse_args(argv)
-    if args.demo:
-        try:
-            scenario_id = build_demo(args.db)
-        except FileExistsError as exc:
-            print(exc, file=sys.stderr)
-            return 1
-        print(f"架空の例の DB を作った: {args.db}（試算 ID {scenario_id}）")
-        print(f"立てるには: python -m bomcost.app --db {args.db}")
-        return 0
     try:
         serve(args.db, args.port, not args.no_browser, args.minimize)
-    except (OldDatabaseError, ValueError) as exc:
+    except ValueError as exc:
         print(exc, file=sys.stderr)
         return 1
     return 0
