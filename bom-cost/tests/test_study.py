@@ -148,6 +148,8 @@ class LaterWriteWins(StudyCase):
         self.store.save_quantities(self.number, "A", [{"product": "P1", "balloon": "12", "part": "K121", "quantity": "5"}])
         got = self.changes()
         self.assertEqual(got[("P2", "P2", "12", "K121")], (Decimal(3), REWRITE))
+        place = next(p for p in after_places(self.store.workspace(self.number), "A") if p.product == "P1" and p.part == "K121")
+        self.assertEqual((place.quantity, place.was, place.before), (Decimal(5), ["K120"], Decimal(2)))  # before は置き換える前の数量
         self.assertEqual(got[("P1", "P1", "12", "K121")], (Decimal(5), REPLACE))
         self.store.save_quantities(self.number, "A", [{"product": "P1", "balloon": "12", "part": "K121", "quantity": "2"}])
         got = self.changes()

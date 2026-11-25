@@ -1010,7 +1010,9 @@ async function searchReplaceScreen(main, cur) {
     if (c === 1 && value && value !== (p.code ?? p.part)) typed.set(p, value);
     if (each && c === 6 && !(value !== "" && same(value, p.quantity))) {
       if (value !== "" && !(isNumber(value) && Number(value) >= 0)) return alert(`数量は0以上の数で入力してください（${p.part}「${value}」）`);
-      counts.set(p, value);
+      // 置き換えた行の空は、置き換える前の数量に戻す（今の部品表に無い品番なので、そのまま送ると消える）
+      if (value === "" && p.was.length && p.before === null) return alert("置き換える前が1つに決まらないので、数量を入力してください");
+      counts.set(p, value === "" && p.was.length ? p.before : value);
     }
   };
   const together = {
