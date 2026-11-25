@@ -81,6 +81,15 @@ fieldset.grp { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8
   background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 0 8px; box-shadow: var(--shadow);
 }
 
+/* 処理中 */
+.busy { position: fixed; left: 50%; top: 10px; transform: translateX(-50%); z-index: 30; min-width: 200px; overflow: hidden;
+  padding: 7px 16px 9px; border: 1px solid var(--accent); border-radius: 8px; background: var(--panel); color: var(--accent);
+  font-weight: 700; text-align: center; box-shadow: 0 4px 16px rgba(20, 30, 50, .18); }
+.busy[hidden] { display: none; }
+.busy > i { position: absolute; left: 0; bottom: 0; width: 40%; height: 3px; background: var(--accent); animation: busy 1.2s linear infinite; }
+@keyframes busy { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
+@media (prefers-reduced-motion: reduce) { .busy > i { animation: none; width: 100%; } }
+
 /* 格子 */
 .gridwrap { position: relative; outline: none; }
 .sink { position: absolute; left: -9999px; top: 0; width: 1px; height: 1px; opacity: 0; }

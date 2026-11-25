@@ -52,8 +52,73 @@ function query(params) {
   return pairs.length ? "?" + new URLSearchParams(pairs).toString() : "";
 }
 
+// 処理中の表示。通信でも work でも、長引いた時だけ上に帯を出し、3秒を超えたら経過の秒も出す
+const busy = {
+  texts: [], // 動いている処理の文（後から始めた物が後ろ）
+  shown: 0, // 帯を出した時刻
+  timer: null,
+  start(text) {
+    const job = { text };
+    this.texts.push(job);
+    if (!this.timer) {
+      const from = Date.now();
+      this.timer = setInterval(() => {
+        this.shown = from;
+        this.draw();
+      }, 300);
+    } else if (this.shown) this.draw();
+    return () => {
+      this.texts.splice(this.texts.indexOf(job), 1);
+      if (this.texts.length) return this.shown ? this.draw() : undefined;
+      clearInterval(this.timer);
+      this.timer = null;
+      this.shown = 0;
+      document.getElementById("busy").hidden = true;
+    };
+  },
+  draw() {
+    const box = document.getElementById("busy");
+    const named = this.texts.findLast((t) => t.text);
+    const sec = Math.floor((Date.now() - this.shown) / 1000);
+    box.querySelector("span").textContent = `${named ? named.text : "処理中"}…${sec >= 3 ? ` ${sec}秒` : ""}`;
+    box.hidden = false;
+  },
+};
+
+// 時間のかかる操作。終わるまで画面を押せなくする（二重に押すと、版が2つできる・2回取り込むため）
+let working = 0;
+async function work(text, run) {
+  const end = busy.start(text);
+  const focused = document.activeElement;
+  const lock = (on) => {
+    for (const node of document.body.children) if (node.id !== "busy" && node.id !== "scrno") node.inert = on;
+  };
+  working += 1;
+  lock(true);
+  try {
+    return await run();
+  } finally {
+    working -= 1;
+    if (!working) {
+      lock(false);
+      if (focused && focused.isConnected && document.activeElement === document.body) focused.focus({ preventScroll: true });
+    }
+    end();
+  }
+}
+
+// 通信はどれも処理中に数える（帯は長引いた時だけ出る）
+async function request(path, options) {
+  const end = busy.start("");
+  try {
+    return await fetch(path, options);
+  } finally {
+    end();
+  }
+}
+
 async function api(method, path, params = {}, body) {
-  const res = await fetch(path + query(params), {
+  const res = await request(path + query(params), {
     method,
     headers: body === undefined ? {} : { "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -71,7 +136,7 @@ async function api(method, path, params = {}, body) {
 }
 
 async function download(path, params, name) {
-  const res = await fetch(path + query(params));
+  const res = await request(path + query(params));
   if (!res.ok) throw new Error((await res.json()).error);
   const url = URL.createObjectURL(await res.blob());
   const a = el("a", { href: url, download: name });
@@ -429,7 +494,7 @@ async function hubScreen(main, cur) {
     const number = numberInput.value.trim();
     if (!number) return;
     await leave(cur);
-    loadStudy(number, versionSelect.value || null).catch(fail);
+    work("読み込んでいます", () => loadStudy(number, versionSelect.value || null)).catch(fail);
   };
   numberInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") read();
@@ -456,7 +521,7 @@ async function hubScreen(main, cur) {
   if (run) run.addEventListener("click", async () => {
     if (!draft.targets.some(Boolean)) return fail(new Error("対象品番を入れてから実行してください（［対象品番］で選ぶ）"));
     try {
-      applyStudy(await api("POST", "/api/v2/studies", {}, { ...header(), products: draft.targets.filter(Boolean) }));
+      applyStudy(await work("検討を作成しています", () => api("POST", "/api/v2/studies", {}, { ...header(), products: draft.targets.filter(Boolean) })));
       S.mode = "edit";
       S.draft = null;
       notice(`検討 ${S.number} を作成しました（対象品番 ${S.targets.length} 製品）`);
@@ -482,7 +547,7 @@ async function hubScreen(main, cur) {
     await leave(cur);
     if (!confirm(`${S.number} の版を確定します。確定した版は書き換えできません。よろしいですか？`)) return;
     try {
-      const taken = await api("POST", "/api/v2/release", { number: S.number }, {});
+      const taken = await work("版を確定しています", () => api("POST", "/api/v2/release", { number: S.number }, {}));
       await loadStudy(S.number, null);
       done(`版${taken.version} を確定しました`);
     } catch (e) {
@@ -560,7 +625,7 @@ async function studyListDialog() {
           onclick: async () => {
             await leave();
             d.close();
-            loadStudy(s.number, null).catch(fail);
+            work("読み込んでいます", () => loadStudy(s.number, null)).catch(fail);
           },
         }, el("td", {}, s.number), el("td", {}, s.title), el("td", {}, s.owner),
         el("td", {}, (s.updated_at || "").slice(0, 10).replaceAll("-", "/")), el("td", { class: "r" }, s.latest_version ?? "")))),
@@ -816,8 +881,10 @@ async function importDialog(after) {
     const f = file.files[0];
     if (!f) return;
     if (f.size > MAX_FILE_BYTES) throw new Error(`${f.name} が大きすぎます（上限 16 MB）`);
-    const content = preview?.file === f ? preview.content : toBase64(await f.arrayBuffer());
-    const data = await api("POST", "/api/import/preview", {}, { filename: f.name, content, sheet: sheetName });
+    const [content, data] = await work("ファイルを読み込んでいます", async () => {
+      const text = preview?.file === f ? preview.content : toBase64(await f.arrayBuffer());
+      return [text, await api("POST", "/api/import/preview", {}, { filename: f.name, content: text, sheet: sheetName })];
+    });
     preview = { file: f, content, data };
     sheetLabel.hidden = !data.sheets.length;
     setOptions(sheet, data.sheets.map((s) => [s, s]), data.sheet);
@@ -833,7 +900,7 @@ async function importDialog(after) {
     if (!pending.length) { fail(new Error("取り込む一覧が空です")); return; }
     const body = { files: pending.map((f) => ({ filename: f.filename, content: f.content, sheet: f.sheet, table: f.table, columns: f.columns })) };
     try {
-      const r = await api("POST", "/api/v2/bom/import", {}, { ...body, check: true });
+      const r = await work("確認しています", () => api("POST", "/api/v2/bom/import", {}, { ...body, check: true }));
       checked = body;
       checkButton.classList.remove("pri");
       fill(check,
@@ -856,7 +923,7 @@ async function importDialog(after) {
 
   const decide = async () => {
     try {
-      const r = await api("POST", "/api/v2/bom/import", {}, checked);
+      const r = await work("取り込んでいます", () => api("POST", "/api/v2/bom/import", {}, checked));
       pending.length = 0;
       drawPending();
       finish(r);
@@ -880,7 +947,7 @@ async function importDialog(after) {
     el("div", { class: "row" }, file, sheetLabel, el("label", { class: "mini" }, "表 ", kind)),
     mapping, list, check,
   ], [
-    status.samples ? el("button", { class: "btn", onclick: () => api("POST", "/api/v2/bom/import", {}, { sample: true }).then(finish, fail) }, "見本") : null,
+    status.samples ? el("button", { class: "btn", onclick: () => work("取り込んでいます", () => api("POST", "/api/v2/bom/import", {}, { sample: true })).then(finish, fail) }, "見本") : null,
     el("span", { class: "sp" }),
     checkButton,
     el("button", { class: "btn", onclick: () => d.close() }, "閉じる"),
@@ -1135,7 +1202,7 @@ async function searchReplaceScreen(main, cur) {
       if (!products.length) return alert("足す製品に印を付けてください");
       if (!isNumber(clean(amount.value)) || Number(clean(amount.value)) <= 0) return alert("数量は0より大きい数で入力してください");
       try {
-        take(await api("POST", "/api/v2/add-part", { number: S.number, plan }, { part: partCode(), quantity: clean(amount.value), products }));
+        take(await work("部品を足しています", () => api("POST", "/api/v2/add-part", { number: S.number, plan }, { part: partCode(), quantity: clean(amount.value), products })));
         tell("saved");
         done(`${partCode()} を ${products.length} 製品に足しました`);
         box.close();
@@ -1591,7 +1658,7 @@ async function changesScreen(main) {
 
 // 検討1つを1つの Excel に出す（⑥ と ⑦ で同じファイル）
 function exportStudy() {
-  return download("/api/v2/export/study", q({ plan: PLAN }), `検討_${S.number}.xlsx`);
+  return work("Excel を作っています", () => download("/api/v2/export/study", q({ plan: PLAN }), `検討_${S.number}.xlsx`));
 }
 
 // ⑦ 結果 -----------------------------------------------------------------
@@ -1683,7 +1750,7 @@ async function resultScreen(main) {
     el("div", { style: "overflow:auto" }, drawProducts())] : null);
   const compute = async () => {
     try {
-      data = await api("GET", "/api/v2/calc", q({ head: "all", plan }));
+      data = await work("計算しています", () => api("GET", "/api/v2/calc", q({ head: "all", plan })));
       stamp.textContent = `計算日時 ${data.computed_at.replace("T", " ").slice(0, 16).replaceAll("-", "/")}　${label("諸経費")} ${data.rates.adjustment}%・${label("間接費")} ${data.rates.indirect}%`;
       draw();
       done("計算しました");

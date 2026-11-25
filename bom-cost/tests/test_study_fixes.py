@@ -282,5 +282,44 @@ class GridPaste(unittest.TestCase):
         self.assertEqual(got, {"started": ["ＰＲ１００２－００１"], "left": ""})
 
 
+BUSY_HARNESS = r"""
+const span = {};
+const box = { id: "busy", hidden: true, querySelector: () => span };
+const body = { children: [{ id: "app", inert: false }, box] };
+globalThis.document = { body, activeElement: null, getElementById: () => box };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const out = {};
+(async () => {
+  await work("すぐ", async () => sleep(20));
+  await sleep(400);
+  out.short = box.hidden; // すぐ終われば帯は出ない
+  let during;
+  const long = work("計算しています", async () => { const end = busy.start(""); await sleep(450); during = [box.hidden, span.textContent, body.children[0].inert]; end(); });
+  await long;
+  out.during = during;
+  out.after = [box.hidden, body.children[0].inert, busy.texts.length];
+  // 失敗しても、押せる画面に戻る
+  out.error = await work("失敗", async () => { throw new Error("x"); }).catch((e) => e.message);
+  // 中で続けて動かした時は、外側が終わるまで押せない
+  await work("外", async () => { await work("中", async () => {}); out.nested = body.children[0].inert; });
+  out.end = [body.children[0].inert, busy.texts.length, busy.timer];
+  console.log(JSON.stringify(out));
+})();
+"""
+
+
+@unittest.skipUnless(shutil.which("node"), "node が無い")
+class Busy(unittest.TestCase):
+    """処理中の表示と、時間のかかる操作の二重押しの止め。"""
+
+    def test_bar_shows_only_for_long_work_and_the_screen_is_released(self) -> None:
+        source = (WEB / "v2.js").read_text(encoding="utf-8")
+        part = source[source.index("const busy = {"):source.index("// 通信はどれも処理中に数える")]
+        run = subprocess.run(["node", "-e", part + BUSY_HARNESS], capture_output=True, text=True, check=True)
+        self.assertEqual(json.loads(run.stdout), {
+            "short": True, "during": [False, "計算しています…", True], "after": [True, False, 0],
+            "error": "x", "nested": True, "end": [False, 0, None]})
+
+
 if __name__ == "__main__":
     unittest.main()
