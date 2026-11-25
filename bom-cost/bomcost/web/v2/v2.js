@@ -477,14 +477,14 @@ async function hubScreen(main, cur) {
     },
   }, label, extra);
   const arrow = () => el("span", { class: "arrow" }, "→");
-  const release = el("button", { class: "btn big", style: "margin-left:24px;align-self:center", disabled: !canWrite() }, "版を固める");
+  const release = el("button", { class: "btn", disabled: !S.number || !canWrite() }, "版確定");
   release.addEventListener("click", async () => {
     await leave(cur);
-    if (!confirm(`${S.number} の版を取得します。取得した版は書き換えできません。よろしいですか？`)) return;
+    if (!confirm(`${S.number} の版を確定します。確定した版は書き換えできません。よろしいですか？`)) return;
     try {
       const taken = await api("POST", "/api/v2/release", { number: S.number }, {});
       await loadStudy(S.number, null);
-      done(`版${taken.version} を取得しました`);
+      done(`版${taken.version} を確定しました`);
     } catch (e) {
       fail(e);
     }
@@ -521,7 +521,7 @@ async function hubScreen(main, cur) {
       el("button", { class: "btn quiet", onclick: () => importDialog(() => imported().catch(fail)) }, "部品表データ取込（モック）")),
     el("div", { class: "card" },
       el("div", { class: "h" }, el("span", { class: "no" }, S.number || "　"), el("span", { class: "mini", style: "font-weight:400" }, "版"),
-        el("input", { class: "in ro", value: state, readonly: true, style: "min-width:50px;width:60px" })),
+        el("input", { class: "in ro", value: state, readonly: true, style: "min-width:50px;width:60px" }), release),
       el("div", { class: "b" }, el("div", { class: "row", style: "margin:0" }, fields,
         el("label", { class: "f" }, "状態", el("input", { class: "in ro", value: state, readonly: true, style: "min-width:60px;width:70px" })),
         el("label", { class: "f" }, "最終更新日", el("input", { class: "in ro", value: updated, readonly: true, style: "min-width:100px;width:110px" })),
@@ -530,8 +530,7 @@ async function hubScreen(main, cur) {
       // 左から使う順。まん中（青）が打つ画面、右が見る画面
       el("fieldset", { class: "grp" }, big(3, "対象品番"), big(9, "仮品番")), arrow(),
       el("fieldset", { class: "grp edit" }, big(11, "部品変更"), big(8, "構成変更"), big(10, "費目変更")), arrow(),
-      el("fieldset", { class: "grp" }, big(5, "構成一覧"), big(6, "変更一覧", S.problems ? [" ", el("span", { class: "pill warn" }, S.problems)] : null), big(7, "結果")),
-      release),
+      el("fieldset", { class: "grp" }, big(5, "構成一覧"), big(6, "変更一覧", S.problems ? [" ", el("span", { class: "pill warn" }, S.problems)] : null), big(7, "結果"))),
   );
 }
 

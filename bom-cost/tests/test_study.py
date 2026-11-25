@@ -494,7 +494,7 @@ class WhereUsed(unittest.TestCase):
 
 
 class StudyApiFlow(unittest.TestCase):
-    """見本の CSV を取り込み、③→④→⑤→⑥→⑦→版を固める を API で通す。"""
+    """見本の CSV を取り込み、③→④→⑤→⑥→⑦→版確定 を API で通す。"""
 
     def setUp(self) -> None:
         self.store = Store(":memory:")
@@ -555,7 +555,7 @@ class StudyApiFlow(unittest.TestCase):
         self.assertFalse(any(r["incomplete"]["A"] for r in with_temp["rows"]))
         self.ok("PUT", "/api/v2/replace", q + "&plan=A", {"rows": [{"old": OLD, "new": NEW}]})
         self.assertEqual(self.ok("GET", "/api/v2/calc", q + "&head=material")["impact"], with_temp["impact"])
-        # 版を固めるで仮品番も固まる
+        # 版確定で仮品番も固まる
         self.ok("PUT", "/api/v2/replace", q + "&plan=A", {"rows": [{"old": OLD, "new": tmp}]})
         version = self.ok("POST", "/api/v2/release", q, {})["version"]
         self.ok("PUT", "/api/v2/temp-items", q, {"rows": []})
@@ -602,7 +602,7 @@ class StudyApiFlow(unittest.TestCase):
         # 変更一覧にも出る
         changed = [r for r in self.ok("GET", "/api/v2/changes", q + "&plan=A")["rows"] if r["source"] == "own"]
         self.assertEqual([(r["product"], r["before"], r["after"]) for r in changed], [(P1, now, "1000")])
-        # 版を固めるで固まる
+        # 版確定で固まる
         version = self.ok("POST", "/api/v2/release", q, {})["version"]
         self.ok("PUT", "/api/v2/own", q + "&plan=A", {"rows": []})
         fixed = self.ok("GET", "/api/v2/own", f"{q}&plan=A&version={version}")
