@@ -771,7 +771,7 @@ class StudyApiFlow(unittest.TestCase):
         excel = self.api.handle("GET", "/api/v2/export/study", q)
         self.assertEqual(excel.status, 200)
         book = load_openpyxl().load_workbook(io.BytesIO(excel.body))
-        self.assertEqual(book.sheetnames, ["まとめ", "変更ごとの影響", "構成の変更", "構成の明細", "金額", "計算条件"])
+        self.assertEqual(book.sheetnames, ["まとめ", "金額", "変更ごとの影響", "構成の変更", "構成の明細", "計算条件"])
         # 構成の変更は、した事ごとに1行（2製品の置き換えが1行）・明細は箇所ごと
         self.assertIn(("置き換え", OLD, NEW, 2), [(r[0], r[1], r[3], r[6]) for r in
                                               book["構成の変更"].iter_rows(min_row=2, values_only=True)])

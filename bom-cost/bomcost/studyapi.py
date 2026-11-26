@@ -810,6 +810,7 @@ class StudyApi:
                   for h in HEADS.values()),
                 *([f"台数の加重平均（1台あたり・{h.value}）", results[h]["weighted"].get(plan)] for h in HEADS.values()),
                 *([f"説明: {name}", text] for name, text in SHEET_NOTES)]),
+            ("金額", ["対象品番", "名称", "費目", "現行", "変更後", "差", "差（％）", "年間台数", "年間の影響", "不完全"], money),
             ("変更ごとの影響", ["変更", "元品番", "元の名称", "新品番", "新の名称", "製品の数", "1台あたりの差（最小）", "1台あたりの差（最大）",
                          "年間の影響", "現行比（％）", "不完全", "要確認"],
              [[e["kind"], e["old"], e["old_name"], e["new"], settings.word(e["head"]) if e["head"] else e["new_name"],
@@ -824,7 +825,6 @@ class StudyApi:
                r["old"], r["old_name"], r["new"], r["new_name"], _num(r["before"]), _num(r["after"]), r["parent"],
                r["balloon"], "・".join(r["problems"])]
               for r in changes_by_product(summarize_changes(changes), ws.targets)]),
-            ("金額", ["対象品番", "名称", "費目", "現行", "変更後", "差", "差（％）", "年間台数", "年間の影響", "不完全"], money),
             ("計算条件", ["種類", "対象", "項目", "値", "備考"], self._condition_rows(ws, plan)),
         ]
         inner = [[t.code, t.name, t.base, s["kind"], s["old"], s["old_name"], s["new"], s["new_name"], d["balloon"],
@@ -832,7 +832,7 @@ class StudyApi:
                  for t in ws.temps if t.base is not None and t.code in ws.temp_merged
                  for s in temp_changes(ws, t) for d in s["details"]]
         if inner:
-            sheets.insert(4, ("仮品番の中", ["仮品番", "名称", "流用元", "変更", "元品番", "元の名称", "新品番", "新の名称", "風船",
+            sheets.insert(-1, ("仮品番の中", ["仮品番", "名称", "流用元", "変更", "元品番", "元の名称", "新品番", "新の名称", "風船",
                                           "現行", "変更後"], inner))
         return self._xlsx(f"検討_{ws.number}", sheets)
 
@@ -878,12 +878,12 @@ class StudyApi:
 
 # Excel の各シートの列の意味（渡した先が列を取り違えないように、まとめのシートに書く）
 SHEET_NOTES = (
+    ("金額", "1行＝対象品番×費目。1台あたり。差＝変更後−現行、年間の影響＝差×年間台数。費目には内訳と合計が混ざるので足し合わせない"),
     ("変更ごとの影響", "した事ごとに、製造原価への効き方。差は1台あたりで製品ごとに違えば最小と最大、年間の影響＝差×年間台数の合計。"
                   "現行比は対象品番の現行の製造原価×年間台数の合計に対する割合。足すとまとめの年間の影響（製造原価）になる"),
     ("構成の変更", "した事ごとに1行。置き換え＝同じ製品・親・風船番号で元品番が 0 になり新品番が増えた物。数量は1箇所あたり"),
     ("構成の明細", "1行＝製品×した事×箇所（親・風船）。変更の無い対象品番も「変更なし」で出す。数量は親1単位あたりで、"
                    "置き換えは現行＝元品番の数量・変更後＝新品番の数量"),
-    ("金額", "1行＝対象品番×費目。1台あたり。差＝変更後−現行、年間の影響＝差×年間台数。費目には内訳と合計が混ざるので足し合わせない"),
     ("不完全", "未登録の原価や計算に入らない変更があり、金額が足りない行"),
     ("単価待ち", "単価の無い品番を使う変更。置き換えは、単価が分かるまで現行のまま（差なし）で計算する"),
     ("単位", "金額は取り込んだ原価の表と同じ単位、数量は部品表と同じ単位"),

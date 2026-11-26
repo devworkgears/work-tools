@@ -279,6 +279,7 @@ class LevelApi(unittest.TestCase):
         self.assertNotIn("仮品番の中", book().sheetnames)
         self.ok("PUT", "/api/v2/temp-inside", {"code": "T1", "rows": [{"balloon": "11", "part": "N", "quantity": "2"},
                                                                       {"balloon": "12", "part": "V", "quantity": "1"}]})
+        self.assertEqual(book().sheetnames[-2:], ["仮品番の中", "計算条件"])
         rows = list(book()["仮品番の中"].iter_rows(min_row=2, values_only=True))
         self.assertEqual(rows, [("T1", "組立改", "U", "置き換え", "K", "K の名称", "N", "N の名称", "11", 2, 2)])
         effects = list(book()["変更ごとの影響"].iter_rows(values_only=True))
