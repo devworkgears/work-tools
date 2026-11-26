@@ -2310,7 +2310,7 @@ function percent(diff, now) {
   return `${v < 0 ? "−" : "+"}${Math.abs(v).toFixed(Math.abs(v) < 1 ? 2 : 1)}%`;
 }
 
-// 上に「変更ごとの影響」（製造原価への効き方）、下に製品ごとの費目全部（現行・変更後・差）
+// 製品別＝製品ごとの費目全部（現行・変更後・差）、変更別＝変更ごとの影響（製造原価への効き方）
 async function resultScreen(main) {
   let data = null;
   const plan = PLAN;
@@ -2324,7 +2324,7 @@ async function resultScreen(main) {
           el("td", { class: "r" }, fmt(p.annual) || "—"), el("td", { class: "r" }, p.impact === null ? "—" : man(p.impact))))),
       [el("span", { class: "sp" }), el("button", { class: "btn", onclick: () => box.close() }, "閉じる")]);
   };
-  // した事ごとの効き方。足すと下の表の製造原価の年間の影響になる
+  // した事ごとの効き方。足すと製品別の表の製造原価の年間の影響になる
   const drawEffects = () => {
     const total = data.heads.find((h) => h.key === "total");
     const base = total.base[plan];
@@ -2377,11 +2377,16 @@ async function resultScreen(main) {
       el("tr", {}, el("th", { colspan: "3" }, "台数の加重平均"), el("th", { class: "mini" }, "1台あたり"),
         heads.map((h) => el("th", { class: "r" + tone(h.weighted[plan]) + (h.impact_incomplete[plan] ? " inc" : ""), title: h.impact_incomplete[plan] ? "不完全" : null }, signed(h.weighted[plan])))));
   };
+  // 製品別（費目全部）と変更別（製造原価への効き方）を切り替えて出す。開いた時は製品別
+  let view = "product";
+  const views = () => el("div", { class: "chips" }, [["product", "製品別"], ["change", "変更別"]].map(([k, text]) =>
+    el("button", { class: "chip" + (view === k ? " on" : ""), onclick: () => {
+      view = k;
+      draw();
+    } }, text)));
   const draw = () => fill(body, data ? [
-    el("h3", {}, "変更ごとの影響", el("span", { class: "mini", style: "font-weight:400;margin-left:8px" }, "製造原価")),
-    el("div", { style: "overflow:auto" }, drawEffects()),
-    el("h3", {}, "製品ごとの費目"),
-    el("div", { style: "overflow:auto" }, drawProducts())] : null);
+    el("div", { class: "row" }, views(), view === "change" ? el("span", { class: "mini" }, "製造原価") : null),
+    el("div", { style: "overflow:auto" }, view === "change" ? drawEffects() : drawProducts())] : null);
   const compute = async () => {
     try {
       data = await work("計算しています", () => api("GET", "/api/v2/calc", q({ head: "all", plan })));
