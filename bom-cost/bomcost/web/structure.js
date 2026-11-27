@@ -96,7 +96,7 @@ function checkList(options, get, set) {
 }
 
 // 組立品の中を変えた時に取る新しい品番を聞く窓。needs は { code（元品番）, name, suggested（自動の品番） }。
-// 決めたら { 元品番: 新しい品番 }、やめたら null
+// 決めたら { 自動の品番: 新しい品番 }、やめたら null（同じ元品番が中身違いで2行出ることがあるので、自動の品番で見分ける）
 function askNumbers(needs) {
   return new Promise((resolve) => {
     const inputs = needs.map((n) => el("input", { class: "in", value: n.suggested }));
@@ -111,7 +111,7 @@ function askNumbers(needs) {
       const typed = inputs.map((x) => clean(x.value));
       if (typed.some((t) => !t)) return alert("新しい品番を入れてください");
       if (new Set(typed).size !== typed.length) return alert("同じ品番が2つあります");
-      finish(Object.fromEntries(needs.map((n, i) => [n.code, typed[i]])));
+      finish(Object.fromEntries(needs.map((n, i) => [n.suggested, typed[i]])));
     };
     for (const x of inputs) x.addEventListener("keydown", (e) => { if (e.key === "Enter") ok(); });
     const box = dialog("新しい品番", el("table", { class: "list" },

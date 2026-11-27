@@ -114,7 +114,7 @@ async function resultScreen(main) {
         cell(e, unit(e), e.unit_max), cell(e, e.impact === null ? "—" : man(e.impact), e.impact), cell(e, percent(e.impact, base) || "—", e.impact),
         el("td", {}, e.problems.join("・")))),
       el("tr", {}, el("th", {}, "合計"), el("th", { colspan: "5" }, ""),
-        el("th", { class: "r" + tone(total.weighted[plan]), title: "台数の加重平均" }, signed(total.weighted[plan])),
+        el("th", { class: "r" + tone(total.weighted[plan]), title: "1台あたりの平均の増減（年間台数で重み付け）" }, signed(total.weighted[plan])),
         el("th", { class: "r" + tone(total.impact[plan]) + (total.impact_incomplete[plan] ? " inc" : ""), title: total.impact_incomplete[plan] ? "不完全" : null }, man(total.impact[plan])),
         el("th", { class: "r" + tone(total.impact[plan]) }, percent(total.impact[plan], base) || "—"), el("th", {})));
   };

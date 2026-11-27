@@ -1423,11 +1423,13 @@ class StudyStore:
         # 使っている仮品番（変更に出てくる・ほかの仮品番の中にある）は消さない。中身は仮品番の側にしか無く、消すと戻せないため
         gone = set(kept) - {t.code for t in temps} - set(renamed)
         if gone:
-            used = {c for row in self._conn.execute("SELECT parent, part FROM v2_slot WHERE study_id = ?", (sid,)) for c in row}
-            used |= {s.part for t in temps for s in t.lines}
-            busy = sorted(gone & used)
-            if busy:
+            in_changes = {c for row in self._conn.execute("SELECT parent, part FROM v2_slot WHERE study_id = ?", (sid,)) for c in row}
+            if busy := sorted(gone & in_changes):
                 raise ValueError(f"仮品番 {'・'.join(busy)} は構成変更で使っているので消せません（先に構成変更で元に戻してください）")
+            inner = {s.part: t.code for t in temps for s in t.lines}
+            if busy := sorted(gone & set(inner)):
+                raise ValueError(f"仮品番 {'・'.join(busy)} は、仮品番 {'・'.join(sorted({inner[c] for c in busy}))} の中で使っているので消せません"
+                                 "（先にその中から外してください）")
         with self._conn:
             self._rename_changes(sid, renamed)
             self._conn.execute("DELETE FROM v2_temp_item WHERE study_id = ?", (sid,))

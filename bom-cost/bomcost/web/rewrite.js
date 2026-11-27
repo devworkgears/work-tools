@@ -405,7 +405,7 @@ async function rewriteScreen(main, cur) {
     const off = new Set(); // 替えない行
     let every = null; // 対象品番の全部の直下（範囲で選んだ時に読む）
     let everyItems = {};
-    let deep = null; // 全階層（範囲で選んだ時に読む・⑪ と同じ口）
+    let deep = null; // 全階層（範囲で選んだ時に読む）
     const nameOf = (code) => (me.data.items[code] || everyItems[code] || {}).name ?? (items.get(code) || {}).name ?? "";
     const unit = me.child ? "組立品" : "製品";
     const range = el("select", { class: "in" }, el("option", { value: "here" }, `表示中の${unit}（${parents().length}）`),
@@ -520,10 +520,16 @@ async function rewriteScreen(main, cur) {
           const body = me.child ? { inside: top } : { replace: top };
           if (await work("変更しています", () => send("/api/v2/structure", body, `${top.length} 箇所を ${to} に替えました`)) === false) return;
         } else {
-          // 組立品の中を替えると上の組立品に新しい品番が要るので、何も入れる前に聞く（やめたら何も入れない）。入れるのは直下が先、中は後
+          // 置き換える組立品と、その中の部品が両方当たっていると、先に組立品が替わって中が見つからなくなるので、何も入れずに断る
+          const swapped = new Set(picked.map((g) => g.part));
+          const clash = inner.find((x) => x.path.some((c) => swapped.has(c)));
+          if (clash) return alert(`組立品 ${clash.path.find((c) => swapped.has(c))} と、その中の部品が両方当たっています。どちらかの印を外してください`);
+          // 組立品の中を替えると上の組立品に新しい品番が要るので、何も入れる前に聞く（やめたら何も入れない）。
+          // 中の分が断られないことを書かずに確かめてから、直下を先、中を後に入れる（直下だけが残らないように）
           const fresh = inner.length ? (await api("POST", "/api/v2/structure/needs", { number: S.number, plan: PLAN }, { rows: inner })).needs.filter((n) => n.fresh) : [];
           const numbers = fresh.length ? await askNumbers(fresh) : {};
           if (numbers === null) return done("やめました");
+          if (inner.length) await api("POST", "/api/v2/inside/replace", { number: S.number, plan: PLAN }, { rows: inner, numbers, check: true });
           if (top.length) await work("変更しています", () => api("POST", "/api/v2/replace/apply", { number: S.number, plan: PLAN }, { rows: top }));
           if (inner.length) {
             const d = await work("変更しています", () => api("POST", "/api/v2/inside/replace", { number: S.number, plan: PLAN }, { rows: inner, numbers }));

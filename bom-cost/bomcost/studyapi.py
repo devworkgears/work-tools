@@ -508,7 +508,7 @@ class StudyApi:
         self.store.save_main(_number(params), body.get("main_product"))
         return self.targets({"number": _number(params)})
 
-    # ⑪ 部品変更（変えた後の構成の部品を並べ、品番を打ち替えると全製品で置き換える） -------------------
+    # 全階層の部品（⑧の［一括置換］の全階層: 変えた後の構成の部品を全階層で並べ、選んだ箇所を置き換える） -------------------
 
     def after_parts(self, params: dict[str, str]) -> "Response":
         ws = self._ws(params)
@@ -532,20 +532,26 @@ class StudyApi:
         return self.after_parts({"number": _number(params), "plan": self._plan(params)})
 
     def replace_inside(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
-        """組立品の中の置き換え。新しい品番が要る組立品には、自動で品番を付ける（made）。"""
+        """組立品の中の置き換え。新しい品番が要る組立品には、numbers か自動の品番を付ける（made）。check: true なら書かずに断るかだけを見る。"""
         number, plan = _number(params), self._plan(params)
         numbers = body.get("numbers")
-        result = self._edit_inside(number, plan, _objects(body, "rows"), numbers if isinstance(numbers, dict) else None)
+        result = self._edit_inside(number, plan, _objects(body, "rows"), numbers if isinstance(numbers, dict) else None, body.get("check") is True)
+        if body.get("check") is True:
+            return self._json(result)
         return self._json({**self.after_parts({"number": number, "plan": plan}).json(), **result})
 
-    def _edit_inside(self, number: str, plan: str, rows: list[dict[str, Any]], numbers: Mapping[str, Any] | None = None) -> dict[str, Any]:
-        """numbers は、新しい品番が要る組立品 → 付ける品番（画面で聞いた物）。無い組立品は自動の品番。"""
+    def _edit_inside(self, number: str, plan: str, rows: list[dict[str, Any]], numbers: Mapping[str, Any] | None = None,
+                     check: bool = False) -> dict[str, Any]:
+        """numbers は、自動の品番（needs の suggested。前の形の元品番も読む）→ 付ける品番（画面で聞いた物）。無い物は自動の品番。
+        check なら、断る物が無いかを見るだけで書かない。"""
         ws = self.store.workspace(number)
         rebuild = Rebuild(ws, plan, input_edits(ws, rows))
         given = numbers or {}
-        made = [{"code": n["code"], "new": str(given.get(n["code"]) or n["suggested"]).strip(), "name": n["name"], "typed": n["typed"]}
-                for n in rebuild.needs()]
+        made = [{"code": n["code"], "new": str(given.get(n["suggested"]) or given.get(n["code"]) or n["suggested"]).strip(),
+                 "name": n["name"], "typed": n["typed"]} for n in rebuild.needs()]
         change = rebuild.change(made)
+        if check:
+            return {"made": made, "typed": []}
         self.store.save_inside(ws, plan, change.added, change.lines, change.picks)
         # 材料費を打ってある仮品番は、中を替えても金額が変わらない
         return {"made": made, "typed": [t.code for t in ws.temps if t.code in change.lines and t.material is not None]}

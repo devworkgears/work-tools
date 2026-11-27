@@ -316,6 +316,18 @@ class LevelApi(unittest.TestCase):
         self.assertEqual([(m["code"], m["new"]) for m in made], [("U", "U-NEW")])
         self.assertEqual([r["code"] for r in self.ok("GET", "/api/v2/temp-items")["rows"]], ["U-NEW"])
 
+    def test_a_check_writes_nothing_and_the_answer_is_keyed_by_the_suggested_code(self) -> None:
+        # 一括置換の全階層は、直下を書く前に中の分を check で試す。断られる品番なら、ここで止まって何も書かない
+        rows = [{"path": ["U"], "old": "K", "new": "N", "balloon": "11"}]
+        refused = self.api.handle("POST", "/api/v2/inside/replace", self.q, json.dumps({"rows": rows, "numbers": {"U-K1": "S"}, "check": True}).encode())
+        self.assertEqual(refused.status, 400)
+        checked = self.ok("POST", "/api/v2/inside/replace", {"rows": rows, "numbers": {"U-K1": "U-OK"}, "check": True})
+        self.assertEqual([(m["code"], m["new"]) for m in checked["made"]], [("U", "U-OK")])
+        self.assertEqual(self.ok("GET", "/api/v2/temp-items")["rows"], [])
+        # 窓の答えは自動の品番をキーにする（同じ元品番が中身違いで2つ出ても取り違えない）
+        made = self.ok("POST", "/api/v2/inside/replace", {"rows": rows, "numbers": {"U-K1": "U-OK"}})["made"]
+        self.assertEqual([(m["code"], m["new"]) for m in made], [("U", "U-OK")])
+
     def test_the_bulk_replace_over_all_levels_asks_the_new_code_too(self) -> None:
         # 一括置換の全階層: 組立品の中の行（path の形）でも、先に候補を聞いて、選んだ品番で入れる
         rows = [{"path": ["U"], "old": "K", "new": "N", "balloon": "11"}]
@@ -672,8 +684,9 @@ class RefuseDeletingUsedTemps(LevelCase):
         self.store.save_temps(self.number, [{"code": "T1", "base": "U"}, {"code": "T2"}, {"code": "T3"}])
         self.store.save_temp_lines(self.number, "T1", [{"balloon": "11", "part": "T2", "quantity": "2"}, {"balloon": "12", "part": "V", "quantity": "1"}])
         self.store.apply_places(self.number, "A", [{"product": "P1", "balloon": "3", "old": "S", "new": "T3"}])
-        for keep, busy in (([{"code": "T1", "base": "U"}, {"code": "T2"}], "T3"), ([{"code": "T1", "base": "U"}, {"code": "T3"}], "T2")):
-            with self.subTest(busy=busy), self.assertRaisesRegex(ValueError, f"仮品番 {busy} は構成変更で使っているので消せません"):
+        for keep, message in (([{"code": "T1", "base": "U"}, {"code": "T2"}], "仮品番 T3 は構成変更で使っているので消せません"),
+                              ([{"code": "T1", "base": "U"}, {"code": "T3"}], "仮品番 T2 は、仮品番 T1 の中で使っているので消せません")):
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
                 self.store.save_temps(self.number, keep)
         self.assertEqual(self.codes(), ["T1", "T2", "T3"])
         # 使っている仮品番も、品番の打ち替えはできる（使っている所も替わる）

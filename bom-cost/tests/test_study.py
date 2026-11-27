@@ -215,7 +215,7 @@ class SamePlace(StudyCase):
         self.assertEqual(self.changes(), {("P1", "1", "K120"): ("B1", "2"), ("P1", "1", "S50"): ("B1", "3")})
         row = calculate(self.store.workspace(self.number), CostHead.MATERIAL)["rows"][0]
         self.assertEqual((row["now"], row["plans"]["A"]), (Decimal(290), Decimal(25)))
-        # 部品変更では1つに見え、どちらの箇所かは構成変更で指す
+        # 品番だけで見ると1つに見え、どちらの箇所かは構成変更で指す
         places = [p for p in after_places(self.store.workspace(self.number), "A") if p.product == "P1"]
         self.assertEqual([(p.part, p.quantity, p.was, p.before) for p in places], [("B1", Decimal(5), ["K120", "S50"], Decimal(5))])
         with self.assertRaisesRegex(ValueError, "構成変更"):
@@ -494,7 +494,7 @@ class Calculation(StudyCase):
         self.assertEqual(rows["P2"]["plans"], {"A": Decimal(320), "B": Decimal(250)})
         self.assertEqual(result["impact"]["A"], Decimal(40) * 1000 + Decimal(40) * 500)
         self.assertTrue(result["impact_incomplete"]["A"])  # P3 は年間台数が無い
-        # 台数の加重平均は、年間の影響に入れた P1・P2 の台数（1000＋500）で割る。台数の無い P3 は分母に入れない
+        # 1台あたりの平均の増減は、年間の影響に入れた P1・P2 の台数（1000＋500）で割る。台数の無い P3 は分母に入れない
         self.assertEqual(result["weighted"]["A"], Decimal(40))
         self.assertEqual(result["weighted"]["B"], Decimal(-30) * 500 / 1500)  # P2 は 280 → 250、P1 は差 0 でも分母に入る
 
