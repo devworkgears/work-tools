@@ -30,7 +30,7 @@ body {
 .modebar { background: var(--head); border-radius: 8px; padding: 8px 12px; }
 .mini { font-size: 11px; color: var(--sub); }
 .sp { flex: 1; }
-label.f { display: flex; flex-direction: column; font-size: 11px; color: var(--sub); gap: 2px; }
+label.f, div.f { display: flex; flex-direction: column; font-size: 11px; color: var(--sub); gap: 2px; }
 .in, select.in, input.in {
   border: 1px solid var(--line); border-radius: 5px; background: var(--panel); color: var(--ink);
   padding: 4px 8px; min-width: 90px; font: inherit;
@@ -51,6 +51,14 @@ label.f { display: flex; flex-direction: column; font-size: 11px; color: var(--s
   cursor: pointer; font-family: inherit; color: var(--ink);
 }
 .chip.on { background: var(--soft); border-color: var(--accent); color: var(--accent); }
+.checkwrap { position: relative; display: inline-block; }
+.in.pick { min-width: 150px; text-align: left; cursor: pointer; font-family: inherit; }
+.checks {
+  position: absolute; z-index: 20; top: 100%; left: 0; margin-top: 2px; min-width: 240px; max-height: 320px; overflow: auto;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 6px; box-shadow: var(--shadow); padding: 6px 10px; white-space: nowrap; color: var(--ink); font-size: 12px;
+}
+.checks label { display: flex; gap: 6px; align-items: center; padding: 2px 0; cursor: pointer; }
+.checks label.all { border-bottom: 1px solid var(--line); margin-bottom: 4px; padding-bottom: 4px; }
 .modebar .chip { padding: 6px 18px; font-size: 14px; font-weight: 600; border-radius: 18px; }
 .pill { display: inline-block; border-radius: 10px; padding: 0 8px; font-size: 11px; font-weight: 600; }
 .pill.warn { background: var(--warn-bg); color: var(--warn); }

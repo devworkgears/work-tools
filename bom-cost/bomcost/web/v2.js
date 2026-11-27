@@ -1339,6 +1339,54 @@ function balloonOrder(a, b) {
   return (a === null) - (b === null) || (a ?? "").localeCompare(b ?? "", "ja", { numeric: true });
 }
 
+// いくつも選べる一覧。押すとチェックの一覧が開く。何も選んでいない時と全部選んだ時は、全部（set([])）
+// options() → [[値, 見せる文字]]・get() → 選んだ値（空は全部）・set(選んだ値)。draw() で見せ方を今の値に合わせる
+function checkList(options, get, set) {
+  const label = el("span");
+  const panel = el("div", { class: "checks" });
+  panel.hidden = true;
+  let checked = new Set();
+  const values = () => options().map(([v]) => v);
+  const drawLabel = () => {
+    const on = get();
+    label.textContent = !on.length ? `全部（${values().length}）` : on.length === 1 ? on[0] : `${on[0]} ほか ${on.length - 1}`;
+  };
+  const apply = () => {
+    set(checked.size === 0 || checked.size === values().length ? [] : values().filter((v) => checked.has(v)));
+    drawLabel();
+    drawPanel();
+  };
+  const box = (on, change) => {
+    const input = el("input", { type: "checkbox" });
+    input.checked = on;
+    input.addEventListener("change", () => change(input.checked));
+    return input;
+  };
+  const drawPanel = () => {
+    const all = values().every((v) => checked.has(v));
+    fill(panel, [
+      el("label", { class: "all" }, box(all, (on) => { checked = new Set(on ? values() : []); apply(); }), "全部"),
+      options().map(([v, text]) => el("label", {}, box(checked.has(v), (on) => { on ? checked.add(v) : checked.delete(v); apply(); }), text))]);
+  };
+  const button = el("button", { class: "in pick", type: "button", onclick: () => {
+    panel.hidden = !panel.hidden;
+    if (!panel.hidden) {
+      checked = new Set(get().length ? get() : values());
+      drawPanel();
+    }
+  } }, label, " ▾");
+  const wrap = el("span", { class: "checkwrap" }, button, panel);
+  document.addEventListener("mousedown", (e) => { if (!wrap.contains(e.target)) panel.hidden = true; });
+  wrap.draw = () => {
+    drawLabel();
+    if (!panel.hidden) { // 開いている間は、外した途中の状態を残す（読み直しで無くなった値だけ落とす）
+      checked = new Set(values().filter((v) => checked.has(v)));
+      drawPanel();
+    }
+  };
+  return wrap;
+}
+
 function movedSlot(s) {
   return s.now !== s.part || !same(s.before, s.quantity);
 }
@@ -1347,7 +1395,10 @@ function movedSlot(s) {
 async function structureView(key, redraw) {
   const child = PARAMS.has("parents") ? { bases: PARAMS.get("parents").split(","), range: JSON.parse(PARAMS.get("range")) } : null;
   // 選んでいる図面・親は、ほかの窓の保存で描き直しても残す
-  const view = (S.structure ??= {})[key] ??= { drawing: child ? child.range[0] : null, parent: "" };
+  // picked は選んだ製品（組立品の窓では組立品）。空は全部
+  const view = (S.structure ??= {})[key] ??= { drawing: child ? child.range[0] : null, picked: [] };
+  view.picked ??= [];
+  const rangePicked = child ? [child.range[1] || []].flat() : null; // 前の形の窓の URL（製品1つか空）も読む
   let data = { drawing: null, drawings: [], products: [], main_product: null, direct: {}, inside: {}, bases: {}, items: {} };
   let parents = [];
   const base = (code) => data.bases[code] ?? code;
@@ -1356,8 +1407,8 @@ async function structureView(key, redraw) {
     get data() { return data; },
     get parents() { return parents; },
     // 打ち替えが効く製品
-    range: () => data.products.filter((p) => (child ? !child.range[1] || p === child.range[1] : !view.parent || p === view.parent)),
-    columns: () => parents.filter((p) => !view.parent || p === view.parent),
+    range: () => data.products.filter((p) => { const set = child ? rangePicked : view.picked; return !set.length || set.includes(p); }),
+    columns: () => parents.filter((p) => !view.picked.length || view.picked.includes(p)),
     all: (parent) => (child ? data.inside[parent] : data.direct[parent]) || [],
     slots: (parent) => me.all(parent).filter((s) => !s.lost), // 現行の品番が無くなった箇所を除く
     name: (code) => (data.items[code] ? data.items[code].name + (data.items[code].temp ? "（仮）" : "") : ""),
@@ -1377,10 +1428,11 @@ async function structureView(key, redraw) {
       if (view.drawing === null) view.drawing = data.drawing ?? "";
       parents = child ? inRange() : data.products;
       // 中を変えた組立品は品番が替わるので、流用元が同じ物を選び直す
-      if (view.parent && !parents.includes(view.parent)) view.parent = parents.find((p) => base(p) === base(view.parent)) || "";
+      view.picked = [...new Set(view.picked.map((x) => (parents.includes(x) ? x : parents.find((p) => base(p) === base(x)))).filter(Boolean))];
+      if (view.picked.length === parents.length) view.picked = [];
       fill(drawingPick, data.drawings.map((d) => el("option", { value: d.drawing, selected: d.drawing === view.drawing }, `${d.drawing || "（なし）"}（${d.count} 製品）`)),
         data.drawings.length > 1 ? el("option", { value: "*", selected: view.drawing === "*" }, `全部（${S.targets.length} 製品）`) : null);
-      fill(parentPick, el("option", { value: "" }, "全部"), parents.map((p) => el("option", { value: p, selected: p === view.parent }, `${p} ${me.name(p)}`)));
+      parentPick.draw();
       if (child) users.textContent = `使用製品 ${usedBy()}`;
       return true;
     },
@@ -1433,7 +1485,7 @@ async function structureView(key, redraw) {
         for (const p of me.columns()) for (const s of me.slots(p)) if (s.balloon === row.balloon && data.inside[s.part] && Number(s.quantity) !== 0) bases.add(base(s.part));
       }
       const list = [...bases].sort();
-      const range = child ? child.range : [view.drawing, view.parent];
+      const range = child ? child.range : [view.drawing, view.picked];
       if (!openWindow(key, { parents: list.join(","), range: JSON.stringify(range) }, `-${list.join("-").replace(/[^A-Za-z0-9-]/g, "_")}`)) alert("窓を開けませんでした（ブラウザの設定で、別の窓を許してください）");
     },
   };
@@ -1458,16 +1510,16 @@ async function structureView(key, redraw) {
   const norm = (s) => clean(s).toLowerCase();
   const drawingPick = el("select", { class: "in", onchange: () => {
     view.drawing = drawingPick.value;
-    view.parent = "";
+    view.picked = [];
     work("読み込んでいます", async () => {
       await me.load();
       redraw();
     }).catch(fail);
   } });
-  const parentPick = el("select", { class: "in", onchange: () => {
-    view.parent = parentPick.value;
+  const parentPick = checkList(() => parents.map((p) => [p, `${p} ${me.name(p)}`]), () => view.picked, (list) => {
+    view.picked = list;
     redraw();
-  } });
+  });
   const users = el("span", { class: "mini" });
   const codeBox = el("input", { class: "in" });
   const nameBox = el("input", { class: "in" });
@@ -1477,7 +1529,7 @@ async function structureView(key, redraw) {
     only.classList.toggle("on", me.only);
     redraw();
   } }, "変更行のみ");
-  me.picks = [child ? null : el("label", { class: "f" }, "図面", drawingPick), el("label", { class: "f" }, child ? "組立品" : "製品", parentPick)];
+  me.picks = [child ? null : el("label", { class: "f" }, "図面", drawingPick), el("div", { class: "f" }, child ? "組立品" : "製品", parentPick)]; // label で包むと、中のチェックを押した時に一覧のボタンも押される
   me.filters = [el("label", { class: "f" }, "品番", codeBox), el("label", { class: "f" }, "名称", nameBox)];
   me.onlyButton = only;
   me.users = child ? users : null;
