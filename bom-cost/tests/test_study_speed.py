@@ -5,6 +5,7 @@ import sqlite3
 import tempfile
 import time
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 import example_settings  # noqa: F401
@@ -55,11 +56,9 @@ class KeptBom(unittest.TestCase):
         self.assertIn("Z", self.store.load_bom().items)
 
     def test_another_connection_is_seen(self) -> None:
-        with tempfile.TemporaryDirectory() as folder:
-            path = Path(folder) / "t.sqlite"
-            a, b = sqlite3.connect(path), sqlite3.connect(path)
-            self.addCleanup(a.close)
-            self.addCleanup(b.close)
+        # 接続は一時フォルダを消す前に閉じる（Windows は開いているファイルを消せない）
+        with tempfile.TemporaryDirectory() as folder, closing(sqlite3.connect(Path(folder) / "t.sqlite")) as a, \
+                closing(sqlite3.connect(Path(folder) / "t.sqlite")) as b:
             first = StudyStore(a)
             first.replace_bom(bom(), ALL)
             self.assertNotIn("Z", first.load_bom().items)
