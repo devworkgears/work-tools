@@ -2221,18 +2221,12 @@ async function rewriteScreen(main, cur) {
           const body = me.child ? { inside: top } : { replace: top };
           if (await work("変更しています", () => send("/api/v2/structure", body, `${top.length} 箇所を ${to} に替えました`)) === false) return;
         } else {
-          // 直下を先に、組立品の中は後に（中を替えると上の組立品に新しい品番が要るので、入れる前に聞く）
+          // 組立品の中を替えると上の組立品に新しい品番が要るので、何も入れる前に聞く（やめたら何も入れない）。入れるのは直下が先、中は後
+          const fresh = inner.length ? (await api("POST", "/api/v2/structure/needs", { number: S.number, plan: PLAN }, { rows: inner })).needs.filter((n) => n.fresh) : [];
+          const numbers = fresh.length ? await askNumbers(fresh) : {};
+          if (numbers === null) return done("やめました");
           if (top.length) await work("変更しています", () => api("POST", "/api/v2/replace/apply", { number: S.number, plan: PLAN }, { rows: top }));
           if (inner.length) {
-            const fresh = (await api("POST", "/api/v2/structure/needs", { number: S.number, plan: PLAN }, { rows: inner })).needs.filter((n) => n.fresh);
-            const numbers = fresh.length ? await askNumbers(fresh) : {};
-            if (numbers === null) {
-              done(top.length ? `直下の ${top.length} 箇所だけを替えました（組立品の中はやめました）` : "やめました");
-              tell("saved");
-              box.close();
-              await refresh();
-              return;
-            }
             const d = await work("変更しています", () => api("POST", "/api/v2/inside/replace", { number: S.number, plan: PLAN }, { rows: inner, numbers }));
             done(`${top.length + inner.length} 箇所を ${to} に替えました${madeText(d)}`);
           } else done(`${top.length} 箇所を ${to} に替えました`);
