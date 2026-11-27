@@ -478,7 +478,7 @@ class StudyApi:
             "plans": ws.plan_ids(),
             "targets": ws.targets,
             "problems": problem_count(ws),
-            "variations": variation_bases(ws),  # バリエーション → 元の製品
+            "variations": variation_bases(ws),  # バリエーション → 直下に持つ製品
         })
 
     # ③ 対象品番 -------------------------------------------------------------
@@ -561,24 +561,24 @@ class StudyApi:
         """図面が同じ対象品番の構成: 製品ごとの直下の箇所・組立品の中の箇所（全階層）・出てくる品番の名称など。
 
         drawing が無ければ主対象（無ければ先頭の製品）の図面、blank=1 なら図面の無い製品、all=1 なら対象品番の全部。
-        kind=product（⑧）ならバリエーションを除く。variation（元の製品）があれば、その元の製品のバリエーションだけを出し、
-        直下から元の製品の行を除く（⑪バリエーション。足し引きの行だけになる）。
+        kind=product（⑧）ならバリエーションを除く。variation=1 なら対象品番のバリエーションだけを全部出し、
+        直下から、直下に持つ製品の行を除く（⑪バリエーション。足し引きの行だけになる）。
         """
         ws = self._ws(params)
         plan = self._plan(params)
         variations = variation_bases(ws)
-        base = params.get("variation", "").strip() or None
-        pool = ([p for p in ws.targets if variations.get(p) == base] if base is not None
+        only_variations = params.get("variation") == "1"
+        pool = ([p for p in ws.targets if p in variations] if only_variations
                 else [p for p in ws.targets if p not in variations] if params.get("kind") == "product" else ws.targets)
         drawings = {p: ws.attribute(p, "drawing") for p in pool}
         first = ws.main_product if ws.main_product in drawings else next(iter(pool), None)
         drawing = params.get("drawing") or ("" if params.get("blank") == "1" else drawings.get(first or "", ""))
-        if params.get("all") == "1" or base is not None:
+        if params.get("all") == "1" or only_variations:
             drawing = None
         products = [p for p in pool if drawing in (None, drawings[p])]
         found = structure(ws, plan, products)
-        if base is not None:
-            found.direct.update({p: [s for s in lines if s.part != base and s.now != base] for p, lines in found.direct.items()})
+        if only_variations:
+            found.direct.update({p: [s for s in lines if variations[p] not in (s.part, s.now)] for p, lines in found.direct.items()})
         short = variation_shortfalls(ws, plan) if variations else {}
         items = ws.bom.items
 
@@ -591,14 +591,10 @@ class StudyApi:
                     for s in lines]
 
         everything = [s for lines in (*found.direct.values(), *found.inside.values()) for s in lines]
-        codes = dict.fromkeys([*products, *(c for s in everything for c in (s.now, s.part) if c is not None),
-                               *variations.values()])
-        counts = Counter(variations.values())
+        codes = dict.fromkeys([*products, *(c for s in everything for c in (s.now, s.part) if c is not None)])
         return self._json({
             "drawing": drawing, "drawings": [{"drawing": d, "count": n} for d, n in Counter(drawings.values()).items()],
             "products": products, "main_product": ws.main_product,
-            # ⑪ の元の製品の選択肢（target＝元の製品も対象品番で、変えた後が効く）
-            "variation": base, "variation_bases": [{"code": b, "count": n, "target": b in ws.targets} for b, n in counts.items()],
             "direct": {p: rows(p, lines) for p, lines in found.direct.items()},
             "inside": {code: rows(None, lines) for code, lines in found.inside.items()},
             "bases": {t.code: t.base for t in ws.temps if t.base is not None and t.code in ws.temp_merged},

@@ -3,7 +3,7 @@
 
 // ⑧ 品番と数量を、その欄で打ち替える。品番は行に出ている親の全部に、数量は親ごとに効く。空にすると現行に戻る。
 // 親が組立品なら、中を変えた組立品に新しい品番が付き（サーバが決める）、開いた時に出していた製品の範囲に効く
-// key 11 は⑪バリエーション: 同じ表で、元の製品を除いた足し引きの行を打つ（元の製品の部品を引く行はマイナスの数）
+// key 11 は⑪バリエーション: 同じ表で、直下の製品の行を除いた足し引きの行を打つ（その製品の部品を引く行はマイナスの数）
 async function rewriteScreen(main, cur, key = 8) {
   const ro = !canWrite();
   let rows = [];
@@ -54,7 +54,7 @@ async function rewriteScreen(main, cur, key = 8) {
     draw();
   });
   restart();
-  const minus = key === 11 && !me.child; // バリエーションの直下は、元の製品の部品をマイナスの数で引く
+  const minus = key === 11 && !me.child; // バリエーションの直下は、直下の製品の部品をマイナスの数で引く
   const parents = () => me.columns();
   // 列: 番号・風船・サブ番号・品番・名称・仕様・状態・子・一律、その右に親ごとの数量
   const [BALLOON, BRANCH, PART, NAME, SPEC, STATE, LOWER, UNIFORM] = [1, 2, 3, 4, 5, 6, 7, 8]; // 一律は足しかけの行だけ打てる。打つと出ている親の全部に同じ数量が入る
@@ -106,7 +106,7 @@ async function rewriteScreen(main, cur, key = 8) {
       const changed = !same(s.before, s.quantity);
       const shown = zero || Number(s.quantity) !== 0;
       return { text: shown ? fmt(s.quantity) : "", edit: shown ? s.quantity : "", editable: !ro, cls: "r q" + edge + (s.problem ? " bad" : changed ? " own" : ""),
-        title: s.short ? "元の製品の変更で、この部品の数がマイナスになる（ここで直す）" : s.problem ? "要確認（変更一覧）" : changed && s.before !== null ? `現行 ${fmt(s.before)}` : null };
+        title: s.short ? "マイナス" : s.problem ? "要確認（変更一覧）" : changed && s.before !== null ? `現行 ${fmt(s.before)}` : null };
     },
     set(r, c, text) {
       if (c < BALLOON || (c > PART && c < left && c !== UNIFORM)) return;
@@ -588,7 +588,7 @@ async function rewriteScreen(main, cur, key = 8) {
       draw();
     })], [
     el("div", { class: "row" }, me.picks, me.filters, showGroup(me.onlyToggle, zeroToggle), me.users, me.note),
-    me.baseLine, body, nowLine,
+    body, nowLine,
   ]));
   draw();
   grid.firstEditable();

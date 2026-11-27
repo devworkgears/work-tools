@@ -589,19 +589,20 @@ def where_used(bom: Version, part: str, targets: Sequence[str]) -> tuple[list[st
 
 
 def variation_bases(ws: Workspace) -> dict[str, str]:
-    """対象品番のバリエーション → 元の製品。
+    """対象品番のバリエーション → 直下に持つ製品（その製品の変更がバリエーションにも効く）。
 
-    桁数が設定にあれば、その桁数の品番だけを見る。元の製品は直下の製品、無ければ（桁数がある時だけ）直下の最初の組立品。
+    バリエーションは、設定の桁数の品番で、直下に品番の頭が同じ製品を持つ物（例 10桁の品番の直下に、頭8桁の製品）。
+    桁数が設定に無ければ、バリエーションは無い。
     """
     digits = settings.variation_digits()
-    known = set(ws.bom.volumes) | set(ws.targets) | set(ws.conditions)
+    if digits is None:
+        return {}
     out: dict[str, str] = {}
     for v in ws.targets:
-        if digits is not None and len(v) != digits:
+        if len(v) != digits:
             continue
-        held = [line.child for line in ws.bom.children(v, by_balloon=True)
-                if line.child != v and line.quantity > 0 and ws.bom.children(line.child)]
-        base = next((c for c in held if c in known), held[0] if held and digits is not None else None)
+        base = next((line.child for line in ws.bom.children(v, by_balloon=True)
+                     if line.child != v and line.quantity > 0 and v.startswith(line.child)), None)
         if base is not None:
             out[v] = base
     return out

@@ -133,8 +133,7 @@ function movedSlot(s) {
 // 組立品の中の窓は、親（流用元の品番）と、開いた時に出していた製品の範囲（図面・製品）を URL に持つ
 async function structureView(key, redraw) {
   const child = PARAMS.has("parents") ? { bases: PARAMS.get("parents").split(","), range: JSON.parse(PARAMS.get("range")) } : null;
-  const VARIATION = key === 11; // ⑪バリエーション（⑧と同じ表で、足し引きの行だけ）
-  const baseLine = el("div", { class: "nowline" });
+  const VARIATION = key === 11; // ⑪バリエーション（⑧と同じ表で、対象品番のバリエーション全部の足し引きの行だけ）
   // 選んでいる図面・親は、ほかの窓の保存で描き直しても残す
   // picked は選んだ製品（組立品の窓では組立品）。空は全部
   const view = (S.structure ??= {})[key] ??= { drawing: child ? child.range[0] : null, picked: [] };
@@ -160,20 +159,13 @@ async function structureView(key, redraw) {
     // busy が真なら、読んだ物を使わずに false を返す（打っている間に行と列を入れ替えない）
     async load(busy = () => false) {
       if (!S.number) return true;
-      // ⑪は図面の代わりに元の製品で選ぶ（view.drawing に元の製品を持つ）。⑧はバリエーションを出さない
-      if (VARIATION && view.drawing === null) view.drawing = Object.values(S.variations || {})[0] ?? "";
-      const range = VARIATION ? { variation: view.drawing }
+      // ⑪は図面で選ばずにバリエーションを全部出す。⑧はバリエーションを出さない
+      const range = VARIATION ? { variation: "1" }
         : view.drawing === null ? {} : view.drawing === "*" ? { all: "1" } : view.drawing === "" ? { blank: "1" } : { drawing: view.drawing };
       const got = await api("GET", "/api/v2/structure", q({ plan: PLAN, ...range, ...(key === 8 ? { kind: "product" } : {}) }));
       if (busy()) return false;
       data = got;
-      if (VARIATION) {
-        const first = data.variation_bases[0];
-        if (!data.products.length && !child && first && first.code !== view.drawing) { // 対象品番から外れた元の製品
-          view.drawing = first.code;
-          return me.load(busy);
-        }
-      } else if (!data.products.length && view.drawing !== null && !child) { // 対象品番から外れた図面
+      if (!VARIATION && !data.products.length && view.drawing !== null && !child) { // 対象品番から外れた図面
         view.drawing = null;
         return me.load(busy);
       }
@@ -182,13 +174,7 @@ async function structureView(key, redraw) {
       // 中を変えた組立品は品番が替わるので、流用元が同じ物を選び直す
       view.picked = [...new Set(view.picked.map((x) => (parents.includes(x) ? x : parents.find((p) => base(p) === base(x)))).filter(Boolean))];
       if (view.picked.length === parents.length) view.picked = [];
-      if (VARIATION) {
-        fill(drawingPick, data.variation_bases.map((b) => el("option", { value: b.code, selected: b.code === view.drawing }, `${b.code} ${me.name(b.code)}（${b.count} 件）`)));
-        const at = data.variation_bases.find((b) => b.code === view.drawing);
-        // 元の製品は表に入れず、上に1行で出す。対象品番なら⑧で変えた後、ほかは現行
-        fill(baseLine, at ? [el("b", {}, `元の製品 ${at.code} ${me.name(at.code)}（${at.target ? "変更後" : "現行"}）`),
-          el("span", { class: "mini" }, at.target ? "　⑧で直した物。ここでは変えない" : "　対象品番に無いので変えない")] : "");
-      } else {
+      if (!VARIATION) {
         fill(drawingPick, data.drawings.map((d) => el("option", { value: d.drawing, selected: d.drawing === view.drawing }, `${d.drawing || "（なし）"}（${d.count} 製品）`)),
           data.drawings.length > 1 ? el("option", { value: "*", selected: view.drawing === "*" }, `全部（${S.targets.length} 製品）`) : null);
       }
@@ -288,9 +274,8 @@ async function structureView(key, redraw) {
     me.only = on;
     redraw();
   });
-  me.picks = [child ? null : el("label", { class: "f" }, VARIATION ? "元の製品" : "図面", drawingPick),
+  me.picks = [child || VARIATION ? null : el("label", { class: "f" }, "図面", drawingPick),
     el("div", { class: "f" }, child ? "組立品" : VARIATION ? "バリエーション" : "製品", parentPick)]; // label で包むと、中のチェックを押した時に一覧のボタンも押される
-  me.baseLine = VARIATION && !child ? baseLine : null;
   me.filters = [el("label", { class: "f" }, "品番", codeBox), el("label", { class: "f" }, "名称", nameBox)];
   me.onlyToggle = only;
   me.users = child ? users : null;

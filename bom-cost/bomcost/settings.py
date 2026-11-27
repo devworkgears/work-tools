@@ -43,7 +43,7 @@ class Settings:
     part_kind: str = ""
     mold_years: Decimal | None = None
     labels: Mapping[str, str] = field(default_factory=dict)  # 画面と取り込みの見出しの語 → 使う語
-    # バリエーション（製品を直下に持つ製品）の品番の桁数。空なら部品表の形だけで見分ける
+    # バリエーションの品番の桁数。この桁数の品番で、直下に品番の頭が同じ製品を持つ物がバリエーション。空ならバリエーションは無い
     variation_digits: int | None = None
 
     def to_json(self) -> dict[str, Any]:
