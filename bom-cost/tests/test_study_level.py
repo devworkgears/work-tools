@@ -271,6 +271,17 @@ class LevelApi(unittest.TestCase):
         back = self.ok("GET", "/api/v2/temp-inside", query=self.q + "&code=T1")["rows"]
         self.assertEqual(sorted((r["part"], r["quantity"]) for r in back), [("N", "1"), ("S", "1"), ("V", "1")])
 
+    def test_the_new_code_of_an_assembly_is_asked_before_it_is_made(self) -> None:
+        # ⑧ の組立品の中の窓: 入れる前に、付く品番の候補を書かずに返し、画面で選んだ品番で入れる
+        edit = [{"parent": "U", "products": ["P1", "P2"], "balloon": "11", "old": "K", "new": "N"}]
+        before = self.ok("GET", "/api/v2/temp-items")["rows"]
+        needs = self.ok("POST", "/api/v2/structure/needs", {"inside": edit})["needs"]
+        self.assertEqual([(n["code"], n["suggested"], n["fresh"]) for n in needs], [("U", "U-K1", True)])
+        self.assertEqual(self.ok("GET", "/api/v2/temp-items")["rows"], before)  # 聞くだけでは何も書かない
+        made = self.ok("POST", "/api/v2/structure", {"inside": edit, "numbers": {"U": "U-NEW"}})["made"]
+        self.assertEqual([(m["code"], m["new"]) for m in made], [("U", "U-NEW")])
+        self.assertEqual([r["code"] for r in self.ok("GET", "/api/v2/temp-items")["rows"]], ["U-NEW"])
+
     def test_excel_gets_a_sheet_only_when_a_temp_has_changes_inside(self) -> None:
         def book():
             return load_openpyxl().load_workbook(io.BytesIO(self.api.handle("GET", "/api/v2/export/study", self.q).body))

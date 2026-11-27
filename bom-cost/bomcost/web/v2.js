@@ -1424,6 +1424,37 @@ function checkList(options, get, set) {
   return wrap;
 }
 
+// 組立品の中を変えた時に取る新しい品番を聞く窓。needs は { code（元品番）, name, suggested（自動の品番） }。
+// 決めたら { 元品番: 新しい品番 }、やめたら null
+function askNumbers(needs) {
+  return new Promise((resolve) => {
+    const inputs = needs.map((n) => el("input", { class: "in", value: n.suggested }));
+    let answered = false;
+    const finish = (value) => {
+      if (answered) return;
+      answered = true;
+      box.close();
+      resolve(value);
+    };
+    const ok = () => {
+      const typed = inputs.map((x) => clean(x.value));
+      if (typed.some((t) => !t)) return alert("新しい品番を入れてください");
+      if (new Set(typed).size !== typed.length) return alert("同じ品番が2つあります");
+      finish(Object.fromEntries(needs.map((n, i) => [n.code, typed[i]])));
+    };
+    for (const x of inputs) x.addEventListener("keydown", (e) => { if (e.key === "Enter") ok(); });
+    const box = dialog("新しい品番", el("table", { class: "list" },
+      el("tr", {}, ["元品番", "名称", "新しい品番"].map((t) => el("th", {}, t))),
+      needs.map((n, i) => el("tr", {}, el("td", {}, n.code), el("td", {}, n.name), el("td", {}, inputs[i])))),
+      [el("button", { class: "btn pri", onclick: ok }, "決定"), el("span", { class: "sp" }), el("button", { class: "btn", onclick: () => finish(null) }, "やめる")]);
+    // ×で閉じた時も、やめたのと同じ
+    const cross = box.overlay.querySelector(".close");
+    if (cross) cross.replaceWith(el("button", { class: "close", onclick: () => finish(null) }, "×"));
+    inputs[0].focus();
+    inputs[0].select();
+  });
+}
+
 function movedSlot(s) {
   return s.now !== s.part || !same(s.before, s.quantity);
 }
@@ -1922,7 +1953,21 @@ async function rewriteScreen(main, cur) {
       if (found.length === 1) carry(lost, found[0]);
     }
   };
+  // 組立品の中を変えると新しい品番が要る時は、入れる前に聞く（自動の品番を入れておく・中身の同じ仮品番がある時は聞かない）。
+  // やめたら入れずに、打った所を戻す（false を返す）
   const send = async (path, payload, text) => {
+    if (payload.inside && payload.inside.length) {
+      const fresh = (await api("POST", "/api/v2/structure/needs", { number: S.number, plan: PLAN }, { inside: payload.inside })).needs.filter((n) => n.fresh);
+      if (fresh.length) {
+        const numbers = await askNumbers(fresh);
+        if (!numbers) {
+          await refresh();
+          done("やめました");
+          return false;
+        }
+        payload = { ...payload, numbers };
+      }
+    }
     const d = await api("POST", path, { number: S.number, plan: PLAN }, payload);
     tell("saved");
     if (me.child) for (const m of d.made || []) follow(m.code, m.new);
@@ -2052,40 +2097,49 @@ async function rewriteScreen(main, cur) {
   const bulkDialog = async () => {
     const at = selected();
     const old = el("input", { class: "in", value: at && !at.draft ? at.part : "" });
+    const oldWord = el("input", { class: "in" }); // 元の部品を名称でも探す（品番と両方入れたら両方に合う物）
     const next = el("input", { class: "in" });
     const oldName = el("span", { class: "mini" });
     const nextName = el("span", { class: "mini" });
     const list = el("div");
-    const off = new Set(); // 替えない風船番号
+    const off = new Set(); // 替えない行（風船番号と元品番の組）
     let every = null; // 対象品番の全部の直下（範囲で選んだ時に読む）
+    let everyItems = {};
+    const nameOf = (code) => (me.data.items[code] || everyItems[code] || {}).name ?? "";
+    const rowKey = (s) => JSON.stringify([s.balloon, s.part]);
     const unit = me.child ? "組立品" : "製品";
     const range = el("select", { class: "in" }, el("option", { value: "here" }, `表示中の${unit}（${parents().length}）`),
       me.child ? null : el("option", { value: "all" }, `全対象品番（${S.targets.length}）`));
     const same = (a, b) => a === b.trim() || clean(a) === clean(b);
+    const fold = (s) => clean(s).toLowerCase();
+    const hit = (s) => (!clean(old.value) || same(s.part, old.value)) && (!clean(oldWord.value) || fold(nameOf(s.part)).includes(fold(oldWord.value)));
     const places = () => {
+      if (!clean(old.value) && !clean(oldWord.value)) return [];
       const slots = range.value === "all" ? Object.entries(every) : parents().map((p) => [p, me.slots(p)]);
-      return slots.flatMap(([parent, found]) => found.filter((s) => !s.lost && same(s.part, old.value) && Number(s.quantity) !== 0).map((s) => [parent, s]));
+      return slots.flatMap(([parent, found]) => found.filter((s) => !s.lost && hit(s) && Number(s.quantity) !== 0).map((s) => [parent, s]));
     };
-    const chosen = () => places().filter(([, s]) => !off.has(s.balloon));
+    // 新品番と同じ品番の箇所は、替えても変わらないので外す
+    const chosen = () => places().filter(([, s]) => !off.has(rowKey(s)) && !same(s.part, next.value));
     const run = el("button", { class: "btn pri", onclick: () => replace().catch(fail) });
     const drawList = () => {
       const found = new Map();
       for (const [parent, s] of places()) {
-        if (!found.has(s.balloon)) found.set(s.balloon, []);
-        found.get(s.balloon).push(parent);
+        if (!found.has(rowKey(s))) found.set(rowKey(s), { s, codes: [] });
+        found.get(rowKey(s)).codes.push(parent);
       }
-      const shown = [...found].sort(([a], [b]) => balloonOrder(a, b));
-      fill(list, shown.length ? el("table", { class: "list" }, el("tr", {}, ["対象", "風船", "サブ番号", "箇所", unit].map((t) => el("th", {}, t))),
-        shown.map(([balloon, codes]) => el("tr", {},
-          el("td", {}, el("input", { type: "checkbox", checked: !off.has(balloon), onchange: (e) => {
-            e.target.checked ? off.delete(balloon) : off.add(balloon);
+      const shown = [...found.values()].sort((a, b) => balloonOrder(a.s.balloon, b.s.balloon) || a.s.part.localeCompare(b.s.part, "ja", { numeric: true }));
+      fill(list, shown.length ? el("table", { class: "list" }, el("tr", {}, ["対象", "風船", "サブ番号", "元品番", "名称", "箇所", unit].map((t) => el("th", {}, t))),
+        shown.map(({ s, codes }) => el("tr", {},
+          el("td", {}, el("input", { type: "checkbox", checked: !off.has(rowKey(s)), onchange: (e) => {
+            e.target.checked ? off.delete(rowKey(s)) : off.add(rowKey(s));
             drawList();
           } })),
-          el("td", {}, balloonText(balloon)), el("td", {}, branchText(balloon)), el("td", { class: "r" }, codes.length),
+          el("td", {}, balloonText(s.balloon)), el("td", {}, branchText(s.balloon)), el("td", {}, s.part), el("td", {}, nameOf(s.part)),
+          el("td", { class: "r" }, codes.length),
           el("td", { title: codes.join("・") }, codes.slice(0, 4).join("・") + (codes.length > 4 ? ` ほか ${codes.length - 4}` : "")))))
-        : el("div", { class: "mini" }, clean(old.value) ? "今の構成にありません" : ""));
+        : el("div", { class: "mini" }, clean(old.value) || clean(oldWord.value) ? "今の構成にありません" : ""));
       run.textContent = `置換（${chosen().length} 箇所）`;
-      run.disabled = !chosen().length || !clean(next.value) || same(old.value, next.value);
+      run.disabled = !chosen().length || !clean(next.value);
     };
     const names = async () => {
       const codes = [old.value.trim(), clean(next.value)];
@@ -2093,7 +2147,7 @@ async function rewriteScreen(main, cur) {
       oldName.textContent = nameCell(codes[0]).text;
       nextName.textContent = nameCell(codes[1]).text;
     };
-    old.addEventListener("input", () => {
+    for (const input of [old, oldWord]) input.addEventListener("input", () => {
       off.clear();
       drawList();
     });
@@ -2101,7 +2155,11 @@ async function rewriteScreen(main, cur) {
     for (const input of [old, next]) input.addEventListener("change", () => names().catch(fail));
     range.addEventListener("change", async () => {
       try {
-        if (range.value === "all" && !every) every = (await api("GET", "/api/v2/structure", q({ plan: PLAN, all: "1" }))).direct;
+        if (range.value === "all" && !every) {
+          const got = await api("GET", "/api/v2/structure", q({ plan: PLAN, all: "1" }));
+          every = got.direct;
+          everyItems = got.items;
+        }
       } catch (e) {
         range.value = "here";
         fail(e);
@@ -2130,7 +2188,8 @@ async function rewriteScreen(main, cur) {
       });
     };
     const box = dialog("一括置換", [
-      el("div", { class: "row" }, el("label", { class: "f" }, "元品番", old), oldName, "→", el("label", { class: "f" }, "新品番", next), nextName,
+      el("div", { class: "row" }, el("label", { class: "f" }, "元品番", old), el("label", { class: "f" }, "元の名称", oldWord), oldName, "→",
+        el("label", { class: "f" }, "新品番", next), nextName,
         el("label", { class: "f" }, "範囲", range)),
       list,
     ], [run, el("span", { class: "sp" }), el("button", { class: "btn", onclick: () => box.close() }, "閉じる")]);
