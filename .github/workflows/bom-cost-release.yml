@@ -84,7 +84,19 @@ jobs:
 
       - name: Run the tests
         working-directory: src/bom-cost
-        run: ../../testpy/python.exe -X utf8 -m unittest discover -s tests
+        # On failure, put the failing tests and the end of the output in an annotation, which the public API can read.
+        run: |
+          set +e
+          ../../testpy/python.exe -X utf8 -m unittest discover -s tests > ../../test.log 2>&1
+          code=$?
+          set -e
+          cat ../../test.log
+          if [ "$code" -ne 0 ]; then
+            msg=$( { grep -E '^(FAIL|ERROR):' ../../test.log; echo ---; tail -n 60 ../../test.log; } \
+              | sed -e 's/%/%25/g' -e 's/\r/%0D/g' | awk '{ printf "%s%%0A", $0 }')
+            echo "::error title=tests failed::$msg"
+            exit "$code"
+          fi
 
       - name: Build the zip
         working-directory: src/bom-cost
