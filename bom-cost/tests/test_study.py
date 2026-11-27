@@ -773,6 +773,8 @@ class StudyApiFlow(unittest.TestCase):
         self.assertEqual(excel.status, 200)
         book = load_openpyxl().load_workbook(io.BytesIO(excel.body))
         self.assertEqual(book.sheetnames, ["まとめ", "金額", "変更ごとの影響", "変更ごとの影響（製品別）", "構成の変更", "構成の明細", "計算条件"])
+        # まとめに説明の行は置かない
+        self.assertFalse([r[0] for r in book["まとめ"].iter_rows(values_only=True) if str(r[0]).startswith("説明")])
         # 製品別は、した事×効く製品の行。足すと、変更ごとの影響の年間の影響になる
         effects = list(book["変更ごとの影響"].iter_rows(min_row=2, values_only=True))
         per_product = list(book["変更ごとの影響（製品別）"].iter_rows(min_row=2, values_only=True))
