@@ -2,9 +2,11 @@
 
 import json
 import unittest
+from dataclasses import replace
 from decimal import Decimal
 
 import example_settings  # noqa: F401
+from bomcost import settings
 from bomcost.api import Api
 from bomcost.model import BomLine, CostHead, CostRow, Item, Version, Volume
 from bomcost.store import Store
@@ -59,6 +61,17 @@ class Finding(VariationCase):
     def test_a_product_with_a_product_below_is_a_variation(self) -> None:
         self.assertEqual(variation_bases(self.ws()), {"V": "P", "W": "P"})
         self.assertEqual(self.ok("GET", "/api/v2/targets")["variations"], {"V": "P", "W": "P"})
+
+    def test_the_digits_in_the_settings_pick_the_variations(self) -> None:
+        before = settings.current()
+        self.addCleanup(settings.use, before)
+        settings.use(replace(before, variation_digits=2))
+        self.assertEqual(variation_bases(self.ws()), {})
+        settings.use(replace(before, variation_digits=1))
+        self.assertEqual(variation_bases(self.ws()), {"V": "P", "W": "P"})
+        self.assertEqual(settings.parse({"variation_digits": "10"}).variation_digits, 10)
+        with self.assertRaisesRegex(ValueError, "整数"):
+            settings.parse({"variation_digits": "1.5"})
 
     def test_the_base_need_not_be_chosen(self) -> None:
         self.ok("PUT", "/api/v2/targets", {"products": ["V"]}, f"number={self.number}")

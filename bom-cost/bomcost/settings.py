@@ -1,4 +1,4 @@
-"""設定（率・品番の桁・区分の記号・型の償却年数・語の読み替え）。DB と同じフォルダの settings.json に置く。
+"""設定（率・品番の桁・バリエーションの品番の桁・区分の記号・型の償却年数・語の読み替え）。DB と同じフォルダの settings.json に置く。
 
 率の既定は無い（入れ忘れたまま計算が通らないように、空なら計算を断る）。ほかの項目は空なら一般の形で動く。
 起動の時に load で読み、設定の画面（/settings/）の保存で書き換える。1つのプロセスで使う設定は1つ。
@@ -43,6 +43,8 @@ class Settings:
     part_kind: str = ""
     mold_years: Decimal | None = None
     labels: Mapping[str, str] = field(default_factory=dict)  # 画面と取り込みの見出しの語 → 使う語
+    # バリエーション（製品を直下に持つ製品）の品番の桁数。空なら部品表の形だけで見分ける
+    variation_digits: int | None = None
 
     def to_json(self) -> dict[str, Any]:
         out: dict[str, Any] = {}
@@ -96,6 +98,11 @@ def parse(data: Any) -> Settings:
         raise ValueError("品番の桁数は3つとも入れるか、3つとも空にしてください")
     if all(digits) and out["code_total"] < out["code_base"] + out["code_branch"]:
         raise ValueError("原価の品番の桁数は、基本の品番と枝番の桁数の合計以上にしてください")
+    if not _blank(data.get("variation_digits")):
+        number = _number(data["variation_digits"], "バリエーションの品番の桁数")
+        if number != number.to_integral_value() or not 0 < number <= 100:
+            raise ValueError(f"バリエーションの品番の桁数は 1 以上の整数で入れてください（{data['variation_digits']}）")
+        out["variation_digits"] = int(number)
     for key in ("product_kind", "part_kind"):
         if not _blank(data.get(key)):
             out[key] = str(data[key]).strip()
@@ -175,6 +182,10 @@ def product_kind() -> str:
 
 def part_kind() -> str:
     return _current.part_kind or PART_KIND
+
+
+def variation_digits() -> int | None:
+    return _current.variation_digits
 
 
 def mold_years() -> Decimal | None:

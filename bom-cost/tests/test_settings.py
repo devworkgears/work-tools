@@ -36,7 +36,7 @@ class Parse(SettingsCase):
                                          "mold_years": "", "labels": {"a": "", " ": "b"}}), settings.Settings())
 
     def test_round_trip(self) -> None:
-        full = settings.Settings(D("2.5"), D(10), 9, 6, 2, "S", "T", D(4), {"系列": "型式"})
+        full = settings.Settings(D("2.5"), D(10), 9, 6, 2, "S", "T", D(4), {"系列": "型式"}, 10)
         self.assertEqual(settings.parse(json.loads(json.dumps(full.to_json()))), full)
 
     def test_wrong_values_are_refused(self) -> None:

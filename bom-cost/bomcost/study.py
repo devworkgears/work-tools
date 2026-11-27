@@ -583,18 +583,25 @@ def where_used(bom: Version, part: str, targets: Sequence[str]) -> tuple[list[st
 
 
 # バリエーション ---------------------------------------------------------------
-# バリエーション＝製品（年間台数のある品目か対象品番）を直下に持つ対象品番。直下のその製品が元の製品で、
-# ほかの直下の行で足し引きする（元の製品の部品を引く行はマイナスの数）。変えるのは選んだ製品だけなので、
+# バリエーション＝設定の桁数の品番の対象品番（桁数が空なら、製品＝年間台数のある品目か対象品番を直下に持つ対象品番）。
+# 直下の製品が元の製品で、ほかの直下の行で足し引きする（元の製品の部品を引く行はマイナスの数）。変えるのは選んだ製品だけなので、
 # 元の製品の変更は、元の製品も対象品番の時だけバリエーションに効く
 
 
 def variation_bases(ws: Workspace) -> dict[str, str]:
-    """対象品番のバリエーション → 元の製品。"""
+    """対象品番のバリエーション → 元の製品。
+
+    桁数が設定にあれば、その桁数の品番だけを見る。元の製品は直下の製品、無ければ（桁数がある時だけ）直下の最初の組立品。
+    """
+    digits = settings.variation_digits()
     known = set(ws.bom.volumes) | set(ws.targets) | set(ws.conditions)
     out: dict[str, str] = {}
     for v in ws.targets:
-        base = next((line.child for line in ws.bom.children(v, by_balloon=True)
-                     if line.child != v and line.child in known and line.quantity > 0 and ws.bom.children(line.child)), None)
+        if digits is not None and len(v) != digits:
+            continue
+        held = [line.child for line in ws.bom.children(v, by_balloon=True)
+                if line.child != v and line.quantity > 0 and ws.bom.children(line.child)]
+        base = next((c for c in held if c in known), held[0] if held and digits is not None else None)
         if base is not None:
             out[v] = base
     return out
