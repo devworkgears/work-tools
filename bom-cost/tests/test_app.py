@@ -3,6 +3,7 @@
 import contextlib
 import io
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -62,6 +63,11 @@ class StaticAndServer(unittest.TestCase):
         self.assertIn("設計検討", index.body.decode("utf-8"))
         for name in ("/v2.js", "/grid.js", "/v2.css"):
             self.assertEqual(static_response(name).status, 200)
+        # 画面の JS は画面ごとのファイルに分けてある。読み込む物が全部出せて、起動は最後に読む
+        scripts = re.findall(r'<script src="([^"]+)"', index.body.decode("utf-8"))
+        self.assertEqual(scripts[-1], "boot.js")
+        for name in scripts:
+            self.assertEqual(static_response("/" + name).status, 200, name)
         for old in ("/v2", "/v2/"):  # 前の版の場所
             self.assertEqual((static_response(old).status, static_response(old).headers["Location"]), (302, "/"))
         for bad in ("/../app.py", "/nothing.js", "/..%2Fapp.py", "/sub/x.js"):
