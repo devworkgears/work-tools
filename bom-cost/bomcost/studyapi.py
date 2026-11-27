@@ -312,6 +312,7 @@ class StudyApi:
             ("GET", r"/api/v2/where-used", self.where_used),
             ("POST", r"/api/v2/release", self.release),
             ("GET", r"/api/v2/export/study", self.export_study),
+            ("GET", r"/api/v2/export/structure", self.export_structure),
         ]
 
     def _json(self, data: Any) -> "Response":
@@ -808,6 +809,11 @@ class StudyApi:
                               None if diff is None or r["annual"] is None else diff * r["annual"], "不完全" if flag else ""])
         order = {p: i for i, p in enumerate(ws.targets)}
         money.sort(key=lambda r: order[r[0]])  # 対象品番の順（同じ品番の中は費目の順のまま）
+        effects = change_effects(ws, plan, changes)
+
+        def new_name(e: dict[str, Any]) -> Any:
+            return settings.word(e["head"]) if e["head"] else e["new_name"]
+
         sheets: list[tuple[str, list[str], list[list[Any]]]] = [
             ("まとめ", ["項目", "値"], [
                 ["検討番号", ws.number], ["版", "仮" if ws.version is None else ws.version],
@@ -817,19 +823,21 @@ class StudyApi:
                 *([f"年間の影響（{h.value}）", results[h]["impact"].get(plan)] for h in HEADS.values()),
                 *([f"年間の影響の現行比％（{h.value}）", _percent(results[h]["impact"].get(plan), results[h]["base"].get(plan))]
                   for h in HEADS.values()),
-                *([f"台数の加重平均（1台あたり・{h.value}）", results[h]["weighted"].get(plan)] for h in HEADS.values()),
+                *([f"1台あたりの平均の増減（年間台数で重み付け・{h.value}）", results[h]["weighted"].get(plan)] for h in HEADS.values()),
                 *([f"説明: {name}", text] for name, text in SHEET_NOTES)]),
-            ("金額", ["対象品番", "名称", "費目", "現行", "変更後", "差", "差（％）", "年間台数", "年間の影響", "不完全"], money),
-            ("変更ごとの影響", ["変更", "元品番", "元の名称", "新品番", "新の名称", "製品の数", "1台あたりの差（最小）", "1台あたりの差（最大）",
-                         "年間の影響", "現行比（％）", "不完全", "要確認"],
-             [[e["kind"], e["old"], e["old_name"], e["new"], settings.word(e["head"]) if e["head"] else e["new_name"],
-               len(e["products"]), e["unit_min"], e["unit_max"], e["impact"],
+            ("金額", ["対象品番", "名称", "費目", "現行", "変更後", "1台あたりの増減", "増減（％）", "年間台数", "年間の影響", "不完全"], money),
+            ("変更ごとの影響", ["変更", "元品番", "元の名称", "新品番", "新の名称", "製品の数", "年間の影響", "現行比（％）", "不完全", "要確認"],
+             [[e["kind"], e["old"], e["old_name"], e["new"], new_name(e), len(e["products"]), e["impact"],
                _percent(e["impact"], results[Head.MANUFACTURING]["base"].get(plan)), "不完全" if e["incomplete"] else "",
-               "・".join(e["problems"])] for e in change_effects(ws, plan, changes)]),
+               "・".join(e["problems"])] for e in effects]),
+            ("変更ごとの影響（製品別）", ["変更", "元品番", "新品番", "新の名称", "製品", "名称", "1台あたりの増減", "年間台数", "年間の影響"],
+             [[e["kind"], e["old"], e["new"], new_name(e), p["product"], p["name"], p["unit"], p["annual"], p["impact"]]
+              for e in effects for p in e["products"]]),
             ("構成の変更", ["変更", "元品番", "元の名称", "新品番", "新の名称", "数量", "製品の数", "製品", "要確認"],
              [[s["kind"], s["old"], s["old_name"], s["new"], s["new_name"], s["quantity"], len(s["products"]),
                "・".join(s["products"]), "・".join(s["problems"])] for s in summarize_changes(changes)]),
-            ("構成の明細", ["製品", "名称", "変更", "元品番", "元の名称", "新品番", "新の名称", "現行", "変更後", "親", "風船", "サブ番号", "要確認"],
+            ("構成の明細", ["製品", "名称", "変更", "元品番", "元の名称", "新品番", "新の名称", "数量（現行）", "数量（変更後）", "親品番", "風船", "サブ番号",
+                       "要確認"],
              [[r["product"], ws.bom.items[r["product"]].name if r["product"] in ws.bom.items else None, r["kind"],
                r["old"], r["old_name"], r["new"], r["new_name"], _num(r["before"]), _num(r["after"]), r["parent"],
                *split_balloon(r["balloon"]), "・".join(r["problems"])]
@@ -841,9 +849,38 @@ class StudyApi:
                  for t in ws.temps if t.base is not None and t.code in ws.temp_merged
                  for s in temp_changes(ws, t) for d in s["details"]]
         if inner:
-            sheets.insert(-1, ("仮品番の中", ["仮品番", "名称", "流用元", "変更", "元品番", "元の名称", "新品番", "新の名称", "風船",
-                                          "サブ番号", "現行", "変更後"], inner))
+            sheets.insert(-1, ("仮品番の中", ["仮品番", "名称", "仮品番の元品番", "変更", "元品番", "元の名称", "新品番", "新の名称", "風船",
+                                          "サブ番号", "数量（現行）", "数量（変更後）"], inner))
         return self._xlsx(f"検討_{ws.number}", sheets)
+
+    def export_structure(self, params: dict[str, str]) -> "Response":
+        """対象品番の全部の構成（変えた後・全階層）を1行1箇所で出す。量が多いので、検討の Excel とは別のファイルにする。"""
+        ws = self._ws(params)
+        found = structure(ws, self._plan(params), list(ws.targets))
+        items = ws.bom.items
+        rows: list[list[Any]] = []
+
+        def walk(product: str, parent: str, lines: list[Any], level: int, path: frozenset[str]) -> None:
+            for p in lines:
+                changed = p.lost or p.now != p.part or p.before != p.quantity
+                rows.append([product, items[product].name if product in items else None, level, parent, *split_balloon(p.balloon),
+                             p.part, items[p.part].name if p.part in items else None, items[p.part].specification if p.part in items else None,
+                             p.now, p.before, Decimal(0) if p.lost else p.quantity,
+                             "部品表に無い" if p.lost else "変更" if changed else None])
+                if not p.lost and p.part in found.inside and p.part not in path:  # 循環はたどらない
+                    walk(product, p.part, found.inside[p.part], level + 1, path | {p.part})
+
+        for product in ws.targets:
+            walk(product, product, found.direct.get(product, []), 1, frozenset({product}))
+        return self._xlsx(f"構成_{ws.number}", [
+            ("構成", ["製品", "製品の名称", "レベル", "親品番", "風船", "サブ番号", "品番", "名称", "仕様", "現行の品番",
+                      "数量（現行）", "数量（変更後）", "変更"], rows),
+            ("説明", ["項目", "説明"], [
+                ["検討番号", ws.number], ["版", "仮" if ws.version is None else ws.version],
+                ["行", "1行＝対象品番×箇所。変えた後の構成を、製品の直下（レベル1）から全階層まで並べる"],
+                ["数量", "親品番1つあたり。置き換えた箇所は、数量（現行）が現行の品番の数"],
+                ["変更", "現行と品番か数量が違う箇所。足した箇所は現行の品番が空"]]),
+        ])
 
     @staticmethod
     def _condition_rows(ws: Workspace, plan: str) -> list[list[Any]]:
@@ -857,7 +894,7 @@ class StudyApi:
             value = given if given is not None else None if volume is None else volume.annual
             rows.append(["年間台数", p, None, value, "検討で入力" if given is not None else "部品表" if value is not None else "未登録"])
         for t in ws.temps:
-            note = "" if t.base is None else f"流用元 {t.base}" + ("（材料費は入力した値）" if t.material is not None else " から計算")
+            note = "" if t.base is None else f"元品番 {t.base}" + ("（材料費は入力した値）" if t.material is not None else " から計算")
             master = t.code not in ws.temp_merged
             rows.append(["仮品番", t.code, t.name, t.material if master else ws.bom.cost_value(t.code, CostHead.MATERIAL),
                          "品目の台帳の値を使う" if master else note])
@@ -887,12 +924,15 @@ class StudyApi:
 
 # Excel の各シートの列の意味（渡した先が列を取り違えないように、まとめのシートに書く）
 SHEET_NOTES = (
-    ("金額", "1行＝対象品番×費目。1台あたり。差＝変更後−現行、年間の影響＝差×年間台数。費目には内訳と合計が混ざるので足し合わせない"),
-    ("変更ごとの影響", "した事ごとに、製造原価への効き方。差は1台あたりで製品ごとに違えば最小と最大、年間の影響＝差×年間台数の合計。"
+    ("増減", "変更後−現行。＋は高くなる、−は安くなる"),
+    ("金額", "1行＝対象品番×費目。現行・変更後・増減は製品1台あたり。年間の影響＝1台あたりの増減×年間台数。費目には内訳と合計が混ざるので足し合わせない"),
+    ("変更ごとの影響", "した事ごとに1行。製造原価への効き方。年間の影響＝効く製品ごとの（1台あたりの増減×年間台数）の合計。"
                   "現行比は対象品番の現行の製造原価×年間台数の合計に対する割合。足すとまとめの年間の影響（製造原価）になる"),
+    ("変更ごとの影響（製品別）", "1行＝した事×効く製品。1台あたりの増減はその製品の製造原価の増減。足すと変更ごとの影響の年間の影響になる"),
+    ("1台あたりの平均の増減", "年間の影響 ÷ 年間の影響に入れた製品の年間台数の合計"),
     ("構成の変更", "した事ごとに1行。置き換え＝同じ製品・親・風船番号で元品番が 0 になり新品番が増えた物。数量は1箇所あたり"),
-    ("構成の明細", "1行＝製品×した事×箇所（親・風船・サブ番号）。変更の無い対象品番も「変更なし」で出す。数量は親1単位あたりで、"
-                   "置き換えは現行＝元品番の数量・変更後＝新品番の数量"),
+    ("構成の明細", "1行＝製品×した事×箇所（親品番・風船・サブ番号）。変更の無い対象品番も「変更なし」で出す。数量は親品番1つあたりで、"
+                   "置き換えは数量（現行）＝元品番の数・数量（変更後）＝新品番の数"),
     ("不完全", "未登録の原価や計算に入らない変更があり、金額が足りない行"),
     ("単価待ち", "単価の無い品番を使う変更。置き換えは、単価が分かるまで現行のまま（差なし）で計算する"),
     ("単位", "金額は取り込んだ原価の表と同じ単位、数量は部品表と同じ単位"),

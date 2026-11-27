@@ -91,7 +91,7 @@ async function resultScreen(main) {
   const incomplete = (on) => (on ? { class: "inc", title: "不完全" } : {});
   const productsDialog = (e) => {
     const box = dialog(`${e.kind} ${[e.old, e.new, e.head && label(e.head)].filter(Boolean).join(" → ")}`,
-      el("table", { class: "list" }, el("tr", {}, ["製品", "名称"].map((x) => el("th", {}, x)), ["1台あたりの差", "年間台数", "年間の影響"].map((x) => el("th", { class: "r" }, x))),
+      el("table", { class: "list" }, el("tr", {}, ["製品", "名称"].map((x) => el("th", {}, x)), ["1台あたりの増減", "年間台数", "年間の影響"].map((x) => el("th", { class: "r" }, x))),
         e.products.map((p) => el("tr", {}, el("td", {}, p.product), el("td", {}, p.name ?? "未登録"), el("td", { class: "r" }, signed(p.unit)),
           el("td", { class: "r" }, fmt(p.annual) || "—"), el("td", { class: "r" }, p.impact === null ? "—" : man(p.impact))))),
       [el("span", { class: "sp" }), el("button", { class: "btn", onclick: () => box.close() }, "閉じる")]);
@@ -106,7 +106,7 @@ async function resultScreen(main) {
     if (!data.effects.length) return el("div", { class: "mini" }, "変更がありません");
     return el("table", { class: "res" },
       el("tr", {}, ["変更", "元品番", "名称", "新品番", "名称"].map((x) => el("th", {}, x)),
-        ["製品", "1台あたりの差", "年間の影響", "現行比"].map((x) => el("th", { class: "r" }, x)), el("th", {}, "要確認")),
+        ["製品", "1台あたりの増減", "年間の影響", "現行比"].map((x) => el("th", { class: "r" }, x)), el("th", {}, "要確認")),
       data.effects.map((e) => el("tr", {},
         el("td", {}, e.kind), el("td", {}, e.old ?? ""), el("td", {}, name(e.old, e.old_name)), el("td", {}, e.new ?? ""),
         el("td", {}, e.head ?? name(e.new, e.new_name)),
@@ -128,7 +128,7 @@ async function resultScreen(main) {
       return el("th", { class: cls, title: s.title, style: "cursor:pointer", onclick: s.action }, s.text);
     };
     const diffOf = (r) => (r.plans[plan] === null || r.now === null ? null : String(Number(r.plans[plan]) - Number(r.now)));
-    const line = (title, cells) => [el("td", { class: "mini" + (title === "差" ? "" : " low") }, title), cells];
+    const line = (title, cells) => [el("td", { class: "mini" + (title === "増減" ? "" : " low") }, title), cells];
     return el("table", { class: "res" },
       el("tr", {}, head("対象品番", (x) => x.r.product), head("名称", (x) => x.r.name), head("年間台数", (x) => x.r.annual, true, "r"), el("th", {}),
         heads.map((h) => head(h.label, (x) => diffOf(h.rows[x.i]), true, "r"))),
@@ -136,7 +136,7 @@ async function resultScreen(main) {
         el("tr", {}, el("td", { rowspan: "3" }, r0.product), el("td", { rowspan: "3" }, r0.name ?? "未登録"), el("td", { class: "r", rowspan: "3" }, fmt(r0.annual)),
           line("現行", heads.map((h) => el("td", { ...incomplete(h.rows[i].now_incomplete), class: "r low" + (h.rows[i].now_incomplete ? " inc" : "") }, fmt(h.rows[i].now))))),
         el("tr", {}, line("変更後", heads.map((h) => el("td", { ...incomplete(h.rows[i].incomplete[plan]), class: "r low" + (h.rows[i].incomplete[plan] ? " inc" : "") }, fmt(h.rows[i].plans[plan]))))),
-        el("tr", {}, line("差", heads.map((h) => {
+        el("tr", {}, line("増減", heads.map((h) => {
           const diff = diffOf(h.rows[i]);
           const rate = diff === null || Number(diff) === 0 ? "" : percent(diff, h.rows[i].now);
           const inc = h.rows[i].incomplete[plan];
@@ -146,7 +146,7 @@ async function resultScreen(main) {
       el("tr", {}, el("th", { colspan: "3" }, "年間の影響"), el("th", {}),
         heads.map((h) => el("th", { class: "r" + tone(h.impact[plan]) + (h.impact_incomplete[plan] ? " inc" : ""), title: h.impact_incomplete[plan] ? "不完全" : null },
           man(h.impact[plan]), Number(h.impact[plan]) ? `（${percent(h.impact[plan], h.base[plan])}）` : ""))),
-      el("tr", {}, el("th", { colspan: "3" }, "台数の加重平均"), el("th", { class: "mini" }, "1台あたり"),
+      el("tr", {}, el("th", { colspan: "3" }, "1台あたりの平均の増減"), el("th", { class: "mini" }, "年間台数で重み付け"),
         heads.map((h) => el("th", { class: "r" + tone(h.weighted[plan]) + (h.impact_incomplete[plan] ? " inc" : ""), title: h.impact_incomplete[plan] ? "不完全" : null }, signed(h.weighted[plan])))));
   };
   // 製品別（費目全部）と変更別（製造原価への効き方）を切り替えて出す。開いた時は製品別

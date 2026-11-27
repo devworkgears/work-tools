@@ -255,6 +255,22 @@ class LevelApi(unittest.TestCase):
         self.assertLess(r.status, 300, r.body.decode("utf-8"))
         return r.json()
 
+    def test_the_whole_structure_goes_to_its_own_excel(self) -> None:
+        # 対象品番の全部を、変えた後の構成で全階層まで1行1箇所。変えた箇所に印
+        self.ok("POST", "/api/v2/replace/apply", {"rows": [{"product": "P1", "balloon": "3", "old": "S", "new": "N"}]})
+        r = self.api.handle("GET", "/api/v2/export/structure", self.q, b"")
+        self.assertEqual(r.status, 200)
+        self.assertIn("filename*=UTF-8''%E6%A7%8B%E6%88%90_", r.headers["Content-Disposition"])
+        book = load_openpyxl().load_workbook(io.BytesIO(r.body))
+        self.assertEqual(book.sheetnames, ["構成", "説明"])
+        rows = list(book["構成"].iter_rows(min_row=2, values_only=True))
+        p1 = {(x[2], x[3], x[4], x[6], x[9], x[10], x[11], x[12]) for x in rows if x[0] == "P1"}
+        self.assertEqual(p1, {
+            (1, "P1", "1", "U", "U", 1, 1, None), (1, "P1", "2", "K", "K", 1, 1, None), (1, "P1", "3", "N", "S", 1, 1, "変更"),
+            (2, "U", "11", "K", "K", 2, 2, None), (2, "U", "12", "V", "V", 1, 1, None), (3, "V", "21", "B", "B", 3, 3, None)})
+        self.assertEqual({x[0] for x in rows}, {"P1", "P2"})
+        self.assertEqual(sum(1 for x in rows if x[0] == "P2"), 6)
+
     def test_screens_show_the_inside_of_a_derived_temp(self) -> None:
         got = self.ok("PUT", "/api/v2/temp-items", {"rows": [{"code": "T1", "name": "組立改", "material": "", "base": "U"}]})["rows"]
         self.assertEqual((got[0]["derived"], got[0]["changed"], got[0]["base"]), ("35", 0, "U"))
@@ -312,7 +328,7 @@ class LevelApi(unittest.TestCase):
         self.assertEqual(rows, [("T1", "組立改", "U", "置き換え", "K", "K の名称", "N", "N の名称", "11", None, 2, 2)])
         effects = list(book()["変更ごとの影響"].iter_rows(values_only=True))
         self.assertEqual((effects[0][:6], len(effects)), (("変更", "元品番", "元の名称", "新品番", "新の名称", "製品の数"), 1))
-        self.assertIn(("仮品番", "T1", "組立改", 29, "流用元 U から計算"), list(book()["計算条件"].iter_rows(values_only=True)))
+        self.assertIn(("仮品番", "T1", "組立改", 29, "元品番 U から計算"), list(book()["計算条件"].iter_rows(values_only=True)))
 
     def test_moved_places_go_back_to_the_current_side_in_one_call(self) -> None:
         # ⑧ の［戻す］［全て戻す］の送り方
