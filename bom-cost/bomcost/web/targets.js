@@ -35,7 +35,7 @@ async function targetsScreen(main, cur) {
       if (c === 1) return { text: code, editable: !ro };
       if (!code) return { text: "" };
       if (c === 2) return nameCell(code);
-      if (c === 3) return { text: variations[code] ?? "", cls: "auto", title: variations[code] ? "バリエーション（足し引きは⑪）" : null };
+      if (c === 3) return { text: variations[code] ?? "", cls: "auto", title: variations[code] ? `${label("バリエーション")}（足し引きは⑪）` : null };
       const info = items.get(code);
       if (!info || !info.registered) return { text: "" };
       if (c === 4) return { text: info.model, cls: "auto" };

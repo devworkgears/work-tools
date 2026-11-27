@@ -125,6 +125,16 @@ class Subtracting(VariationCase):
         self.assertEqual((rows["W"]["short"], rows["V"]["short"], rows["W"]["base"]), ({"A": ["B"]}, {}, "P"))
 
 
+class Words(VariationCase):
+    def test_the_mark_follows_the_workplace_word(self) -> None:
+        before = settings.current()
+        self.addCleanup(settings.use, before)
+        settings.use(settings.parse({**before.to_json(), "labels": {"バリエーション": "VC"}}))
+        self.replace_b()
+        rows = self.ok("GET", "/api/v2/changes")["rows"]
+        self.assertEqual([r["problems"] for r in rows if r["product"] == "P"], [["VCでマイナス"]])
+
+
 class Screens(VariationCase):
     def test_the_change_screen_leaves_out_the_variations(self) -> None:
         got = self.ok("GET", "/api/v2/structure", query=self.q + "&kind=product&all=1")

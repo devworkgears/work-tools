@@ -61,11 +61,12 @@ async function hubScreen(main, cur) {
       openScreen(key);
     },
   }, label, extra);
-  // 対象品番にバリエーションが無ければ押せない
+  // バリエーションは、元の製品を直した後にたまに使うので、費目変更の後ろに小さく置く。対象品番に無ければ押せない
   const variationButton = big(11, "バリエーション");
+  variationButton.classList.add("minor");
   if (!Object.keys(S.variations || {}).length) {
     variationButton.disabled = true;
-    variationButton.title = "対象品番にバリエーション（製品を直下に持つ製品）がありません";
+    variationButton.title = `対象品番に${label("バリエーション")}がありません`;
   }
   const release = el("button", { class: "btn", disabled: !S.number || !canWrite() }, "版確定");
   release.addEventListener("click", async () => {
@@ -119,7 +120,7 @@ async function hubScreen(main, cur) {
     el("div", { class: "groups" },
       // 左が準備、まん中（青）が打つ画面、右が見る画面。行き来して使うので、順の矢印は置かない
       el("fieldset", { class: "grp" }, big(3, "対象品番"), big(9, "仮品番")),
-      el("fieldset", { class: "grp edit" }, big(8, "構成変更"), variationButton, big(10, "費目変更")),
+      el("fieldset", { class: "grp edit" }, big(8, "構成変更"), big(10, "費目変更"), variationButton),
       el("fieldset", { class: "grp" }, big(5, "構成一覧"), big(6, "変更一覧", S.problems ? [" ", el("span", { class: "pill warn" }, S.problems)] : null), big(7, "結果"))),
   );
 }

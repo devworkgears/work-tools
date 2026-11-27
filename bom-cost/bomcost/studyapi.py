@@ -39,6 +39,7 @@ from .study import (
     Attributes,
     Checked,
     Prices,
+    SHORT,
     StudyStore,
     Temp,
     UNREGISTERED,
@@ -980,9 +981,11 @@ def _change_row(ws: Workspace, c: Checked) -> dict[str, Any]:
 def _row(ws: Workspace, kind: str, product: str, parent: str, balloon: str | None, old: str | None, new: str | None, before: str | None,
          after: str | None, problems: list[str], key: Any) -> dict[str, Any]:
     items = ws.bom.items
+    # 「バリエーション」は設定の語に読み替える（印の中の語なので、語の読み替えだけでは替わらない）
+    worded = [p.replace("バリエーション", settings.word("バリエーション")) if p == SHORT else p for p in problems]
     return {"kind": kind, "product": product, "parent": parent, "balloon": balloon, "part": new or old,
             "old": old, "old_name": items[old].name if old in items else None, "new": new, "new_name": items[new].name if new in items else None,
-            "before": before, "after": after, "problems": problems, "source": "slot", "key": key}
+            "before": before, "after": after, "problems": worded, "source": "slot", "key": key}
 
 
 def _plain(s: dict[str, Any]) -> dict[str, Any]:

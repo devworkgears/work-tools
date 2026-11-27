@@ -582,7 +582,7 @@ async function rewriteScreen(main, cur, key = 8) {
     amounts.set(row, all);
     apply();
   };
-  main.append(card(me.title(key === 11 ? "バリエーション" : "構成変更"), [button("行追加", addRow), button("行削除", dropRow),
+  main.append(card(me.title(key === 11 ? label("バリエーション") : "構成変更"), [button("行追加", addRow), button("行削除", dropRow),
     key === 11 ? null : button("一括置換", () => bulkDialog().catch(fail)), rowBack, allBack, button("風船順", () => {
       restart();
       draw();

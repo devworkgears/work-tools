@@ -143,11 +143,11 @@ async function resultScreen(main) {
       const short = (r.short || {})[plan];
       const inGroup = !!r.base && all.some((x) => x.r.product === r.base);
       return el("td", { rowspan: "3" },
-        n > 0 ? el("span", { style: "cursor:pointer", title: "バリエーションを開け閉めする", onclick: () => {
+        n > 0 ? el("span", { style: "cursor:pointer", title: `${label("バリエーション")}を開け閉めする`, onclick: () => {
           closed.has(r.product) ? closed.delete(r.product) : closed.add(r.product);
           draw();
         } }, `${closed.has(r.product) ? "▸" : "▾"} `) : inGroup ? "　└ " : "",
-        r.product, n > 0 && closed.has(r.product) ? el("span", { class: "mini" }, `（バリエーション ${n} 件）`) : null,
+        r.product, n > 0 && closed.has(r.product) ? el("span", { class: "mini" }, `（${label("バリエーション")} ${n} 件）`) : null,
         r.base && !inGroup ? el("div", { class: "mini" }, `元の製品 ${r.base}`) : null,
         short && short.length ? el("div", { class: "pill warn", title: `元の製品の変更で、${short.join("・")} の数がマイナス（⑪で直す）` }, "要確認") : null);
     };
