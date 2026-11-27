@@ -457,10 +457,9 @@ async function loadStudy(number, version, render = true) {
 }
 
 function applyStudy(data) {
-  if (S.number !== data.header.number || S.version !== data.version) {
-    items.clear();
-    if (!POPUP && S.number) tell("switch");
-  }
+  const switched = S.number !== data.header.number || S.version !== data.version;
+  const had = !!S.number;
+  if (switched) items.clear();
   S.number = data.header.number;
   S.header = data.header;
   S.version = data.version;
@@ -470,4 +469,6 @@ function applyStudy(data) {
   S.targets = data.targets;
   S.problems = data.problems;
   S.variations = data.variations || {};
+  // ほかの窓へは、替えた後の検討を知らせる（違う検討を出している窓が閉じる）
+  if (switched && had && !POPUP) tell("switch");
 }

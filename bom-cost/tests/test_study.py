@@ -745,6 +745,10 @@ class StudyApiFlow(unittest.TestCase):
         # 図面が同じ対象品番だけ（無い品番は図面なし）。箇所は現行と変えた後の組
         self.assertEqual((data["drawing"], data["products"]), ("AS-01", [P1, P2]))
         self.assertEqual(data["drawings"], [{"drawing": "AS-01", "count": 2}, {"drawing": "", "count": 1}])
+        # 最初に出す図面は、対象品番の先頭の製品の図面
+        self.ok("PUT", "/api/v2/targets", q, {"products": ["ZZ9999-001", P1, P2]})
+        self.assertEqual(self.ok("GET", "/api/v2/structure", q + "&plan=A")["products"], ["ZZ9999-001"])
+        self.ok("PUT", "/api/v2/targets", q, {"products": [P1, P2, "ZZ9999-001"]})
         cells = {(p, r["now"], r["part"]): (r["before"], r["quantity"]) for p, rows in data["direct"].items() for r in rows}
         self.assertEqual((cells[(P1, "ST0050-001", "ST0050-001")], cells[(P2, "ST0050-001", "ST0050-001")]), (("2", "0"), ("2", "2")))
         self.assertEqual((cells[(P1, OLD, NEW)], cells[(P2, None, "PL0030-001")]), (("1", "1"), (None, "1")))
