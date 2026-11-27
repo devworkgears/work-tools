@@ -140,13 +140,6 @@ async function changesScreen(main) {
     await load().catch(fail);
     grid.render();
   });
-  main.append(card("変更一覧", [productSelect,
-    el("button", { class: "btn", onclick: () => exportStudy().catch(fail) }, "Excel"),
-  ], [deepBox, el("div", { class: "row" }, views, noteBox), body, ownBox]));
+  main.append(card("変更一覧", [productSelect], [deepBox, el("div", { class: "row" }, views, noteBox), body, ownBox]));
   grid.focus();
-}
-
-// 検討1つを1つの Excel に出す（⑥ と ⑦ で同じファイル）
-function exportStudy() {
-  return work("Excel を作っています", () => download("/api/v2/export/study", q({ plan: PLAN }), `検討_${S.number}.xlsx`));
 }

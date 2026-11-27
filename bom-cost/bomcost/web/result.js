@@ -78,6 +78,11 @@ async function annualDialog() {
   }
 }
 
+// 検討1つを1つの Excel に出す
+function exportStudy() {
+  return work("Excel を作っています", () => download("/api/v2/export/study", q({ plan: PLAN }), `検討_${S.number}.xlsx`));
+}
+
 async function resultScreen(main) {
   let data = null;
   const plan = PLAN;

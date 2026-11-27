@@ -73,26 +73,8 @@ async function targetsScreen(main, cur) {
     touched();
     grid.changed();
   };
-  const csvInput = el("input", { type: "file", accept: ".csv,.txt", style: "display:none" });
-  csvInput.addEventListener("change", async () => {
-    const file = csvInput.files[0];
-    csvInput.value = "";
-    if (!file) return;
-    const buffer = await file.arrayBuffer();
-    let text;
-    try {
-      text = new TextDecoder("utf-8", { fatal: true }).decode(buffer);
-    } catch (_) {
-      text = new TextDecoder("shift_jis").decode(buffer);
-    }
-    const codes = text.replace(/^﻿/, "").split(/\r?\n/)
-      .map((line) => line.split(/[,\t]/)[0].replace(/^"|"$/g, "").trim())
-      .filter((code) => code && !code.includes("品番"));
-    addCodes(codes);
-  });
   main.append(card("対象品番", [
     el("button", { class: "btn", disabled: ro, onclick: () => productSearchDialog(addCodes) }, "品番検索"),
-    el("button", { class: "btn", disabled: ro, onclick: () => csvInput.click() }, "CSV取込"), csvInput,
     el("button", {
       class: "btn", disabled: ro, onclick: () => {
         if (grid.sel.r < rows.length) {
