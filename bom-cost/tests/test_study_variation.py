@@ -114,6 +114,13 @@ class Subtracting(VariationCase):
         self.assertFalse([c for c in check_changes(self.ws()) if NEGATIVE in c.problems])
         self.assertEqual(self.material()["P1V"], (D(47), D(32)))  # 47 − 5 − 10
 
+    def test_the_product_row_of_a_variation_cannot_be_changed(self) -> None:
+        for body in ({"quantity": [{"product": "P1V", "balloon": "1", "part": "P1", "quantity": "0"}]},
+                     {"replace": [{"product": "P1V", "balloon": "1", "old": "P1", "new": "H"}]}):
+            r = self.api.handle("POST", "/api/v2/structure", self.q, json.dumps(body).encode())
+            self.assertEqual(r.status, 400, body)
+            self.assertIn("変えられません", r.body.decode("utf-8"))
+
     def test_the_base_takes_no_minus_rows(self) -> None:
         r = self.api.handle("POST", "/api/v2/structure", self.q,
                             json.dumps({"quantity": [{"product": "P1", "balloon": "3", "part": "C", "quantity": "-1"}]}).encode())

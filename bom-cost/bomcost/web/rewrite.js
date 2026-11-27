@@ -55,6 +55,9 @@ async function rewriteScreen(main, cur, key = 8) {
   });
   restart();
   const minus = key === 11 && !me.child; // バリエーションの直下は、直下の製品の部品をマイナスの数で引く
+  // バリエーションの直下の製品の行は見るだけ
+  const products = new Set(minus ? Object.values(S.variations || {}) : []);
+  const fixed = (row) => !!row && !row.draft && (products.has(row.part) || [...row.cells.values()].some((s) => products.has(s.now)));
   const parents = () => me.columns();
   // 列: 番号・風船・サブ番号・品番・名称・仕様・状態・子・一律、その右に親ごとの数量
   const [BALLOON, BRANCH, PART, NAME, SPEC, STATE, LOWER, UNIFORM] = [1, 2, 3, 4, 5, 6, 7, 8]; // 一律は足しかけの行だけ打てる。打つと出ている親の全部に同じ数量が入る
@@ -86,6 +89,7 @@ async function rewriteScreen(main, cur, key = 8) {
       }
       if (c === PART) {
         const own = row && (row.draft ? part : [...row.cells.values()].some((s) => s.now !== s.part));
+        if (fixed(row)) return { text: part, lock: true };
         return { text: part, editable: !ro && !(row && row.lost), lock: !!row && row.lost, cls: row && row.lost ? "bad" : own ? "own" : "",
           title: row && row.lost ? "現行の品番が部品表に無くなった（［戻す］で消す）" : null };
       }
@@ -102,6 +106,7 @@ async function rewriteScreen(main, cur, key = 8) {
       if (row.draft) return { text: row.amounts.get(parent) ?? "", editable: !ro, cls: "r q" + edge };
       const s = row.cells.get(parent);
       if (row.lost) return { text: s ? fmt(s.quantity) : "", lock: true, cls: "r q" + (s ? " bad" : "") + edge };
+      if (fixed(row)) return { text: s ? fmt(s.quantity) : "", lock: true, cls: "r" + edge };
       if (!s) return { text: "", editable: !ro, cls: "r q" + edge };
       const changed = !same(s.before, s.quantity);
       const shown = zero || Number(s.quantity) !== 0;
@@ -111,6 +116,7 @@ async function rewriteScreen(main, cur, key = 8) {
     set(r, c, text) {
       if (c < BALLOON || (c > PART && c < left && c !== UNIFORM)) return;
       if (c === UNIFORM && rows[r] && !rows[r].draft) return;
+      if (fixed(rows[r])) return;
       if (!rows[r]) {
         if (!text) return;
         model.grow();
@@ -578,7 +584,7 @@ async function rewriteScreen(main, cur, key = 8) {
     }
     const all = new Map([...row.cells].filter(([, s]) => Number(s.quantity) !== 0).map(([p]) => [p, "0"]));
     if (!all.size) return;
-    if (row.lost) return;
+    if (row.lost || fixed(row)) return;
     amounts.set(row, all);
     apply();
   };

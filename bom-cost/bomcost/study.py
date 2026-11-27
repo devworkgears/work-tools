@@ -608,6 +608,13 @@ def variation_bases(ws: Workspace) -> dict[str, str]:
     return out
 
 
+def _refuse_base_line(ws: Workspace, product: str, p: "Placed") -> None:
+    """バリエーションの直下の製品の行は見るだけ（変えるのは足し引きの行だけ）。"""
+    base = variation_bases(ws).get(product)
+    if base is not None and base in (p.now, p.part):
+        raise ValueError(f"{product} の {base} の行は変えられません")
+
+
 def base_count(ws: Workspace, variation: str, base: str) -> Decimal:
     """バリエーション1台あたりの、直下の元の製品の数。"""
     return sum((q for (_, part), q in direct_lines(ws.bom, variation).items() if part == base), Decimal(0))
@@ -1363,6 +1370,7 @@ class StudyStore:
             if not found:
                 raise ValueError(f"{old} は {product} の直下にありません（画面を開き直してください）")
             for p in found:
+                _refuse_base_line(ws, product, p)
                 if (product, p.balloon, p.now, p.part) in seen:
                     raise ValueError(f"{product} の {old} が2行あります")
                 seen.add((product, p.balloon, p.now, p.part))
@@ -1415,6 +1423,7 @@ class StudyStore:
                 raise ValueError(f"{part} は {product} の直下にありません（画面を開き直してください）")
             if len(found) > 1:
                 raise ValueError(f"{product} の同じ風船番号に {part} が {len(found)} つあります。構成変更で直してください")
+            _refuse_base_line(ws, product, found[0])
             value = r.get("quantity")
             amount = (found[0].before or Decimal(0)) if value is None or str(value).strip() == "" else input_amount(value)
             if amount < 0 and amount != found[0].before and product not in variation_bases(ws):
