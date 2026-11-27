@@ -15,7 +15,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from . import settings
 from .model import BomLine, CostHead, CostRow, ImportWarning, Item, Version, Volume, mbom_to_ebom
-from .normalize import to_code
+from .normalize import to_code, to_optional_code
 
 VENDOR_DIR = Path(__file__).resolve().parent.parent / "vendor"
 
@@ -337,7 +337,11 @@ class VersionImport:
         self.version.add_item(item)
 
     def _add_bom_line(self, file: str, number: int, r: dict[str, Any]) -> None:
-        self.version.add_bom_lines([BomLine(r["parent"], r.get("balloon"), r["child"], r["quantity"])])
+        # 風船番号の 0 は、空欄と同じ「風船番号なし」にする（元のデータで振っていない所が 0 で来るため）
+        balloon = to_optional_code(r.get("balloon"), name="風船番号")
+        if balloon is not None and set(balloon) == {"0"}:
+            balloon = None
+        self.version.add_bom_lines([BomLine(r["parent"], balloon, r["child"], r["quantity"])])
 
     def _add_cost(self, file: str, number: int, r: dict[str, Any]) -> None:
         mbom = to_code(r["mbom_code"], name="原価の品番")

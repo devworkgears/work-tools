@@ -203,6 +203,15 @@ class ImportFiles(TempDir):
         self.assertEqual([(c.key, c.quantities) for c in imp.version.conflicts],
                          [(("U1", "1", "C1"), (d(2), d(3)))])
 
+    def test_zero_balloon_is_no_balloon(self) -> None:
+        """風船番号の 0（00 も）は、空欄と同じ風船番号なしになる。10 や 01 の 0 は残る。"""
+        path = self.dir / "bom.csv"
+        write_csv(path, BOM_HEADERS, [["P", 1, "A", 1, 0, ""], ["P", 1, "B", 1, "00", ""], ["P", 1, "C", 1, "", ""],
+                                      ["P", 1, "D", 1, 10, ""], ["P", 1, "E", 1, "01", ""]], "utf-8")
+        imp = VersionImport(Version("t"))
+        imp.add_file(path, ColumnMap("bom_line", BOM_HEADERS, BOM_MAP))
+        self.assertEqual({l.child: l.balloon for l in imp.version.lines}, {"A": None, "B": None, "C": None, "D": "10", "E": "01"})
+
     def test_bad_row_is_skipped_with_warning(self) -> None:
         path = self.dir / "bom.csv"
         write_csv(path, BOM_HEADERS, [["P", 1, "C", "abc", 1, ""], ["P", 1, "D", 1, 2, ""]], "utf-8")
