@@ -99,12 +99,10 @@ class ApiShapes(unittest.TestCase):
 
     def test_n_bad_shapes_and_huge_numbers_are_400_and_not_saved(self) -> None:
         for method, path, body in (
-            ("POST", "/api/v2/quantity", {"rows": [{"product": "X", "balloon": "2", "part": "S", "quantity": "1e400000000"}]}),
-            ("POST", "/api/v2/quantity", {"rows": ["x"]}),
-            ("POST", "/api/v2/add-part", {"part": "ADD", "quantity": "1e400000000", "products": ["X"]}),
-            ("POST", "/api/v2/add-part", {"part": "ADD", "quantity": "1", "products": "X"}),
-            ("POST", "/api/v2/add-part", {"part": "ADD", "quantity": "1", "products": [{"code": "X"}]}),
-            ("POST", "/api/v2/add-part", {"part": "ADD", "products": ["X"]}),
+            ("POST", "/api/v2/structure", {"quantity": [{"product": "X", "balloon": "2", "part": "S", "quantity": "1e400000000"}]}),
+            ("POST", "/api/v2/structure", {"quantity": ["x"]}),
+            ("POST", "/api/v2/structure", {"add": [{"product": "X", "part": "ADD", "quantity": "1e400000000"}]}),
+            ("POST", "/api/v2/structure", {"add": [{"product": "X", "part": "ADD"}]}),
             ("POST", "/api/v2/replace/apply", {"rows": ["a"]}),
             ("POST", "/api/v2/replace/apply", {"rows": {"old": "a"}}),
             ("POST", "/api/v2/structure", {"back": ["x"]}),
@@ -138,7 +136,7 @@ class ApiShapes(unittest.TestCase):
     def test_messages_are_polite(self) -> None:
         cases = (
             ("POST", "/api/v2/replace/apply", {"old": "OLD", "new": ""}, "新品番を入力してください"),
-            ("POST", "/api/v2/quantity", {"rows": [{"product": "X", "balloon": "2", "part": "S", "quantity": "abc"}]}, "数量は数で入力してください（abc）"),
+            ("POST", "/api/v2/structure", {"quantity": [{"product": "X", "balloon": "2", "part": "S", "quantity": "abc"}]}, "数量は数で入力してください（abc）"),
         )
         for method, path, body, message in cases:
             with self.subTest(path=path):

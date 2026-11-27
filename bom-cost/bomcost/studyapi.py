@@ -294,8 +294,6 @@ class StudyApi:
             ("POST", r"/api/v2/replace/apply", self.apply_replace),
             ("POST", r"/api/v2/inside/replace", self.replace_inside),
             ("POST", r"/api/v2/temp-rename", self.rename_temp),
-            ("POST", r"/api/v2/quantity", self.put_quantity),
-            ("POST", r"/api/v2/add-part", self.add_part),
             ("POST", r"/api/v2/plans", self.add_plan),
             ("GET", r"/api/v2/structure", self.structure),
             ("POST", r"/api/v2/structure", self.edit_structure),
@@ -554,16 +552,6 @@ class StudyApi:
     def rename_temp(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
         """仮品番の品番を替える。使っている所（変更・ほかの仮品番の中）も一緒に替わる。"""
         self.store.rename_temp(_number(params), body.get("code"), body.get("new"))
-        return self.after_parts({"number": _number(params), "plan": self._plan(params)})
-
-    def put_quantity(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
-        """箇所（product・balloon・part）ごとの、変えた後の数量。"""
-        self.store.save_quantities(_number(params), self._plan(params), _objects(body, "rows"))
-        return self.after_parts({"number": _number(params), "plan": self._plan(params)})
-
-    def add_part(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
-        """部品を、選んだ製品の直下にまとめて足す。"""
-        self.store.add_part(_number(params), self._plan(params), body.get("part"), body.get("quantity"), _list(body, "products"))
         return self.after_parts({"number": _number(params), "plan": self._plan(params)})
 
     # ⑤ 構成一覧・⑧ 構成変更 -------------------------------------------------------

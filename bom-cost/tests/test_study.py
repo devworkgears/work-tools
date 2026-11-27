@@ -743,8 +743,8 @@ class StudyApiFlow(unittest.TestCase):
         self.assertFalse(looked["ZZ9999-001"]["registered"])
         self.ok("POST", "/api/v2/replace/apply", q + "&plan=A", {"old": OLD, "new": NEW})
         stay = next(p for p in self.ok("GET", "/api/v2/after-parts", q)["places"] if p["part"] == "ST0050-001" and p["product"] == P1)
-        self.ok("POST", "/api/v2/quantity", q + "&plan=A", {"rows": [{**{k: stay[k] for k in ("product", "balloon", "part")}, "quantity": "0"}]})
-        self.ok("POST", "/api/v2/add-part", q + "&plan=A", {"part": "PL0030-001", "quantity": "1", "products": [P2]})
+        self.ok("POST", "/api/v2/structure", q + "&plan=A", {"quantity": [{**{k: stay[k] for k in ("product", "balloon", "part")}, "quantity": "0"}]})
+        self.ok("POST", "/api/v2/structure", q + "&plan=A", {"add": [{"product": P2, "part": "PL0030-001", "quantity": "1"}]})
         data = self.ok("GET", "/api/v2/structure", q + "&plan=A")
         # 図面が同じ対象品番だけ（無い品番は図面なし）。箇所は現行と変えた後の組
         self.assertEqual((data["drawing"], data["products"]), ("AS-01", [P1, P2]))
@@ -955,7 +955,7 @@ class StudyApiFlow(unittest.TestCase):
         v.add_item(Item("X7", "名\x0b称\x01"))
         StudyStore(self.store.connection).replace_bom(v, ALL)
         number = self.ok("POST", "/api/v2/studies", body={"title": "題\x02目", "products": ["P1"]})["header"]["number"]
-        self.ok("POST", "/api/v2/add-part", f"number={number}", {"part": "X7", "quantity": "1", "products": ["P1"]})
+        self.ok("POST", "/api/v2/structure", f"number={number}", {"add": [{"product": "P1", "part": "X7", "quantity": "1"}]})
         book = load_openpyxl().load_workbook(io.BytesIO(self.api.handle("GET", "/api/v2/export/study", f"number={number}").body))
         self.assertIn("名称", [r[4] for r in book["構成の変更"].iter_rows(values_only=True)])
 
