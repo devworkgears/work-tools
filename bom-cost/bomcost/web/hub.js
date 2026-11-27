@@ -114,7 +114,6 @@ async function hubScreen(main, cur) {
       el("div", { class: "h" }, el("span", { class: "no" }, S.number || "　"), el("span", { class: "mini", style: "font-weight:400" }, "版"),
         el("input", { class: "in ro", value: state, readonly: true, style: "min-width:50px;width:60px" }), release),
       el("div", { class: "b" }, el("div", { class: "row", style: "margin:0" }, fields,
-        el("label", { class: "f" }, "状態", el("input", { class: "in ro", value: state, readonly: true, style: "min-width:60px;width:70px" })),
         el("label", { class: "f" }, "最終更新日", el("input", { class: "in ro", value: updated, readonly: true, style: "min-width:100px;width:110px" })),
         run))),
     el("div", { class: "groups" },
