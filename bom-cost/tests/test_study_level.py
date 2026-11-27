@@ -282,6 +282,14 @@ class LevelApi(unittest.TestCase):
         self.assertEqual([(m["code"], m["new"]) for m in made], [("U", "U-NEW")])
         self.assertEqual([r["code"] for r in self.ok("GET", "/api/v2/temp-items")["rows"]], ["U-NEW"])
 
+    def test_the_bulk_replace_over_all_levels_asks_the_new_code_too(self) -> None:
+        # 一括置換の全階層: 組立品の中の行（path の形）でも、先に候補を聞いて、選んだ品番で入れる
+        rows = [{"path": ["U"], "old": "K", "new": "N", "balloon": "11"}]
+        needs = self.ok("POST", "/api/v2/structure/needs", {"rows": rows})["needs"]
+        self.assertEqual([(n["code"], n["suggested"], n["fresh"]) for n in needs], [("U", "U-K1", True)])
+        made = self.ok("POST", "/api/v2/inside/replace", {"rows": rows, "numbers": {"U": "U-ALL"}})["made"]
+        self.assertEqual([(m["code"], m["new"]) for m in made], [("U", "U-ALL")])
+
     def test_excel_gets_a_sheet_only_when_a_temp_has_changes_inside(self) -> None:
         def book():
             return load_openpyxl().load_workbook(io.BytesIO(self.api.handle("GET", "/api/v2/export/study", self.q).body))

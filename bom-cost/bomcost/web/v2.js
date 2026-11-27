@@ -2093,7 +2093,8 @@ async function rewriteScreen(main, cur) {
     if (drafts.length) apply(); // 送っている間に打った足しかけ
   };
   const selected = () => rows[grid.sel.r];
-  // 一括置換: 今の構成（変えた後）の品番を、風船番号ごとに選んで1回だけ置き換える。決まりとしては残さない
+  // 一括置換: 今の構成（変えた後）の品番を、行（風船番号と元品番、全階層なら親品番も）ごとに選んで1回だけ置き換える。決まりとしては残さない。
+  // 範囲の「全階層」（本体の窓だけ）は、対象品番の全部の、組立品の中まで探す。中を替えると上の組立品に新しい品番が要るので、入れる前に聞く
   const bulkDialog = async () => {
     const at = selected();
     const old = el("input", { class: "in", value: at && !at.draft ? at.part : "" });
@@ -2102,43 +2103,81 @@ async function rewriteScreen(main, cur) {
     const oldName = el("span", { class: "mini" });
     const nextName = el("span", { class: "mini" });
     const list = el("div");
-    const off = new Set(); // 替えない行（風船番号と元品番の組）
+    const off = new Set(); // 替えない行
     let every = null; // 対象品番の全部の直下（範囲で選んだ時に読む）
     let everyItems = {};
-    const nameOf = (code) => (me.data.items[code] || everyItems[code] || {}).name ?? "";
-    const rowKey = (s) => JSON.stringify([s.balloon, s.part]);
+    let deep = null; // 全階層（範囲で選んだ時に読む・⑪ と同じ口）
+    const nameOf = (code) => (me.data.items[code] || everyItems[code] || {}).name ?? (items.get(code) || {}).name ?? "";
     const unit = me.child ? "組立品" : "製品";
     const range = el("select", { class: "in" }, el("option", { value: "here" }, `表示中の${unit}（${parents().length}）`),
-      me.child ? null : el("option", { value: "all" }, `全対象品番（${S.targets.length}）`));
+      me.child ? null : el("option", { value: "all" }, `全対象品番（${S.targets.length}）`),
+      me.child ? null : el("option", { value: "deep" }, `全階層（${S.targets.length}）`));
     const same = (a, b) => a === b.trim() || clean(a) === clean(b);
     const fold = (s) => clean(s).toLowerCase();
-    const hit = (s) => (!clean(old.value) || same(s.part, old.value)) && (!clean(oldWord.value) || fold(nameOf(s.part)).includes(fold(oldWord.value)));
-    const places = () => {
+    const hit = (part) => (!clean(old.value) || same(part, old.value)) && (!clean(oldWord.value) || fold(nameOf(part)).includes(fold(oldWord.value)));
+    // 行: { key, level, parent（組立品の中の時の親）, balloon, part, codes（製品か組立品）, top（直下の箇所）, inner（組立品の中の箇所） }
+    const groups = () => {
       if (!clean(old.value) && !clean(oldWord.value)) return [];
-      const slots = range.value === "all" ? Object.entries(every) : parents().map((p) => [p, me.slots(p)]);
-      return slots.flatMap(([parent, found]) => found.filter((s) => !s.lost && hit(s) && Number(s.quantity) !== 0).map((s) => [parent, s]));
+      const found = new Map();
+      const group = (key, init) => {
+        if (!found.has(key)) found.set(key, { key, codes: new Set(), top: [], inner: [], ...init });
+        return found.get(key);
+      };
+      if (range.value === "deep") {
+        for (const p of deep.places) {
+          if (Number(p.quantity) === 0 || !hit(p.part)) continue;
+          const g = group(JSON.stringify([1, "", p.balloon, p.part]), { level: 1, parent: "", balloon: p.balloon, part: p.part });
+          g.codes.add(p.product);
+          g.top.push({ product: p.product, balloon: p.balloon, ...(p.now === undefined ? {} : { now: p.now }), old: p.part });
+        }
+        for (const r of deep.inside) {
+          if (!hit(r.part)) continue;
+          for (const line of r.lines) {
+            if (Number(line.quantity) === 0) continue;
+            const parent = r.path[r.path.length - 1];
+            // 同じ親品番の中の同じ箇所は、上の組立品が違っても1行にまとめる（どの上かは見せない）
+            const g = group(JSON.stringify([r.path.length + 1, parent, line.balloon, r.part]), { level: r.path.length + 1, parent, balloon: line.balloon, part: r.part });
+            for (const place of deep.tops[r.path[0]] || []) g.codes.add(place.product);
+            g.inner.push({ path: r.path, old: r.part, balloon: line.balloon });
+          }
+        }
+      } else {
+        const slots = range.value === "all" ? Object.entries(every) : parents().map((p) => [p, me.slots(p)]);
+        for (const [parent, found2] of slots) {
+          for (const s of found2) {
+            if (s.lost || !hit(s.part) || Number(s.quantity) === 0) continue;
+            const g = group(JSON.stringify([1, "", s.balloon, s.part]), { level: 1, parent: "", balloon: s.balloon, part: s.part });
+            g.codes.add(parent);
+            g.top.push(me.child ? { parent, products: me.range(), balloon: s.balloon, now: s.now, old: s.part }
+              : { product: parent, balloon: s.balloon, now: s.now, old: s.part });
+          }
+        }
+      }
+      return [...found.values()].sort((a, b) => a.level - b.level || a.parent.localeCompare(b.parent, "ja", { numeric: true })
+        || balloonOrder(a.balloon, b.balloon) || a.part.localeCompare(b.part, "ja", { numeric: true }));
     };
-    // 新品番と同じ品番の箇所は、替えても変わらないので外す
-    const chosen = () => places().filter(([, s]) => !off.has(rowKey(s)) && !same(s.part, next.value));
+    // 新品番と同じ品番の行は、替えても変わらないので外す
+    const chosen = () => groups().filter((g) => !off.has(g.key) && !same(g.part, next.value));
+    const count = (gs) => gs.reduce((n, g) => n + g.top.length + g.inner.length, 0);
     const run = el("button", { class: "btn pri", onclick: () => replace().catch(fail) });
     const drawList = () => {
-      const found = new Map();
-      for (const [parent, s] of places()) {
-        if (!found.has(rowKey(s))) found.set(rowKey(s), { s, codes: [] });
-        found.get(rowKey(s)).codes.push(parent);
-      }
-      const shown = [...found.values()].sort((a, b) => balloonOrder(a.s.balloon, b.s.balloon) || a.s.part.localeCompare(b.s.part, "ja", { numeric: true }));
-      fill(list, shown.length ? el("table", { class: "list" }, el("tr", {}, ["対象", "風船", "サブ番号", "元品番", "名称", "箇所", unit].map((t) => el("th", {}, t))),
-        shown.map(({ s, codes }) => el("tr", {},
-          el("td", {}, el("input", { type: "checkbox", checked: !off.has(rowKey(s)), onchange: (e) => {
-            e.target.checked ? off.delete(rowKey(s)) : off.add(rowKey(s));
-            drawList();
-          } })),
-          el("td", {}, balloonText(s.balloon)), el("td", {}, branchText(s.balloon)), el("td", {}, s.part), el("td", {}, nameOf(s.part)),
-          el("td", { class: "r" }, codes.length),
-          el("td", { title: codes.join("・") }, codes.slice(0, 4).join("・") + (codes.length > 4 ? ` ほか ${codes.length - 4}` : "")))))
-        : el("div", { class: "mini" }, clean(old.value) || clean(oldWord.value) ? "今の構成にありません" : ""));
-      run.textContent = `置換（${chosen().length} 箇所）`;
+      const shown = groups();
+      const levels = range.value === "deep";
+      const head = ["対象", ...(levels ? ["レベル", "親品番"] : []), "風船", "サブ番号", "元品番", "名称", "箇所", unit];
+      fill(list, shown.length ? el("div", { style: "max-height:360px;overflow:auto" }, el("table", { class: "list" }, el("tr", {}, head.map((t) => el("th", {}, t))),
+        shown.map((g) => {
+          const codes = [...g.codes];
+          return el("tr", {},
+            el("td", {}, el("input", { type: "checkbox", checked: !off.has(g.key), onchange: (e) => {
+              e.target.checked ? off.delete(g.key) : off.add(g.key);
+              drawList();
+            } })),
+            ...(levels ? [el("td", { class: "r" }, String(g.level)), el("td", {}, g.parent)] : []),
+            el("td", {}, balloonText(g.balloon)), el("td", {}, branchText(g.balloon)), el("td", {}, g.part), el("td", {}, nameOf(g.part)),
+            el("td", { class: "r" }, g.top.length + g.inner.length),
+            el("td", { title: codes.join("・") }, codes.slice(0, 4).join("・") + (codes.length > 4 ? ` ほか ${codes.length - 4}` : "")));
+        }))) : el("div", { class: "mini" }, clean(old.value) || clean(oldWord.value) ? "今の構成にありません" : ""));
+      run.textContent = `置換（${count(chosen())} 箇所）`;
       run.disabled = !chosen().length || !clean(next.value);
     };
     const names = async () => {
@@ -2160,6 +2199,11 @@ async function rewriteScreen(main, cur) {
           every = got.direct;
           everyItems = got.items;
         }
+        if (range.value === "deep" && !deep) {
+          deep = await work("読み込んでいます", () => api("GET", "/api/v2/after-parts", q({ plan: PLAN })));
+          await lookup(deep.places.map((p) => p.part)); // 直下の部品の名称（組立品の中の部品は name が付いて来る）
+          for (const r of deep.inside) if (r.name !== null && !everyItems[r.part]) everyItems[r.part] = { name: r.name };
+        }
       } catch (e) {
         range.value = "here";
         fail(e);
@@ -2168,18 +2212,36 @@ async function rewriteScreen(main, cur) {
       drawList();
     });
     const replace = async () => {
-      const list = chosen();
+      const picked = chosen();
       const to = clean(next.value);
-      const body = { replace: [], inside: [] };
-      for (const [parent, s] of list) {
-        if (me.child) body.inside.push({ parent, products: me.range(), balloon: s.balloon, now: s.now, old: s.part, new: to });
-        else body.replace.push({ product: parent, balloon: s.balloon, now: s.now, old: s.part, new: to });
-      }
+      const top = picked.flatMap((g) => g.top.map((t) => ({ ...t, new: to })));
+      const inner = picked.flatMap((g) => g.inner.map((x) => ({ ...x, new: to })));
       await later(async () => {
-        await work("変更しています", () => send("/api/v2/structure", body, `${list.length} 箇所を ${to} に替えました`));
-        for (const [, s] of list) {
+        if (range.value !== "deep") {
+          const body = me.child ? { inside: top } : { replace: top };
+          if (await work("変更しています", () => send("/api/v2/structure", body, `${top.length} 箇所を ${to} に替えました`)) === false) return;
+        } else {
+          // 直下を先に、組立品の中は後に（中を替えると上の組立品に新しい品番が要るので、入れる前に聞く）
+          if (top.length) await work("変更しています", () => api("POST", "/api/v2/replace/apply", { number: S.number, plan: PLAN }, { rows: top }));
+          if (inner.length) {
+            const fresh = (await api("POST", "/api/v2/structure/needs", { number: S.number, plan: PLAN }, { rows: inner })).needs.filter((n) => n.fresh);
+            const numbers = fresh.length ? await askNumbers(fresh) : {};
+            if (numbers === null) {
+              done(top.length ? `直下の ${top.length} 箇所だけを替えました（組立品の中はやめました）` : "やめました");
+              tell("saved");
+              box.close();
+              await refresh();
+              return;
+            }
+            const d = await work("変更しています", () => api("POST", "/api/v2/inside/replace", { number: S.number, plan: PLAN }, { rows: inner, numbers }));
+            done(`${top.length + inner.length} 箇所を ${to} に替えました${madeText(d)}`);
+          } else done(`${top.length} 箇所を ${to} に替えました`);
+          tell("saved");
+        }
+        for (const g of picked) {
+          if (g.level !== 1) continue;
           // 替えた行が動かないように、新しい鍵に位置を渡す
-          const [from, key] = [s.part, to].map((part) => keyOf({ balloon: s.balloon, part }));
+          const [from, key] = [g.part, to].map((part) => keyOf({ balloon: g.balloon, part }));
           if (place.has(from) && !place.has(key)) place.set(key, place.get(from));
         }
         box.close();

@@ -535,7 +535,8 @@ class StudyApi:
     def replace_inside(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
         """組立品の中の置き換え。新しい品番が要る組立品には、自動で品番を付ける（made）。"""
         number, plan = _number(params), self._plan(params)
-        result = self._edit_inside(number, plan, _objects(body, "rows"))
+        numbers = body.get("numbers")
+        result = self._edit_inside(number, plan, _objects(body, "rows"), numbers if isinstance(numbers, dict) else None)
         return self._json({**self.after_parts({"number": number, "plan": plan}).json(), **result})
 
     def _edit_inside(self, number: str, plan: str, rows: list[dict[str, Any]], numbers: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -620,11 +621,12 @@ class StudyApi:
         return self._json(result)
 
     def structure_needs(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
-        """組立品の中の打ち替え（inside）で新しく取る品番の候補。入れる前に画面で聞くために、何も書かずに返す。
-        fresh が偽の物は、中身の同じ仮品番がもうあり、その品番を使う（聞かない）。"""
+        """組立品の中の打ち替え（⑧の窓の inside か、一括置換の全階層の rows＝path の形）で新しく取る品番の候補。
+        入れる前に画面で聞くために、何も書かずに返す。fresh が偽の物は、中身の同じ仮品番がもうあり、その品番を使う（聞かない）。"""
         number, plan = _number(params), self._plan(params)
         ws = self.store.workspace(number)
-        rebuild = Rebuild(ws, plan, input_edits(ws, expand_parents(ws, plan, _objects(body, "inside"))))
+        rows = _objects(body, "rows") if "rows" in body else expand_parents(ws, plan, _objects(body, "inside"))
+        rebuild = Rebuild(ws, plan, input_edits(ws, rows))
         temps = {t.code for t in ws.temps}
         return self._json({"needs": [{"code": n["code"], "name": n["name"], "suggested": n["suggested"], "fresh": n["suggested"] not in temps}
                                      for n in rebuild.needs()]})
