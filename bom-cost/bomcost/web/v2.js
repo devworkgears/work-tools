@@ -579,7 +579,7 @@ async function hubScreen(main, cur) {
     el("div", { class: "groups" },
       // 左から使う順。まん中（青）が打つ画面、右が見る画面
       el("fieldset", { class: "grp" }, big(3, "対象品番"), big(9, "仮品番")), arrow(),
-      el("fieldset", { class: "grp edit" }, big(8, "構成変更"), big(11, "部品変更"), big(10, "費目変更")), arrow(),
+      el("fieldset", { class: "grp edit" }, big(8, "構成変更"), big(10, "費目変更")), arrow(),
       el("fieldset", { class: "grp" }, big(5, "構成一覧"), big(6, "変更一覧", S.problems ? [" ", el("span", { class: "pill warn" }, S.problems)] : null), big(7, "結果"))),
   );
 }
@@ -2294,7 +2294,7 @@ async function changesScreen(main) {
     temps = data.temps;
     fill(deepBox, data.deep ? el("div", { class: "row" },
       el("span", { class: "pill warn" }, `2階層目の変更 ${data.deep} 件は計算に入りません`),
-      el("span", { class: "mini" }, "組立品の中は、部品変更で替えます"),
+      el("span", { class: "mini" }, "組立品の中は、構成変更の［開く］で替えます"),
       ro ? null : el("button", { class: "btn", onclick: dropDeep }, "2階層目の変更削除")) : null);
     const owns = data.rows.filter((r) => r.source === "own");
     await lookup([...data.by_product.map((r) => r.product), ...owns.map((r) => r.product)]);
