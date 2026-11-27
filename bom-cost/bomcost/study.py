@@ -101,6 +101,7 @@ CREATE TABLE IF NOT EXISTS v2_temp_item (
     name TEXT NOT NULL DEFAULT '',
     material TEXT,
     base TEXT,
+    specification TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (study_id, position)
 );
 CREATE TABLE IF NOT EXISTS v2_temp_slot (
@@ -359,6 +360,7 @@ class Temp(NamedTuple):
     material: Decimal | None = None
     base: str | None = None
     lines: tuple[Slot, ...] = ()
+    specification: str = ""
 
 
 @dataclass
@@ -413,7 +415,7 @@ def merge_temps(bom: Version, temps: Sequence[Temp]) -> set[str]:
     fresh = {t.code: t for t in temps if t.code not in bom.items}
     derived = {c: t for c, t in fresh.items() if t.base is not None and t.material is None}
     for t in fresh.values():
-        bom.add_item(Item(t.code, t.name))
+        bom.add_item(Item(t.code, t.name, specification=t.specification))
         if t.code not in derived:
             bom.add_cost(CostRow(t.code, {CostHead.MATERIAL: t.material}))
     calc = CostCalculator(bom, CostHead.MATERIAL)
@@ -896,8 +898,12 @@ class StudyStore:
             if name not in present:
                 conn.execute(f"ALTER TABLE v2_item ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
         # 流用元の列を足す前に作った仮品番の表
-        if "base" not in {r[1] for r in conn.execute("PRAGMA table_info(v2_temp_item)")}:
+        temp_columns = {r[1] for r in conn.execute("PRAGMA table_info(v2_temp_item)")}
+        if "base" not in temp_columns:
             conn.execute("ALTER TABLE v2_temp_item ADD COLUMN base TEXT")
+        # 仕様の列を足す前に作った仮品番の表
+        if "specification" not in temp_columns:
+            conn.execute("ALTER TABLE v2_temp_item ADD COLUMN specification TEXT NOT NULL DEFAULT ''")
         conn.commit()
         self._take_deltas()
 
@@ -1092,8 +1098,8 @@ class StudyStore:
         lines: dict[str, list[Slot]] = {}
         for code, *slot in q("SELECT code, balloon, now, part, quantity, given FROM v2_temp_slot WHERE study_id = ? ORDER BY rowid", (sid,)):
             lines.setdefault(code, []).append(_slot_py(*slot))
-        return [Temp(c, nm, _dec(m), base, tuple(lines.get(c, ()))) for c, nm, m, base in q(
-            "SELECT code, name, material, base FROM v2_temp_item WHERE study_id = ? ORDER BY position", (sid,))]
+        return [Temp(c, nm, _dec(m), base, tuple(lines.get(c, ())), spec) for c, nm, m, base, spec in q(
+            "SELECT code, name, material, base, specification FROM v2_temp_item WHERE study_id = ? ORDER BY position", (sid,))]
 
     def add_plan(self, number: str) -> str:
         """空の案を次の名前（A〜Z の空き）で足し、その名前を返す。"""
@@ -1400,7 +1406,8 @@ class StudyStore:
                     raise ValueError(f"流用元が仮品番と同じです（{code}）")
                 if not bom.children(base):
                     raise ValueError(f"流用元は、部品表にある組立品を入れてください（{base}）")
-            temps.append(Temp(code, str(r.get("name") or "").strip(), material, base, old.lines if same and old else ()))
+            temps.append(Temp(code, str(r.get("name") or "").strip(), material, base, old.lines if same and old else (),
+                              str(r.get("specification") or "").strip() if "specification" in r else old.specification if old else ""))
         if known is not None:
             shown = {*known, *(str(r.get("key") or "") for r in rows)}
             hidden = [t for t in kept.values() if t.code not in shown]
@@ -1418,8 +1425,8 @@ class StudyStore:
             self._conn.execute("DELETE FROM v2_temp_item WHERE study_id = ?", (sid,))
             self._conn.execute("DELETE FROM v2_temp_slot WHERE study_id = ?", (sid,))
             self._conn.executemany(
-                "INSERT INTO v2_temp_item (study_id, position, code, name, material, base) VALUES (?, ?, ?, ?, ?, ?)",
-                [(sid, i, t.code, t.name, _txt(t.material), t.base) for i, t in enumerate(temps)])
+                "INSERT INTO v2_temp_item (study_id, position, code, name, material, base, specification) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [(sid, i, t.code, t.name, _txt(t.material), t.base, t.specification) for i, t in enumerate(temps)])
             for t in temps:
                 self._put_temp_lines(sid, t.code, t.lines)
             self._touch(sid)
@@ -1511,8 +1518,8 @@ class StudyStore:
         with self._conn:
             at = self._conn.execute("SELECT COALESCE(MAX(position), -1) + 1 FROM v2_temp_item WHERE study_id = ?", (sid,)).fetchone()[0]
             self._conn.executemany(
-                "INSERT INTO v2_temp_item (study_id, position, code, name, material, base) VALUES (?, ?, ?, ?, ?, ?)",
-                [(sid, at + i, t.code, t.name, _txt(t.material), t.base) for i, t in enumerate(added)])
+                "INSERT INTO v2_temp_item (study_id, position, code, name, material, base, specification) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [(sid, at + i, t.code, t.name, _txt(t.material), t.base, t.specification) for i, t in enumerate(added)])
             for code, rows in [*((t.code, t.lines) for t in added), *lines.items()]:
                 self._conn.execute("DELETE FROM v2_temp_slot WHERE study_id = ? AND code = ?", (sid, code))
                 self._put_temp_lines(sid, code, rows)
@@ -1605,7 +1612,7 @@ def _snapshot(ws: Workspace) -> dict[str, Any]:
         "slots": [[c.plan, c.product, c.parent, *_slot_db(c.slot), c.seq] for c in ws.changes],
         "conditions": {k: str(v) for k, v in ws.conditions.items()},
         # 仮品番は bom の写しにも入る（変更に出る品番は写す）。画面で見せるために元の行も残す
-        "temps": [[t.code, t.name, _txt(t.material), t.base, [list(_slot_db(s)) for s in t.lines]] for t in ws.temps],
+        "temps": [[t.code, t.name, _txt(t.material), t.base, [list(_slot_db(s)) for s in t.lines], t.specification] for t in ws.temps],
         "level1": ws.level1,
         "hold": ws.hold,
         "strict": ws.strict,
@@ -1640,9 +1647,10 @@ def _from_snapshot(data: dict[str, Any], version: int) -> Workspace:
 
     def temp(code: str, name: str, material: str | None, *rest: Any) -> Temp:
         base, rows = (rest[0], rest[1]) if rest else (None, [])  # 流用を足す前に固めた版は (品番, 名称, 材料費) の3つ
+        spec = rest[2] if len(rest) > 2 else ""  # 仕様を足す前に固めた版には無い
         lines = ([_slot_py(*s) for s in rows] if by_slot
                  else pair_slots(direct_lines(bom, base) if base else {}, {(b, p): Decimal(d) for b, p, d in rows}))
-        return Temp(code, name, _dec(material), base, tuple(lines))
+        return Temp(code, name, _dec(material), base, tuple(lines), spec)
 
     if by_slot:
         changes = [Change(plan, product, parent, _slot_py(*slot), seq) for plan, product, parent, *slot, seq in data["slots"]]

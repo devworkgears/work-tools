@@ -107,6 +107,22 @@ class Item:
         object.__setattr__(self, "has_children", to_flag(self.has_children, name="子部品の有無"))
 
 
+# サブ番号は風船番号の下の番号で、風船番号と同じく箇所を見分ける。中では「風船番号#サブ番号」の1つの文字で持ち（同じかの比べ・まとめはそのまま効く）、
+# 見せる時と並べる時だけ分ける。風船番号の無い箇所のサブ番号は持たない
+BRANCH_SEP = "#"
+
+
+def join_balloon(balloon: str | None, branch: str | None) -> str | None:
+    return balloon if balloon is None or not branch else f"{balloon}{BRANCH_SEP}{branch}"
+
+
+def split_balloon(balloon: str | None) -> tuple[str | None, str | None]:
+    if balloon is None or BRANCH_SEP not in balloon:
+        return balloon, None
+    head, branch = balloon.split(BRANCH_SEP, 1)
+    return head, branch
+
+
 @dataclass(frozen=True)
 class BomLine:
     """構成行。数量がマイナスの行は抜く部品として扱う。"""

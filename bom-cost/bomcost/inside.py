@@ -445,7 +445,9 @@ class Rebuild:
                 raise ValueError(f"{new} は、別の中身の仮品番で使っています")
             if new in self.ws.bom.items:
                 raise ValueError(f"{new} は部品表にある品番です")
-            temps[new] = Temp(new, str(given.get("name") or "").strip(), None, base, slots(base, plain(pieces)))
+            source = self.ws.bom.items.get(base)  # 仕様は元の組立品から写す（⑨で打ち直せる）
+            temps[new] = Temp(new, str(given.get("name") or "").strip(), None, base, slots(base, plain(pieces)),
+                              source.specification if source else "")
             out.added.append(temps[new])
         for code, pieces in self.fixed.items():
             out.lines[code] = slots(self.base(code), plain(pieces))

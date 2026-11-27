@@ -187,7 +187,7 @@ function nameCell(code) {
   const info = items.get(code);
   if (!info) return { text: "", cls: "auto" };
   if (!info.registered) return { text: "未登録", cls: "bad" };
-  if (info.temp) return { text: `${info.name}（仮）`, cls: "auto", title: "仮品番（⑨ で登録した品番）" };
+  if (info.temp) return { text: info.name, cls: "auto", title: "仮品番（⑨ で登録した品番）" };
   return { text: info.name, cls: "auto" };
 }
 
@@ -814,8 +814,8 @@ function conflictTable(conflicts) {
   return el("div", {},
     el("div", { class: "msg" }, `同じ箇所の数量が、行によって違います: ${conflicts.length} 箇所（先頭の行の数量で取り込みます）`),
     el("div", { style: "max-height:240px;overflow:auto;margin:4px 0 8px" }, el("table", { class: "list" },
-      el("tr", {}, ["親品番", "風船番号", "子品番", "取り込む数量", "ほかの数量"].map((t) => el("th", {}, t))),
-      conflicts.slice(0, MAX_CONFLICTS).map((c) => el("tr", {}, el("td", {}, raw(c.parent)), el("td", {}, raw(c.balloon ?? NO_BALLOON)), el("td", {}, raw(c.child)),
+      el("tr", {}, ["親品番", "風船番号", "サブ番号", "子品番", "取り込む数量", "ほかの数量"].map((t) => el("th", {}, t))),
+      conflicts.slice(0, MAX_CONFLICTS).map((c) => el("tr", {}, el("td", {}, raw(c.parent)), el("td", {}, raw(balloonText(c.balloon))), el("td", {}, raw(branchText(c.balloon))), el("td", {}, raw(c.child)),
         el("td", { class: "r" }, fmt(c.quantities[0])), el("td", { class: "r" }, c.quantities.slice(1).map(fmt).join("・")))))),
     conflicts.length > MAX_CONFLICTS ? el("div", { class: "mini" }, `先頭の ${MAX_CONFLICTS} 箇所を出しています`) : null);
 }
@@ -1175,7 +1175,8 @@ async function searchReplaceScreen(main, cur) {
     ...(grain === "part" ? [[{ text: "材料費", cls: "r" }, (g) => (many(g) ? text("") : price(g.now))]] : [
       ["親品番", (g) => text(g.parent || "（製品）")], ["親名称", (g) => (g.parent ? nameCell(g.parent) : text(""))], ["さらに上", (g) => ({ text: g.upper, cls: "auto" })]]),
     ...(grain === "product" ? [["製品品番", (g) => text(productCell(g))], ["製品名称", (g) => nameCell(productCell(g))],
-      [{ text: "風船", cls: "c" }, (g) => ({ text: (only(g) ? only(g).balloon : line(g).balloon) ?? NO_BALLOON, cls: "c" })],
+      [{ text: "風船", cls: "c" }, (g) => ({ text: balloonText(only(g) ? only(g).balloon : line(g).balloon), cls: "c" })],
+      [{ text: "サブ番号", cls: "c" }, (g) => ({ text: branchText(only(g) ? only(g).balloon : line(g).balloon), cls: "c" })],
       [{ text: "数量", cls: "r" }, (g) => ({ text: fmt(only(g) ? only(g).before : line(g).quantity), cls: "r" })]]
       : [[{ text: "製品", cls: "r" }, (g) => ({ text: String(g.products.size), cls: "r link", title: "押すと製品の一覧" })]]),
     [{ text: "部品品番", cls: "after split" }, afterCell, "code"],
@@ -1334,9 +1335,28 @@ async function searchReplaceScreen(main, cur) {
 const MAX_STRUCTURE_ROWS = 1000;
 
 const NO_BALLOON = "なし"; // 風船番号の無い箇所の見せ方
+// サブ番号は風船番号の下の番号。サーバは「風船番号#サブ番号」の1つの文字で持つ（同じかの比べはそのまま）。見せる時と並べる時だけ分ける
+const BRANCH_SEP = "#";
+
+function splitBalloon(b) {
+  if (b === null || b === undefined) return [null, ""];
+  const at = b.indexOf(BRANCH_SEP);
+  return at < 0 ? [b, ""] : [b.slice(0, at), b.slice(at + 1)];
+}
+
+function joinBalloon(balloon, branch) {
+  return balloon && branch ? `${balloon}${BRANCH_SEP}${branch}` : balloon;
+}
+
+// 風船番号の列とサブ番号の列のセル（どの表も同じ見せ方）
+const balloonText = (b) => splitBalloon(b)[0] ?? NO_BALLOON;
+const branchText = (b) => splitBalloon(b)[1];
 
 function balloonOrder(a, b) {
-  return (a === null) - (b === null) || (a ?? "").localeCompare(b ?? "", "ja", { numeric: true });
+  if (a === null || b === null) return (a === null) - (b === null);
+  const [ha, ba] = splitBalloon(a);
+  const [hb, bb] = splitBalloon(b);
+  return ha.localeCompare(hb, "ja", { numeric: true }) || ba.localeCompare(bb, "ja", { numeric: true });
 }
 
 // 「表示」の欄に並べる、出し方の切り替えのチェック
@@ -1428,10 +1448,11 @@ async function structureView(key, redraw) {
     columns: () => parents.filter((p) => !view.picked.length || view.picked.includes(p)),
     all: (parent) => (child ? data.inside[parent] : data.direct[parent]) || [],
     slots: (parent) => me.all(parent).filter((s) => !s.lost), // 現行の品番が無くなった箇所を除く
-    name: (code) => (data.items[code] ? data.items[code].name + (data.items[code].temp ? "（仮）" : "") : ""),
+    name: (code) => (data.items[code] ? data.items[code].name : ""),
     nameCell: (code) => (!code ? { text: "" } : data.items[code] ? { text: me.name(code), cls: "auto" } : { text: "未登録", cls: "bad" }),
     spec: (code) => ({ text: data.items[code] ? data.items[code].specification : "", cls: "auto" }),
-    state: (code) => ({ text: data.items[code] ? data.items[code].lifecycle : "", cls: "auto c q" }),
+    // 仮品番は、名称に印を足さず、状態の列に「仮」と出す
+    state: (code) => ({ text: !data.items[code] ? "" : data.items[code].temp ? "仮" : data.items[code].lifecycle, cls: "auto c q" }),
     // busy が真なら、読んだ物を使わずに false を返す（打っている間に行と列を入れ替えない）
     async load(busy = () => false) {
       if (!S.number) return true;
@@ -1577,7 +1598,8 @@ async function listScreen(main, cur) {
   const code = (r) => (side === "now" ? r.now : r.part);
   const mark = (r, cell) => (moved(r) ? { ...cell, cls: `${cell.cls ?? ""} own` } : cell);
   const columns = () => [
-    ...(balloons ? [[{ text: "風船", cls: "c" }, (r) => ({ text: r.balloon ?? NO_BALLOON, cls: "c q" })]] : []),
+    ...(balloons ? [[{ text: "風船", cls: "c" }, (r) => ({ text: balloonText(r.balloon), cls: "c q" })],
+      [{ text: "サブ番号", cls: "c" }, (r) => ({ text: branchText(r.balloon), cls: "c q" })]] : []),
     ["品番", (r) => mark(r, { text: code(r) ?? "" })], ["名称", (r) => mark(r, me.nameCell(code(r)))],
     ["仕様", (r) => me.spec(code(r))], ["状態", (r) => me.state(code(r))], ["下位", (r) => me.openCell(r)]];
   const model = {
@@ -1702,15 +1724,17 @@ async function rewriteScreen(main, cur) {
   });
   restart();
   const parents = () => me.columns();
-  const UNIFORM = 7; // 一律: 足しかけの行だけ打てる。打つと出ている親の全部に同じ数量が入る
-  const left = 8; // 番号・風船・品番・名称・仕様・状態・下位・一律
+  // 列: 番号・風船・サブ番号・品番・名称・仕様・状態・下位・一律、その右に親ごとの数量
+  const [BALLOON, BRANCH, PART, NAME, SPEC, STATE, LOWER, UNIFORM] = [1, 2, 3, 4, 5, 6, 7, 8]; // 一律は足しかけの行だけ打てる。打つと出ている親の全部に同じ数量が入る
+  const left = 9;
+  // head・branch は足しかけの行に打った風船番号とサブ番号（balloon はその2つを合わせた箇所の印）。
   // uniform は一律に打った数量。spread は一律で入れたか（もう同じ物がある親には足さない）
-  const newDraft = (near) => ({ draft: true, balloon: "", part: "", now: null, cells: new Map(), amounts: new Map(), uniform: "", spread: false, after: near ? (near.draft ? near.after : keyOf(near)) : null });
+  const newDraft = (near) => ({ draft: true, balloon: "", head: "", branch: "", part: "", now: null, cells: new Map(), amounts: new Map(), uniform: "", spread: false, after: near ? (near.draft ? near.after : keyOf(near)) : null });
   // 打ち替えは溜めて、changed() で1回に送る
   let parts = new Map(); // 行 → 品番（空は現行に戻す）
   let amounts = new Map(); // 行 → 親 → 数量（空は現行に戻す）
   const model = {
-    head: () => ["", { text: "風船", cls: "c" }, "品番", "名称", "仕様", "状態", "下位", { text: "一律", cls: "r" }, ...parents().map(me.head)],
+    head: () => ["", { text: "風船", cls: "c" }, { text: "サブ番号", cls: "c" }, "品番", "名称", "仕様", "状態", "下位", { text: "一律", cls: "r" }, ...parents().map(me.head)],
     nRows: () => rows.length + (ro || !parents().length ? 0 : 1),
     nCols: () => left + parents().length,
     grow: ro ? undefined : () => {
@@ -1723,16 +1747,19 @@ async function rewriteScreen(main, cur) {
       const row = rows[r];
       if (c === 0) return { text: String(r + 1), cls: "n" };
       const part = row ? row.part : "";
-      if (c === 1) return { text: row ? (row.draft ? row.balloon : row.balloon ?? NO_BALLOON) : "", editable: !ro && (!row || !!row.draft), lock: !!row && !row.draft, cls: "c q" };
-      if (c === 2) {
+      if (c === BALLOON || c === BRANCH) {
+        const text = !row ? "" : row.draft ? row[c === BALLOON ? "head" : "branch"] : c === BALLOON ? balloonText(row.balloon) : branchText(row.balloon);
+        return { text, editable: !ro && (!row || !!row.draft), lock: !!row && !row.draft, cls: "c q" };
+      }
+      if (c === PART) {
         const own = row && (row.draft ? part : [...row.cells.values()].some((s) => s.now !== s.part));
         return { text: part, editable: !ro && !(row && row.lost), lock: !!row && row.lost, cls: row && row.lost ? "bad" : own ? "own" : "",
           title: row && row.lost ? "現行の品番が部品表に無くなった（［戻す］で消す）" : null };
       }
-      if (c === 3) return row && row.draft ? nameCell(part) : me.nameCell(part);
-      if (c === 4) return me.spec(part);
-      if (c === 5) return me.state(part);
-      if (c === 6) return me.openCell(row);
+      if (c === NAME) return row && row.draft ? nameCell(part) : me.nameCell(part);
+      if (c === SPEC) return me.spec(part);
+      if (c === STATE) return me.state(part);
+      if (c === LOWER) return me.openCell(row);
       if (c === UNIFORM) return !row || row.draft ? { text: row ? row.uniform : "", editable: !ro, cls: "r q" } : { text: "", lock: true, cls: "off" };
       const parent = parents()[c - left];
       const edge = c === left ? " split" : "";
@@ -1747,7 +1774,7 @@ async function rewriteScreen(main, cur) {
         title: s.problem ? "要確認（変更一覧）" : changed && s.before !== null ? `現行 ${fmt(s.before)}` : null };
     },
     set(r, c, text) {
-      if (c < 1 || (c > 2 && c < left && c !== UNIFORM)) return;
+      if (c < BALLOON || (c > PART && c < left && c !== UNIFORM)) return;
       if (c === UNIFORM && rows[r] && !rows[r].draft) return;
       if (!rows[r]) {
         if (!text) return;
@@ -1758,8 +1785,11 @@ async function rewriteScreen(main, cur) {
       if ((c >= left || c === UNIFORM) && text !== "" && !(isNumber(text) && Number(text) >= 0)) return alert(`数量は0以上の数で入力してください（${row.part || "品番なし"}「${text}」）`);
       if (row.draft) {
         row.refused = false;
-        if (c === 1) row.balloon = text === NO_BALLOON ? "" : text;
-        else if (c === 2) row.part = text;
+        if (c === BALLOON || c === BRANCH) {
+          if (text.includes(BRANCH_SEP)) return alert(`風船番号とサブ番号に「${BRANCH_SEP}」は使えません（「${text}」）`);
+          row[c === BALLOON ? "head" : "branch"] = c === BALLOON && text === NO_BALLOON ? "" : text;
+          row.balloon = joinBalloon(row.head, row.branch) ?? "";
+        } else if (c === PART) row.part = text;
         else if (c === UNIFORM) {
           row.uniform = text;
           if (text !== "") {
@@ -1770,8 +1800,8 @@ async function rewriteScreen(main, cur) {
         else row.amounts.set(parent, text);
         return;
       }
-      if (c === 1 || row.lost) return;
-      if (c === 2) {
+      if (c === BALLOON || c === BRANCH || row.lost) return;
+      if (c === PART) {
         if (text !== row.part) parts.set(row, text);
         return;
       }
@@ -1787,7 +1817,7 @@ async function rewriteScreen(main, cur) {
       later(refresh);
     },
     action(r, c) {
-      if (c === 6 && rows[r] && me.opens(rows[r])) me.open(rows[r]);
+      if (c === LOWER && rows[r] && me.opens(rows[r])) me.open(rows[r]);
       return false;
     },
     selected(r) {
@@ -1803,7 +1833,7 @@ async function rewriteScreen(main, cur) {
       const unit = me.child ? "組立品" : "製品";
       const text = [...found].map(([code, counts]) => (code === null ? `現行には無い（${[...counts.values()].reduce((a, b) => a + b, 0)} ${unit}）`
         : `${code} ${me.name(code)}　数量 ${[...counts].map(([n, k]) => `${n}（${k} ${unit}）`).join("・")}`)).join("　／　");
-      fill(nowLine, el("b", {}, "選択行の現行　"), text ? `風船 ${row.balloon ?? NO_BALLOON}　${text}` : "");
+      fill(nowLine, el("b", {}, "選択行の現行　"), text ? `風船 ${balloonText(row.balloon)}${branchText(row.balloon) ? `　サブ番号 ${branchText(row.balloon)}` : ""}　${text}` : "");
       rowBack.disabled = ro || !cells.some(movedSlot);
       allBack.disabled = ro || !moved;
     },
@@ -2042,13 +2072,13 @@ async function rewriteScreen(main, cur) {
         found.get(s.balloon).push(parent);
       }
       const shown = [...found].sort(([a], [b]) => balloonOrder(a, b));
-      fill(list, shown.length ? el("table", { class: "list" }, el("tr", {}, ["対象", "風船", "箇所", unit].map((t) => el("th", {}, t))),
+      fill(list, shown.length ? el("table", { class: "list" }, el("tr", {}, ["対象", "風船", "サブ番号", "箇所", unit].map((t) => el("th", {}, t))),
         shown.map(([balloon, codes]) => el("tr", {},
           el("td", {}, el("input", { type: "checkbox", checked: !off.has(balloon), onchange: (e) => {
             e.target.checked ? off.delete(balloon) : off.add(balloon);
             drawList();
           } })),
-          el("td", {}, balloon ?? NO_BALLOON), el("td", { class: "r" }, codes.length),
+          el("td", {}, balloonText(balloon)), el("td", {}, branchText(balloon)), el("td", { class: "r" }, codes.length),
           el("td", { title: codes.join("・") }, codes.slice(0, 4).join("・") + (codes.length > 4 ? ` ほか ${codes.length - 4}` : "")))))
         : el("div", { class: "mini" }, clean(old.value) ? "今の構成にありません" : ""));
       run.textContent = `置換（${chosen().length} 箇所）`;
@@ -2274,9 +2304,9 @@ async function changesScreen(main) {
   };
   const detailDialog = (row) => {
     const box = dialog([row.now && row.now.code, row.after && row.after.code].filter(Boolean).join(" → "),
-      el("table", { class: "list" }, el("tr", {}, ["製品", "名称", "親", "風船", "現行", "変更後"].map((t) => el("th", {}, t))),
+      el("table", { class: "list" }, el("tr", {}, ["製品", "名称", "親", "風船", "サブ番号", "現行", "変更後"].map((t) => el("th", {}, t))),
         row.details.map((d) => el("tr", {}, el("td", {}, d.product), el("td", {}, nameCell(d.product).text), el("td", {}, d.parent),
-          el("td", {}, d.balloon ?? NO_BALLOON), el("td", { class: "r" }, d.before === null ? "—" : fmt(d.before)), el("td", { class: "r" }, fmt(d.after))))),
+          el("td", {}, balloonText(d.balloon)), el("td", {}, branchText(d.balloon)), el("td", { class: "r" }, d.before === null ? "—" : fmt(d.before)), el("td", { class: "r" }, fmt(d.after))))),
       [el("span", { class: "sp" }), el("button", { class: "btn", onclick: () => box.close() }, "閉じる")]);
   };
   const dropDeep = async () => {
@@ -2301,7 +2331,8 @@ async function changesScreen(main) {
       [sort.head("製品", (x) => x.product), (x, first) => ({ text: first ? x.product : "" })],
       ["名称", (x, first) => (first ? nameCell(x.product) : { text: "" })]] : []),
     ["レベル", (x) => ({ text: ".".repeat(x.level - 1) + x.level })],
-    ...(view === "product" ? [[{ text: "風船", cls: "c" }, (x) => ({ text: x.balloon ?? NO_BALLOON, cls: "c" })]] : []),
+    ...(view === "product" ? [[{ text: "風船", cls: "c" }, (x) => ({ text: balloonText(x.balloon), cls: "c" })],
+      [{ text: "サブ番号", cls: "c" }, (x) => ({ text: branchText(x.balloon), cls: "c" })]] : []),
     [{ ...sort.head("品番", code("now"), false, "now"), cls: "split" }, (x) => ({ text: code("now")(x), cls: "split" })],
     ["名称", (x) => named(x.now)],
     [{ text: "数量", cls: "r" }, (x) => ({ text: count(x.now), cls: "r" })],
@@ -2311,7 +2342,7 @@ async function changesScreen(main) {
     ...(view === "part" ? [[{ ...sort.head("製品", (x) => String(x.products.length), true), cls: "r split" }, (x) => (x.level > 1 ? { text: "", cls: "split" } : { text: String(x.products.length), cls: "r link split", title: "押すと製品ごとの箇所" })]] : []),
     ["要確認", (x) => ({ text: x.problems.join("・"), cls: x.problems.length ? "bad" : "" })],
   ];
-  const before = () => (view === "part" ? 1 : 4); // 現行より左の列の数（行番号を除く）
+  const before = () => (view === "part" ? 1 : 5); // 現行より左の列の数（行番号を除く）
   const model = {
     groups: () => [{ text: "", span: 1 + before() }, { text: "現行", span: 3, cls: "split" }, { text: "変更後", span: 3, cls: "after split" }, { text: "", span: view === "part" ? 2 : 1, cls: "split" }],
     head: () => ["", ...columns().map((x) => x[0])],
@@ -2532,39 +2563,30 @@ async function ownScreen(main, cur) {
 }
 
 // ⑨ 仮品番 -------------------------------------------------------------
-// 品目の台帳に無い品番の名称と材料費（1個あたり）。この検討の計算にだけ使う（部品の原価は製品の材料費にだけ入るので材料費だけ）。
-// 流用元（部品表の組立品）を入れると、その中（直下）を変えた組立品になる。材料費は空なら流用元から計算する
+// 品目の台帳に無い品番の名称・仕様・材料費（1個あたり）。この検討の計算にだけ使う（部品の原価は製品の材料費にだけ入るので材料費だけ）。
+// 部品の新しい品番は、ここで先に取る。組立品の中を変えた品番は ⑧ の［開く］でできる（元品番は見るだけ・材料費は空なら中の変更から計算する）
 
 async function tempScreen(main, cur) {
   const ro = !canWrite();
-  const blank = () => ({ key: "", code: "", name: "", base: "", savedBase: "", material: "", derived: null, changed: 0, master: false, mark: false });
+  const blank = () => ({ key: "", code: "", name: "", specification: "", base: "", material: "", derived: null, master: false, mark: false });
   let rows = [];
-  let unregistered = [];
   let known = new Set(); // 前に受け取った仮品番（ここに無い物は、ほかの窓でできた物）
-  // サーバーで決まる値（流用元から計算した材料費・中の変更の数・台帳にあるか）を行に移す
-  const take = (row, got) => Object.assign(row, { key: got.code, savedBase: got.base ?? "", derived: got.derived, changed: got.changed, master: got.master });
-  const row = (r) => take({ ...blank(), code: r.code, name: r.name, base: r.base ?? "", material: r.material ?? "" }, r);
+  // サーバーで決まる値（元品番・中の変更から計算した材料費・台帳にあるか）を行に移す
+  const take = (row, got) => Object.assign(row, { key: got.code, base: got.base ?? "", derived: got.derived, master: got.master });
+  const row = (r) => take({ ...blank(), code: r.code, name: r.name, specification: r.specification ?? "", material: r.material ?? "" }, r);
   const load = async () => {
     const d = await api("GET", "/api/v2/temp-items", q());
     rows = d.rows.map(row);
-    unregistered = d.unregistered;
     known = new Set(d.rows.map((r) => r.code));
   };
   // 受け取った物を今の行に移し、ほかの窓でできた仮品番の行を足す
-  const merge = (d, key) => {
+  const merge = (d) => {
     const got = new Map(d.rows.map((x) => [x.code, x]));
-    for (const r of rows) if (got.has(r[key])) take(r, got.get(r[key]));
+    for (const r of rows) if (got.has(r.code)) take(r, got.get(r.code));
     for (const x of d.rows) if (!known.has(x.code) && !rows.some((r) => r.key === x.code)) rows.push(row(x));
-    unregistered = d.unregistered;
     known = new Set(got.keys());
   };
   await load();
-  const note = el("span", { class: "mini" });
-  const drawNote = () => {
-    const shown = unregistered.slice(0, 5).join("・") + (unregistered.length > 5 ? "…" : "");
-    note.textContent = unregistered.length ? `変更に出てくる未登録の品番 ${unregistered.length} 件（${shown}）` : "変更に出てくる未登録の品番はありません";
-  };
-  drawNote();
   const markAll = () => {
     const all = !(rows.length && rows.every((r) => r.mark));
     for (const r of rows) r.mark = all;
@@ -2573,28 +2595,31 @@ async function tempScreen(main, cur) {
     rows = sort.apply(rows);
     if (!ro) saver.schedule(); // 並びも一時保存する
   });
+  // 材料費を打っていない、中を変えた組立品は、計算した値を灰色で出す（打てば打った値を使う）
+  const derivedShown = (row) => row.base && row.material === "" && !row.master;
   const body = el("div");
   const model = {
     head: () => [
       { text: rows.length && rows.every((r) => r.mark) ? "☑" : "☐", cls: "c", title: "全部の行に印", action: ro ? null : markAll },
-      "", sort.head("品番", (r) => r.code), sort.head("名称", (r) => r.name), sort.head("流用元", (r) => r.base), { ...sort.head("材料費", (r) => (r.material !== "" ? r.material : r.derived), true), cls: "r" }, { text: "流用元から計算", cls: "r" }, "下位", "",
+      "", sort.head("品番", (r) => r.code), sort.head("名称", (r) => r.name), sort.head("仕様", (r) => r.specification),
+      { ...sort.head("材料費", (r) => (r.material !== "" ? r.material : r.derived), true), cls: "r" }, sort.head("元品番", (r) => r.base), "",
     ],
     nRows: () => rows.length + (ro ? 0 : 1),
     grow: ro ? undefined : () => { rows.push(blank()); return true; },
-    nCols: () => 9,
+    nCols: () => 8,
     cell(r, c) {
       const row = rows[r];
       if (c === 0) return { text: row ? (row.mark ? "☑" : "☐") : "", cls: "act" };
       if (c === 1) return { text: String(r + 1), cls: "n" };
-      if (c === 2) return { text: row ? row.code : "", editable: !ro };
-      if (c === 3) return { text: row ? row.name : "", editable: !ro };
-      if (c === 4) return { text: row ? row.base : "", editable: !ro, title: "部品表にある組立品の品番" };
-      if (c === 5) return { text: row ? row.material : "", editable: !ro, cls: "r" };
-      if (c === 6) {
-        if (!row || !row.savedBase || row.material !== "" || row.master) return { text: "" };
-        return row.derived === null ? { text: "不明", cls: "r bad", title: "流用元か、中の部品の材料費が分かりません" } : { text: fmt(row.derived), cls: "r auto" };
+      if (c >= 2 && c <= 4) return { text: row ? row[["code", "name", "specification"][c - 2]] : "", editable: !ro };
+      if (c === 5) {
+        if (row && derivedShown(row)) {
+          return row.derived === null ? { text: "不明", edit: "", editable: !ro, cls: "r bad", title: "元品番か、中の部品の材料費が分かりません" }
+            : { text: fmt(row.derived), edit: "", editable: !ro, cls: "r auto" };
+        }
+        return { text: row ? row.material : "", editable: !ro, cls: "r" };
       }
-      if (c === 7) return row && row.savedBase ? { text: row.changed ? `${row.changed} 件` : ro ? "変更なし" : "変える", cls: "link" } : { text: "" };
+      if (c === 6) return { text: row ? row.base : "", cls: "auto" };
       return row && row.master ? { text: "台帳にあり（台帳の値を使う）", cls: "bad" } : { text: "" };
     },
     set(r, c, text) {
@@ -2605,112 +2630,27 @@ async function tempScreen(main, cur) {
         if (!text) return;
         rows.push(blank());
       }
-      const row = rows[r];
-      if (c === 4 && row.changed && text !== row.savedBase && !confirm(`${row.code} の流用元を替えると、中の変更 ${row.changed} 件が消えます。よろしいですか？`)) return;
-      row[["code", "name", "base", "material"][c - 2]] = text;
+      rows[r][["code", "name", "specification", "material"][c - 2]] = text;
       saver.schedule();
     },
     action(r, c) {
       const row = rows[r];
-      if (row && c === 7 && row.savedBase) openInside(row);
       if (!row || ro || c !== 0) return false;
       row.mark = !row.mark;
       return true;
     },
   };
   const grid = new Grid(body, model);
-  // 品番を打った行だけを送る（名称だけ打った行は画面に残す）。台帳にあるかの印と未登録の一覧は返ってきた物で直す
+  // 品番を打った行だけを送る（名称だけ打った行は画面に残す）。元品番は送らない（⑧ で決まり、ここでは変えない）
   const saver = autosaver(cur, async () => {
     const d = await api("PUT", "/api/v2/temp-items", { number: S.number },
-      { known: [...known], rows: rows.filter((r) => r.code).map((r) => ({ key: r.key || undefined, code: r.code, name: r.name, base: r.base, material: r.material })) });
-    merge(d, "code");
+      { known: [...known], rows: rows.filter((r) => r.code).map((r) => ({ key: r.key || undefined, code: r.code, name: r.name, specification: r.specification, material: r.material })) });
+    merge(d);
     items.clear();
-    drawNote();
     grid.render();
   }, async () => {
     await load();
-    drawNote();
     grid.render();
-  });
-  // 流用した仮品番の中（直下）。打つたびに一時保存し、閉じたら材料費を計算し直す
-  const openInside = async (row) => {
-    try {
-      if (Grid.active) Grid.active.commit();
-      await saver.flush();
-      const code = row.key;
-      let lines = [];
-      const read = (d) => { lines = d.rows.map((x) => ({ ...x, balloon: x.balloon ?? "", fresh: x.before_part === null })); };
-      read(await api("GET", "/api/v2/temp-inside", q({ code })));
-      await lookup(lines.map((x) => x.part));
-      const box = el("div");
-      const fresh = () => ({ balloon: "", part: "", quantity: "", before_part: null, before_quantity: null, fresh: true });
-      const inner = {
-        head: () => ["", { text: "風船", cls: "c" }, "品番", "名称", { text: "数量", cls: "r" }, "流用元の品番"],
-        nRows: () => lines.length + (ro ? 0 : 1),
-        grow: ro ? undefined : () => { lines.push(fresh()); return true; },
-        nCols: () => 6,
-        cell(r, c) {
-          const x = lines[r];
-          const isNew = !x || x.fresh;
-          if (c === 0) return { text: String(r + 1), cls: "n" };
-          if (c === 1) return { text: x ? x.balloon : "", editable: !ro && isNew, lock: !isNew, cls: "c" };
-          if (c === 2) return { text: x ? x.part : "", editable: !ro, cls: x && (x.fresh || x.part !== x.before_part) ? "own" : "" };
-          if (c === 3) return nameCell(x && x.part);
-          if (c === 4) return { text: x ? x.quantity : "", editable: !ro, cls: "r" + (x && (x.fresh || !same(x.quantity, x.before_quantity)) ? " own" : "") };
-          return { text: x && x.before_part !== null && x.part !== x.before_part ? x.before_part : "", cls: "auto" };
-        },
-        set(r, c, text) {
-          if (![1, 2, 4].includes(c)) return;
-          if (c === 4 && text !== "" && (!isNumber(text) || Number(text) < 0)) return alert(`数量は 0 以上の数で入力してください（「${text}」）`);
-          if (r >= lines.length) {
-            if (!text) return;
-            lines.push(fresh());
-          }
-          if (c === 1 && !lines[r].fresh) return;
-          lines[r][{ 1: "balloon", 2: "part", 4: "quantity" }[c]] = text;
-          keep.schedule();
-        },
-        changed() {
-          lookup(lines.map((x) => x.part)).then((got) => got && insideGrid.render()).catch(fail);
-        },
-      };
-      const insideGrid = new Grid(box, inner);
-      const keep = autosaver(cur, () => api("PUT", "/api/v2/temp-inside", { number: S.number },
-        { code, rows: lines.filter((x) => x.part).map((x) => ({ balloon: x.balloon, now: x.before_part, part: x.part, quantity: x.quantity })) }),
-      async () => {
-        read(await api("GET", "/api/v2/temp-inside", q({ code })));
-        insideGrid.render();
-      });
-      // × で閉じても、打ちかけを確定して送ってから表を直す
-      const frame = dialog(`${code}（流用元 ${row.savedBase}）`, box, [el("span", { class: "sp" }), el("button", { class: "btn", onclick: () => close() }, "閉じる")]);
-      const close = async () => {
-        insideGrid.commit();
-        await keep.flush();
-        frame.close();
-        cur.saver = saver;
-        Grid.active = grid;
-        items.clear();
-        merge(await api("GET", "/api/v2/temp-items", q()), "key");
-        drawNote();
-        grid.render();
-        grid.focus();
-      };
-      const cross = frame.overlay.querySelector(".close");
-      cross.replaceWith(el("button", { class: "close", onclick: () => close().catch(fail) }, "×"));
-      insideGrid.focus();
-    } catch (e) {
-      fail(e);
-    }
-  };
-  const addUnregistered = el("button", { class: "btn", disabled: ro }, "未登録取込");
-  addUnregistered.addEventListener("click", () => {
-    if (Grid.active) Grid.active.commit();
-    const fresh = unregistered.filter((code) => !rows.some((r) => r.code === code));
-    if (!fresh.length) return done("表に入れる未登録の品番はありません");
-    rows.push(...fresh.map((code) => ({ ...blank(), code })));
-    saver.schedule();
-    grid.render();
-    done(`${fresh.length} 件を表に入れました（名称と材料費を入れてください）`);
   });
   const del = el("button", { class: "btn", disabled: ro }, "行削除");
   del.addEventListener("click", () => {
@@ -2722,10 +2662,7 @@ async function tempScreen(main, cur) {
     grid.render();
     done(`${n} 行を消しました`);
   });
-  main.append(card("仮品番", [addUnregistered, del], [
-    el("div", { class: "row" }, el("span", { class: "mini" }, "品目の台帳に無い品番の名称と材料費（1個あたり）。この検討の計算にだけ使います"), el("span", { class: "sp" }), note),
-    body,
-  ]));
+  main.append(card("仮品番", [del], [body]));
   grid.render();
   grid.focus();
 }

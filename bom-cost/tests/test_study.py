@@ -650,15 +650,18 @@ class StudyApiFlow(unittest.TestCase):
         self.assertTrue(all(r["incomplete"]["A"] for r in self.ok("GET", "/api/v2/calc", q + "&head=material")["rows"]))
         self.assertEqual(self.ok("GET", "/api/v2/temp-items", q)["unregistered"], [tmp])
         # 仮品番に新品番と同じ材料費を入れると、新品番に置き換えた時と同じ値で、不完全の印が外れる
-        got = self.ok("PUT", "/api/v2/temp-items", q, {"rows": [{"code": tmp, "name": "仮の部品", "material": price},
+        got = self.ok("PUT", "/api/v2/temp-items", q, {"rows": [{"code": tmp, "name": "仮の部品", "specification": "t2×40", "material": price},
                                                                {"code": NEW, "name": "台帳にある品番"}, {"code": ""}]})
-        self.assertEqual(got["rows"], [{"code": tmp, "name": "仮の部品", "material": price, "master": False, "base": None,
-                                        "changed": 0, "derived": None},
-                                       {"code": NEW, "name": "台帳にある品番", "material": None, "master": True, "base": None,
-                                        "changed": 0, "derived": None}])
+        self.assertEqual(got["rows"], [{"code": tmp, "name": "仮の部品", "specification": "t2×40", "material": price, "master": False,
+                                        "base": None, "changed": 0, "derived": None},
+                                       {"code": NEW, "name": "台帳にある品番", "specification": "", "material": None, "master": True,
+                                        "base": None, "changed": 0, "derived": None}])
         self.assertEqual(got["unregistered"], [])
         looked = self.ok("POST", "/api/v2/lookup", q, {"codes": [tmp, NEW]})["items"]
         self.assertEqual((looked[tmp]["name"], looked[tmp]["temp"], looked[NEW]["temp"]), ("仮の部品", True, False))
+        # 仮品番の仕様は、⑤⑧の仕様の列に出る（仕様を送らない保存では消えない）
+        self.ok("PUT", "/api/v2/temp-items", q, {"rows": [{"code": tmp, "name": "仮の部品", "material": price}]})
+        self.assertEqual(self.ok("POST", "/api/v2/lookup", q, {"codes": [tmp]})["items"][tmp]["specification"], "t2×40")
         with_temp = self.ok("GET", "/api/v2/calc", q + "&head=material")
         self.assertFalse(any(r["incomplete"]["A"] for r in with_temp["rows"]))
         self.ok("POST", "/api/v2/replace/apply", q + "&plan=A", {"old": tmp, "new": NEW})
@@ -895,7 +898,7 @@ class StudyApiFlow(unittest.TestCase):
         fields = {d["id"]: [f["name"] for f in d["fields"]] for d in preview["tables"]}
         self.assertEqual(fields, {
             "item": ["code", "name", "specification", "lifecycle", "model", "product_spec", "drawing"],
-            "bom_line": ["parent", "child", "quantity", "balloon"],
+            "bom_line": ["parent", "child", "quantity", "balloon", "branch"],
             "cost": ["mbom_code", "material", "direct", "amortization", "processing"],
             "volume": ["product", "annual"]})
         self.assertEqual(preview["suggested"], "item")

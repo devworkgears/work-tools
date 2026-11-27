@@ -281,7 +281,7 @@ class LevelApi(unittest.TestCase):
                                                                       {"balloon": "12", "part": "V", "quantity": "1"}]})
         self.assertEqual(book().sheetnames[-2:], ["仮品番の中", "計算条件"])
         rows = list(book()["仮品番の中"].iter_rows(min_row=2, values_only=True))
-        self.assertEqual(rows, [("T1", "組立改", "U", "置き換え", "K", "K の名称", "N", "N の名称", "11", 2, 2)])
+        self.assertEqual(rows, [("T1", "組立改", "U", "置き換え", "K", "K の名称", "N", "N の名称", "11", None, 2, 2)])
         effects = list(book()["変更ごとの影響"].iter_rows(values_only=True))
         self.assertEqual((effects[0][:6], len(effects)), (("変更", "元品番", "元の名称", "新品番", "新の名称", "製品の数"), 1))
         self.assertIn(("仮品番", "T1", "組立改", 29, "流用元 U から計算"), list(book()["計算条件"].iter_rows(values_only=True)))

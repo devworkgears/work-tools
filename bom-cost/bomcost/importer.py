@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from . import settings
-from .model import BomLine, CostHead, CostRow, ImportWarning, Item, Version, Volume, mbom_to_ebom
+from .model import BomLine, CostHead, join_balloon, CostRow, ImportWarning, Item, Version, Volume, mbom_to_ebom
 from .normalize import to_code, to_optional_code
 
 VENDOR_DIR = Path(__file__).resolve().parent.parent / "vendor"
@@ -44,6 +44,7 @@ TABLE_FIELDS: dict[str, tuple[FieldSpec, ...]] = {
         FieldSpec("child", "子品番", True),
         FieldSpec("quantity", "数量", True, ("員数", "個数")),
         FieldSpec("balloon", "風船番号", False, ("風船", "バルーン番号", "バルーンNo", "バルーン", "符号", "照合番号")),
+        FieldSpec("branch", "サブ番号", False),
     ),
     "cost": (
         FieldSpec("mbom_code", "原価の品番", True),
@@ -60,6 +61,10 @@ TABLE_FIELDS: dict[str, tuple[FieldSpec, ...]] = {
         FieldSpec("annual", "年間台数", True, ("年間生産台数", "年間数量", "台数")),
     ),
 }
+
+
+def _no_zero(code: str | None) -> str | None:
+    return None if code is not None and set(code) == {"0"} else code
 
 
 def _fold_header(text: str) -> str:
@@ -337,11 +342,9 @@ class VersionImport:
         self.version.add_item(item)
 
     def _add_bom_line(self, file: str, number: int, r: dict[str, Any]) -> None:
-        # 風船番号の 0 は、空欄と同じ「風船番号なし」にする（元のデータで振っていない所が 0 で来るため）
-        balloon = to_optional_code(r.get("balloon"), name="風船番号")
-        if balloon is not None and set(balloon) == {"0"}:
-            balloon = None
-        self.version.add_bom_lines([BomLine(r["parent"], balloon, r["child"], r["quantity"])])
+        # 風船番号とサブ番号の 0 は、空欄と同じ「なし」にする（元のデータで振っていない所が 0 で来るため）
+        balloon, branch = (_no_zero(to_optional_code(r.get(k), name=label)) for k, label in (("balloon", "風船番号"), ("branch", "サブ番号")))
+        self.version.add_bom_lines([BomLine(r["parent"], join_balloon(balloon, branch), r["child"], r["quantity"])])
 
     def _add_cost(self, file: str, number: int, r: dict[str, Any]) -> None:
         mbom = to_code(r["mbom_code"], name="原価の品番")

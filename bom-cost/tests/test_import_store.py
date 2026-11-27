@@ -30,6 +30,7 @@ from bomcost import (
     mbom_to_ebom,
     overlay_manual,
 )
+from bomcost.model import split_balloon
 
 M = CostHead.MATERIAL
 d = Decimal
@@ -211,6 +212,18 @@ class ImportFiles(TempDir):
         imp = VersionImport(Version("t"))
         imp.add_file(path, ColumnMap("bom_line", BOM_HEADERS, BOM_MAP))
         self.assertEqual({l.child: l.balloon for l in imp.version.lines}, {"A": None, "B": None, "C": None, "D": "10", "E": "01"})
+
+    def test_branch_tells_places_apart(self) -> None:
+        """サブ番号は風船番号と同じく箇所を見分ける（同じ風船番号・同じ子でもサブ番号が違えば別の行）。0 と空は無し。風船番号の無い行のサブ番号は持たない。"""
+        headers = BOM_HEADERS + ["サブ番号"]
+        path = self.dir / "bom.csv"
+        write_csv(path, headers, [["P", 1, "A", 1, 10, "", 1], ["P", 1, "A", 2, 10, "", 2], ["P", 1, "B", 1, 10, "", 0],
+                                  ["P", 1, "C", 1, "", "", 3]], "utf-8")
+        imp = VersionImport(Version("t"))
+        imp.add_file(path, ColumnMap("bom_line", headers, {**BOM_MAP, "branch": "サブ番号"}))
+        self.assertEqual(sorted((l.child, l.balloon, l.quantity) for l in imp.version.lines),
+                         [("A", "10#1", d(1)), ("A", "10#2", d(2)), ("B", "10", d(1)), ("C", None, d(1))])
+        self.assertEqual([split_balloon(b) for b in ("10#2", "10", None)], [("10", "2"), ("10", None), (None, None)])
 
     def test_bad_row_is_skipped_with_warning(self) -> None:
         path = self.dir / "bom.csv"

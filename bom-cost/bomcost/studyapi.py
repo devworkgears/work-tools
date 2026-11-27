@@ -23,7 +23,7 @@ from .importer import (
     read_csv,
 )
 from .inside import Rebuild, expand_parents, input_edits, inside_rows
-from .model import CostHead, Version
+from .model import CostHead, Version, split_balloon
 from .normalize import to_code, to_optional_code
 from .rollup import CostCalculator
 from .structure import structure
@@ -86,13 +86,16 @@ def _version(params: dict[str, str]) -> int | None:
     return int(text)
 
 
-def _balloon_order(balloon: str | None) -> tuple[int, int, str]:
-    """風船番号の並べ方: 数字は数の順、ほかは文字の順、空欄は最後（空欄どうしは、呼ぶ側で品番の順にする）。"""
+def _number_order(text: str) -> tuple[int, int, str]:
+    return (0, int(text), "") if text.isascii() and text.isdigit() else (1, 0, text)
+
+
+def _balloon_order(balloon: str | None) -> tuple[int, tuple[int, int, str], tuple[int, int, str]]:
+    """風船番号の並べ方: 風船番号、サブ番号（無いのが先）の順。数字は数の順、ほかは文字の順、空欄は最後（空欄どうしは、呼ぶ側で品番の順にする）。"""
     if balloon is None:
-        return (2, 0, "")
-    if balloon.isascii() and balloon.isdigit():
-        return (0, int(balloon), "")
-    return (1, 0, balloon)
+        return (1, (0, 0, ""), (0, 0, ""))
+    head, branch = split_balloon(balloon)
+    return (0, _number_order(head), (-1, 0, "") if branch is None else _number_order(branch))
 
 
 def _slot_rows(placed: list[Placed]) -> list[dict[str, Any]]:
@@ -682,7 +685,7 @@ class StudyApi:
         """仮品番の行（master: 品目の台帳に同じ品番があり、台帳の値を使う）と、変更に出る未登録の品番。"""
         ws = self._ws(params)
         return self._json({
-            "rows": [{"code": t.code, "name": t.name, "material": _s(t.material), "master": t.code not in ws.temp_merged,
+            "rows": [{"code": t.code, "name": t.name, "specification": t.specification, "material": _s(t.material), "master": t.code not in ws.temp_merged,
                       "base": t.base, "changed": len(temp_changes(ws, t)) if t.base is not None else 0,
                       # 流用元から計算した材料費（材料費を打った行と、分からない時は空）
                       "derived": _s(ws.bom.cost_value(t.code, CostHead.MATERIAL))
@@ -820,20 +823,20 @@ class StudyApi:
             ("構成の変更", ["変更", "元品番", "元の名称", "新品番", "新の名称", "数量", "製品の数", "製品", "要確認"],
              [[s["kind"], s["old"], s["old_name"], s["new"], s["new_name"], s["quantity"], len(s["products"]),
                "・".join(s["products"]), "・".join(s["problems"])] for s in summarize_changes(changes)]),
-            ("構成の明細", ["製品", "名称", "変更", "元品番", "元の名称", "新品番", "新の名称", "現行", "変更後", "親", "風船", "要確認"],
+            ("構成の明細", ["製品", "名称", "変更", "元品番", "元の名称", "新品番", "新の名称", "現行", "変更後", "親", "風船", "サブ番号", "要確認"],
              [[r["product"], ws.bom.items[r["product"]].name if r["product"] in ws.bom.items else None, r["kind"],
                r["old"], r["old_name"], r["new"], r["new_name"], _num(r["before"]), _num(r["after"]), r["parent"],
-               r["balloon"], "・".join(r["problems"])]
+               *split_balloon(r["balloon"]), "・".join(r["problems"])]
               for r in changes_by_product(summarize_changes(changes), ws.targets)]),
             ("計算条件", ["種類", "対象", "項目", "値", "備考"], self._condition_rows(ws, plan)),
         ]
-        inner = [[t.code, t.name, t.base, s["kind"], s["old"], s["old_name"], s["new"], s["new_name"], d["balloon"],
+        inner = [[t.code, t.name, t.base, s["kind"], s["old"], s["old_name"], s["new"], s["new_name"], *split_balloon(d["balloon"]),
                   _num(d["before"]), _num(d["after"])]
                  for t in ws.temps if t.base is not None and t.code in ws.temp_merged
                  for s in temp_changes(ws, t) for d in s["details"]]
         if inner:
             sheets.insert(-1, ("仮品番の中", ["仮品番", "名称", "流用元", "変更", "元品番", "元の名称", "新品番", "新の名称", "風船",
-                                          "現行", "変更後"], inner))
+                                          "サブ番号", "現行", "変更後"], inner))
         return self._xlsx(f"検討_{ws.number}", sheets)
 
     @staticmethod
@@ -882,7 +885,7 @@ SHEET_NOTES = (
     ("変更ごとの影響", "した事ごとに、製造原価への効き方。差は1台あたりで製品ごとに違えば最小と最大、年間の影響＝差×年間台数の合計。"
                   "現行比は対象品番の現行の製造原価×年間台数の合計に対する割合。足すとまとめの年間の影響（製造原価）になる"),
     ("構成の変更", "した事ごとに1行。置き換え＝同じ製品・親・風船番号で元品番が 0 になり新品番が増えた物。数量は1箇所あたり"),
-    ("構成の明細", "1行＝製品×した事×箇所（親・風船）。変更の無い対象品番も「変更なし」で出す。数量は親1単位あたりで、"
+    ("構成の明細", "1行＝製品×した事×箇所（親・風船・サブ番号）。変更の無い対象品番も「変更なし」で出す。数量は親1単位あたりで、"
                    "置き換えは現行＝元品番の数量・変更後＝新品番の数量"),
     ("不完全", "未登録の原価や計算に入らない変更があり、金額が足りない行"),
     ("単価待ち", "単価の無い品番を使う変更。置き換えは、単価が分かるまで現行のまま（差なし）で計算する"),
