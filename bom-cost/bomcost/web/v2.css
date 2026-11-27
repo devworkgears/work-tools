@@ -16,6 +16,16 @@
   --warn-bg: #fdecea;
   --shadow: 0 1px 3px rgba(20, 30, 50, .08);
 }
+/* 確定した版を見る窓は、色ごと灰色にして作業中の窓と見分ける */
+body.old {
+  --bg: #dcdcdc;
+  --panel: #f1f1f1;
+  --head: #e3e3e3;
+  --line: #c6c6c6;
+  --accent: #6b6b6b;
+  --soft: #e6e6e6;
+  --shadow: none;
+}
 * { box-sizing: border-box; }
 body {
   margin: 0;
@@ -74,6 +84,7 @@ table.grid td.off { background: var(--head); }
 }
 .card > .b { padding: 10px 12px; overflow-x: auto; }
 .no { font-size: 18px; font-weight: 700; letter-spacing: .03em; }
+.ver { font-size: 14px; font-weight: 700; color: var(--accent); border: 2px solid var(--accent); border-radius: 6px; padding: 0 8px; }
 .close { border: 0; background: none; font-size: 18px; line-height: 1; color: var(--sub); cursor: pointer; padding: 0 4px; }
 .groups { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 fieldset.grp.edit .btn { background: var(--soft); border-color: #b9cff5; color: #1d54b8; }

@@ -1180,9 +1180,13 @@ class StudyStore:
         return row[0]
 
     def versions(self, number: str) -> list[int]:
+        return [r["version"] for r in self.releases(number)]
+
+    def releases(self, number: str) -> list[dict[str, Any]]:
+        """確定した版と、確定した日時（古い順）。"""
         sid = self.study_id(number)
-        return [r[0] for r in self._conn.execute(
-            "SELECT version FROM v2_release WHERE study_id = ? ORDER BY version", (sid,))]
+        return [{"version": v, "taken_at": at} for v, at in self._conn.execute(
+            "SELECT version, taken_at FROM v2_release WHERE study_id = ? ORDER BY version", (sid,))]
 
     def update_header(self, number: str, title: str, owner: str, approver: str, dev_number: str) -> None:
         sid = self.study_id(number)

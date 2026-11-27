@@ -8,6 +8,7 @@ const S = {
   version: null, // null は仮
   header: null,
   versions: [],
+  releases: [], // 確定した版 { version, taken_at }
   targets: [],
   problems: 0,
   variations: {}, // 対象品番のバリエーション → 元の製品
@@ -351,7 +352,9 @@ function tell(type) {
 // 同じ名前の窓が同じ検討の同じ画面を出していれば前に出すだけ（読み直すと打ちかけが消えるため）
 function openWindow(key, extra = {}, name = "") {
   const url = location.pathname + query({ screen: key, number: S.number, version: S.version ?? "", mode: S.mode, draft: S.draft ? S.draft.id : "", ...extra });
-  const w = window.open("", `bomcost-${key}${name}`, "popup,width=1280,height=820");
+  // 確定した版の窓は、作業中の同じ画面の窓と別の窓にする
+  const version = extra.version ?? S.version;
+  const w = window.open("", `bomcost-${key}${version === null || version === "" ? "" : `-v${version}`}${name}`, "popup,width=1280,height=820");
   if (!w) return false;
   let same = false;
   try {
@@ -376,7 +379,8 @@ if (channel) channel.onmessage = (e) => {
     } else if (m.type === "draft-end" && POPUP) window.close();
     return;
   }
-  if (m.type === "switch" && POPUP && (m.number !== S.number || m.version !== S.version)) {
+  // 確定した版の窓は、② が別の検討に替えた時だけ閉じる
+  if (m.type === "switch" && POPUP && (m.number !== S.number || (S.version === null && m.version !== S.version))) {
     leave().finally(() => window.close());
   } else if (m.type === "saved" && S.number && m.number === S.number && !stale) {
     stale = true;
@@ -461,6 +465,8 @@ function applyStudy(data) {
   S.header = data.header;
   S.version = data.version;
   S.versions = data.versions;
+  S.releases = data.releases || [];
+  document.body.classList.toggle("old", S.version !== null);
   S.targets = data.targets;
   S.problems = data.problems;
   S.variations = data.variations || {};

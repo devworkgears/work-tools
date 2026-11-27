@@ -474,6 +474,7 @@ class StudyApi:
             "header": ws.header,
             "version": ws.version,
             "versions": self.store.versions(ws.number),
+            "releases": self.store.releases(ws.number),  # 確定した版と日時（② の過去の版）
             "plans": ws.plan_ids(),
             "targets": ws.targets,
             "problems": problem_count(ws),

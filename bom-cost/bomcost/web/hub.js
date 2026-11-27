@@ -2,18 +2,17 @@
 // ② 設計検討 -------------------------------------------------------------
 
 async function hubScreen(main, cur) {
-  const ro = S.mode === "view" || S.version !== null;
+  if (S.version !== null) return pastHub(main);
+  const ro = S.mode === "view";
   const draft = S.mode === "new" ? S.draft : null;
   const modes = [["new", "新規作成"], ["edit", "修正"], ["view", "照会"]];
   const numberInput = el("input", { class: "in", style: "min-width:110px", value: S.number, disabled: S.mode === "new" });
-  const versionSelect = el("select", { class: "in", style: "min-width:70px", disabled: S.mode === "new" },
-    el("option", { value: "" }, "仮"), S.versions.map((v) => el("option", { value: String(v) }, String(v))));
-  versionSelect.value = S.version === null ? "" : String(S.version);
+  // ② はいつも作業中の版を開く。確定した版は［過去の版］から別の窓で見る
   const read = async () => {
     const number = numberInput.value.trim();
     if (!number) return;
     await leave(cur);
-    work("読み込んでいます", () => loadStudy(number, versionSelect.value || null)).catch(fail);
+    work("読み込んでいます", () => loadStudy(number, null)).catch(fail);
   };
   numberInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") read();
@@ -33,8 +32,17 @@ async function hubScreen(main, cur) {
   const saver = autosaver(cur, async () => applyStudy(await api("PUT", "/api/v2/study", { number: S.number }, header())),
     () => loadStudy(S.number, S.version));
   const fields = [field("題目", "title", 260), field("担当", "owner"), field("承認者", "approver"), field("案件番号", "dev_number")];
-  const state = S.number ? (S.version === null ? "仮" : `版${S.version}`) : "";
-  const updated = h.updated_at ? h.updated_at.slice(0, 10).replaceAll("-", "/") : "";
+  const working = S.number ? el("span", { class: "ver" }, `版${S.versions.length ? Math.max(...S.versions) + 1 : 1} 作業中`) : null;
+  const past = el("select", { class: "in", disabled: !!draft || !S.number || !S.releases.length },
+    el("option", { value: "" }, "過去の版"), S.releases.slice().reverse().map((r) => el("option", { value: String(r.version) }, `版${r.version}　${day(r.taken_at)}`)));
+  past.addEventListener("change", async () => {
+    const version = past.value;
+    past.value = "";
+    if (!version) return;
+    await leave(cur);
+    if (!openWindow(2, { version, mode: "view" })) alert("窓を開けませんでした（ブラウザの設定で、別の窓を許してください）");
+  });
+  const updated = day(h.updated_at);
   // 新規作成は ③ で対象品番を選んでから［実行］で作る。作った時に番号が付く
   const run = draft ? el("button", { class: "btn pri", style: "align-self:flex-end" }, "実行") : null;
   if (run) run.addEventListener("click", async () => {
@@ -105,14 +113,12 @@ async function hubScreen(main, cur) {
       el("div", { class: "chips" }, modes.map(([m, label]) =>
         el("button", { class: "chip" + (S.mode === m ? " on" : ""), onclick: () => setMode(m) }, label))),
       el("span", { class: "mini", style: "margin-left:8px" }, "検討番号"), numberInput,
-      el("span", { class: "mini" }, "版"), versionSelect,
       el("button", { class: "btn", onclick: read, disabled: S.mode === "new" }, "読込"),
       el("button", { class: "btn", onclick: studyListDialog, disabled: S.mode === "new" }, "一覧検索"),
       el("span", { class: "sp" }), bomNote,
       el("button", { class: "btn quiet", onclick: () => importDialog(() => imported().catch(fail)) }, "部品表データ取込（モック）")),
     el("div", { class: "card" },
-      el("div", { class: "h" }, el("span", { class: "no" }, S.number || "　"), el("span", { class: "mini", style: "font-weight:400" }, "版"),
-        el("input", { class: "in ro", value: state, readonly: true, style: "min-width:50px;width:60px" }), release),
+      el("div", { class: "h" }, el("span", { class: "no" }, S.number || "　"), working, release, past),
       el("div", { class: "b" }, el("div", { class: "row", style: "margin:0" }, fields,
         el("label", { class: "f" }, "最終更新日", el("input", { class: "in ro", value: updated, readonly: true, style: "min-width:100px;width:110px" })),
         run))),
@@ -121,6 +127,26 @@ async function hubScreen(main, cur) {
       el("fieldset", { class: "grp" }, big(3, "対象品番"), big(9, "仮品番")),
       el("fieldset", { class: "grp edit" }, big(8, "構成変更"), big(10, "費目変更"), variationButton),
       el("fieldset", { class: "grp" }, big(5, "構成一覧"), big(6, "変更一覧", S.problems ? [" ", el("span", { class: "pill warn" }, S.problems)] : null), big(7, "結果"))),
+  );
+}
+
+function day(at) {
+  return at ? at.slice(0, 10).replaceAll("-", "/") : "";
+}
+
+// 確定した版の ②（別の窓・色は灰色）。見る画面だけを置く
+function pastHub(main) {
+  const h = S.header || {};
+  const at = (S.releases.find((r) => r.version === S.version) || {}).taken_at;
+  const field = (text, key, width) => el("label", { class: "f" }, text,
+    el("input", { class: "in ro", value: h[key] || "", readonly: true, tabindex: "-1", style: width ? `min-width:${width}px` : null }));
+  const open = (key) => el("button", { class: "btn big", onclick: () => openWindow(key) || openScreen(key) }, NAMES[key]);
+  main.append(
+    el("div", { class: "card" },
+      el("div", { class: "h" }, el("span", { class: "no" }, S.number), el("span", { class: "ver" }, `版${S.version}　${day(at)}`)),
+      el("div", { class: "b" }, el("div", { class: "row", style: "margin:0" },
+        field("題目", "title", 260), field("担当", "owner"), field("承認者", "approver"), field("案件番号", "dev_number")))),
+    el("div", { class: "groups" }, el("fieldset", { class: "grp" }, [5, 6, 7].map(open))),
   );
 }
 

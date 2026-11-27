@@ -29,7 +29,8 @@ function openDraft(id) {
 // 別の窓は URL の検討を読んでその画面を開く
 async function openFromUrl() {
   const key = Number(PARAMS.get("screen"));
-  if (!NAMES[key]) return done("開く画面が違います");
+  // ② を別の窓で開くのは、確定した版を見る時だけ
+  if (!NAMES[key] && !(key === 2 && PARAMS.get("version"))) return done("開く画面が違います");
   S.mode = ["edit", "view"].includes(PARAMS.get("mode")) ? PARAMS.get("mode") : "edit";
   if (key === 3 && PARAMS.get("draft") && !PARAMS.get("number")) return openDraft(PARAMS.get("draft"));
   try {
@@ -37,7 +38,7 @@ async function openFromUrl() {
   } catch (e) {
     return done(`読込に失敗しました（${e && e.message ? e.message : e}）`);
   }
-  document.title = `${NUM[key]} ${label(NAMES[key])} ${S.number}`;
+  document.title = `${NUM[key]} ${key === 2 ? "設計検討" : label(NAMES[key])} ${S.number}${S.version === null ? "" : ` 版${S.version}`}`;
   openScreen(key);
 }
 

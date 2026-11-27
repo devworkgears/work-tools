@@ -765,6 +765,8 @@ class StudyApiFlow(unittest.TestCase):
         self.assertEqual((used["inside"], used["outside"], used["deep"]), (2, 4, 0))
         released = self.ok("POST", "/api/v2/release", q, {})
         self.assertEqual((released["version"], released["versions"]), (1, [1]))
+        self.assertEqual([r["version"] for r in released["releases"]], [1])
+        self.assertRegex(released["releases"][0]["taken_at"], r"^\d{4}-\d{2}-\d{2}")
         self.assertEqual(self.ok("GET", "/api/v2/calc", q + "&version=1&head=material"), {
             **result, "computed_at": self.ok("GET", "/api/v2/calc", q + "&version=1&head=material")["computed_at"]})
         excel = self.api.handle("GET", "/api/v2/export/study", q)
