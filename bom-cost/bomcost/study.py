@@ -501,11 +501,6 @@ def refuse_unregistered(bom: Version, codes: Iterable[str]) -> None:
         raise ValueError(f"{'・'.join(lost)} は部品表にも仮品番にもありません。新しい品番は、先に仮品番で取ってください")
 
 
-def unregistered_parts(ws: Workspace) -> list[str]:
-    """変更に出てくる品番のうち、品目の台帳にも仮品番にも無い物（変更に出た順）。"""
-    return list(dict.fromkeys(c.slot.part for c in ws.changes if c.slot.part not in ws.bom.items))
-
-
 def refuse_loop(ws: Workspace, product: str, part: str) -> None:
     """製品の中に、その製品を含む品番を入れると原価が決まらないので断る。"""
     stack, seen = [part], set()

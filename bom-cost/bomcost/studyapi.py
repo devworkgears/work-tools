@@ -38,7 +38,6 @@ from .study import (
     REPLACED,
     Attributes,
     Checked,
-    Placed,
     Prices,
     StudyStore,
     Temp,
@@ -51,7 +50,6 @@ from .study import (
     own_rows,
     after_places,
     annual_of,
-    input_code,
     input_optional_code,
     kind_of,
     known_code,
@@ -59,7 +57,6 @@ from .study import (
     nfkc,
     problem_count,
     temp_placed,
-    unregistered_parts,
     where_used,
 )
 from .upload import preview, read_upload
@@ -96,13 +93,6 @@ def _balloon_order(balloon: str | None) -> tuple[int, tuple[int, int, str], tupl
         return (1, (0, 0, ""), (0, 0, ""))
     head, branch = split_balloon(balloon)
     return (0, _number_order(head), (-1, 0, "") if branch is None else _number_order(branch))
-
-
-def _slot_rows(placed: list[Placed]) -> list[dict[str, Any]]:
-    """直下の箇所（風船の順・風船番号の無い箇所は最後に現行の品番の順）。消した箇所は現行の品番で数量 0。"""
-    return [{"balloon": p.balloon, "part": p.part, "quantity": _s(p.quantity), "before_part": p.now, "before_quantity": _s(p.before)}
-            for _, p in sorted(enumerate(p for p in placed if not p.lost), key=lambda x: (
-                _balloon_order(x[1].balloon), (x[1].now or x[1].part) if x[1].balloon is None else "", x[0]))]
 
 
 def _list(body: dict[str, Any], key: str) -> list[Any]:
@@ -302,8 +292,6 @@ class StudyApi:
             ("GET", r"/api/v2/own", self.own),
             ("PUT", r"/api/v2/own", self.put_own),
             ("POST", r"/api/v2/changes/drop-deep", self.drop_deep),
-            ("GET", r"/api/v2/temp-inside", self.temp_inside),
-            ("PUT", r"/api/v2/temp-inside", self.put_temp_inside),
             ("GET", r"/api/v2/temp-items", self.temp_items),
             ("PUT", r"/api/v2/temp-items", self.put_temp_items),
             ("GET", r"/api/v2/conditions", self.conditions),
@@ -704,26 +692,12 @@ class StudyApi:
                       "derived": _s(ws.bom.cost_value(t.code, CostHead.MATERIAL))
                       if t.base is not None and t.material is None and t.code in ws.temp_merged else None}
                      for t in ws.temps],
-            "unregistered": unregistered_parts(ws),
         })
 
     def put_temp_items(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
         known = _list(body, "known") if "known" in body else None
         self.store.save_temps(_number(params), _objects(body, "rows"), known)
         return self.temp_items({"number": _number(params)})
-
-    def temp_inside(self, params: dict[str, str]) -> "Response":
-        """流用した仮品番の直下（流用元に中の変更を当てた行）。"""
-        ws = self._ws(params)
-        code = input_code(params.get("code", ""))
-        temp = next((t for t in ws.temps if t.code == code and t.base is not None), None)
-        if temp is None:
-            raise ValueError(f"{code} は流用した仮品番ではありません")
-        return self._json({"code": code, "base": temp.base, "rows": _slot_rows(temp_placed(ws.bom, temp))})
-
-    def put_temp_inside(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
-        self.store.save_temp_lines(_number(params), body.get("code"), _objects(body, "rows"))
-        return self.temp_inside({"number": _number(params), "code": str(body.get("code"))})
 
     # ⑦ 結果・計算条件 -------------------------------------------------------
 

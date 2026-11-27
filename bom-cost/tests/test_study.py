@@ -27,7 +27,6 @@ from bomcost.study import (
     NO_PLACE,
     NOT_TARGET,
     OTHER_PART,
-    Placed,
     Prices,
     product_lines,
     StudyStore,
@@ -35,7 +34,7 @@ from bomcost.study import (
     where_used,
     Workspace,
 )
-from bomcost.studyapi import _change_row, _slot_rows, changes_by_product, summarize_changes
+from bomcost.studyapi import _change_row, changes_by_product, summarize_changes
 
 ALL = ("item", "bom_line", "cost", "volume")
 # 設計検討の見本（samples_v2）の品番
@@ -471,10 +470,6 @@ class Summary(unittest.TestCase):
         rows = [self.row("数量", "P1", p, None, "1", "2", b) for p, b in (("Z", None), ("A", None), ("X", "10"), ("Y", "9"))]
         got = changes_by_product(summarize_changes(rows), ["P1"])
         self.assertEqual([(r["balloon"], r["old"]) for r in got], [("9", "Y"), ("10", "X"), (None, "A"), (None, "Z")])
-        one = Decimal(1)
-        got = _slot_rows([Placed(b, p, p, one, one) for b, p in ((None, "Z"), (None, "A"), ("10", "X"), ("9", "Y"))]
-                         + [Placed(None, None, "B", None, one), Placed("1", "L", "L", None, one, lost=True)])
-        self.assertEqual([(r["balloon"], r["part"]) for r in got], [("9", "Y"), ("10", "X"), (None, "A"), (None, "B"), (None, "Z")])
 
     def test_lost_places_show_no_current_count(self) -> None:
         got = summarize_changes([self.row("置き換え", "P1", "A", "C", None, "2", problems=[NO_PLACE])])
@@ -644,12 +639,12 @@ class StudyApiFlow(unittest.TestCase):
         q = f"number={number}"
         tmp = "ZZ0001-001"
         price = self.ok("POST", "/api/v2/lookup", q, {"codes": [NEW]})["items"][NEW]["material"]
-        # 新品番を未登録の品番にすると、結果は不完全で、仮品番の画面に未登録として出る
+        # 新品番を未登録の品番にすると、結果は不完全で、⑥に未登録として出る
         self.ok("PUT", "/api/v2/temp-items", q, {"rows": [{"code": tmp}]})
         self.ok("POST", "/api/v2/replace/apply", q + "&plan=A", {"old": OLD, "new": tmp})
         lose_temps(StudyStore(self.store.connection), number)
         self.assertTrue(all(r["incomplete"]["A"] for r in self.ok("GET", "/api/v2/calc", q + "&head=material")["rows"]))
-        self.assertEqual(self.ok("GET", "/api/v2/temp-items", q)["unregistered"], [tmp])
+        self.assertIn("未登録", [p for s in self.ok("GET", "/api/v2/changes", q + "&plan=A")["summary"] if s["new"] == tmp for p in s["problems"]])
         # 仮品番に新品番と同じ材料費を入れると、新品番に置き換えた時と同じ値で、不完全の印が外れる
         got = self.ok("PUT", "/api/v2/temp-items", q, {"rows": [{"code": tmp, "name": "仮の部品", "specification": "t2×40", "material": price},
                                                                {"code": NEW, "name": "台帳にある品番"}, {"code": ""}]})
@@ -657,7 +652,7 @@ class StudyApiFlow(unittest.TestCase):
                                         "base": None, "changed": 0, "derived": None},
                                        {"code": NEW, "name": "台帳にある品番", "specification": "", "material": None, "master": True,
                                         "base": None, "changed": 0, "derived": None}])
-        self.assertEqual(got["unregistered"], [])
+        self.assertNotIn("未登録", [p for s in self.ok("GET", "/api/v2/changes", q + "&plan=A")["summary"] if s["new"] == tmp for p in s["problems"]])
         looked = self.ok("POST", "/api/v2/lookup", q, {"codes": [tmp, NEW]})["items"]
         self.assertEqual((looked[tmp]["name"], looked[tmp]["temp"], looked[NEW]["temp"]), ("仮の部品", True, False))
         # 仮品番の仕様は、⑤⑧の仕様の列に出る（仕様を送らない保存では消えない）

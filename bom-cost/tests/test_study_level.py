@@ -249,6 +249,11 @@ class LevelApi(unittest.TestCase):
         StudyStore(self.store.connection).replace_bom(bom(), ALL)
         number = self.ok("POST", "/api/v2/studies", {"products": ["P1", "P2"]}, "")["header"]["number"]
         self.q = f"number={number}&plan=A"
+        self.number = number
+
+    def put_inside(self, code: str, rows: list[dict[str, str]]) -> None:
+        """仮品番の中の行を入れる（画面の窓は外したので、保存の処理を直に呼ぶ）。"""
+        StudyStore(self.store.connection).save_temp_lines(self.number, code, rows)
 
     def ok(self, method: str, path: str, body: object = None, query: str | None = None) -> dict:
         r = self.api.handle(method, path, self.q if query is None else query, b"" if body is None else json.dumps(body).encode())
@@ -283,11 +288,7 @@ class LevelApi(unittest.TestCase):
     def test_screens_show_the_inside_of_a_derived_temp(self) -> None:
         got = self.ok("PUT", "/api/v2/temp-items", {"rows": [{"code": "T1", "name": "組立改", "material": "", "base": "U"}]})["rows"]
         self.assertEqual((got[0]["derived"], got[0]["changed"], got[0]["base"]), ("35", 0, "U"))
-        rows = self.ok("GET", "/api/v2/temp-inside", query=self.q + "&code=T1")["rows"]
-        self.assertEqual([(r["balloon"], r["part"], r["quantity"]) for r in rows], [("11", "K", "2"), ("12", "V", "1")])
-        rows[0]["part"] = "N"
-        rows = self.ok("PUT", "/api/v2/temp-inside", {"code": "T1", "rows": rows})["rows"]
-        self.assertEqual((rows[0]["part"], rows[0]["before_part"]), ("N", "K"))  # 元の行の位置に出る
+        self.put_inside("T1", [{"balloon": "11", "part": "N", "quantity": "2"}, {"balloon": "12", "part": "V", "quantity": "1"}])
         self.assertEqual(self.ok("GET", "/api/v2/temp-items")["rows"][0]["changed"], 1)
         self.ok("POST", "/api/v2/replace/apply", {"rows": [{"product": "P2", "balloon": "1", "old": "U", "new": "T1"}]})
         data = self.ok("GET", "/api/v2/changes")
@@ -299,10 +300,9 @@ class LevelApi(unittest.TestCase):
         self.assertEqual([(r["now"], r["part"]) for r in got["inside"]["T1"]], [("K", "N"), ("V", "V")])
         self.assertEqual((got["bases"], got["items"]["T1"]["temp"]), ({"T1": "U"}, True))
         # 数の合わない行（同じ風船に2つ足す）も落とさない
-        self.ok("PUT", "/api/v2/temp-inside", {"code": "T1", "rows": [
-            {"balloon": "11", "part": "N", "quantity": "1"}, {"balloon": "11", "part": "S", "quantity": "1"},
-            {"balloon": "12", "part": "V", "quantity": "1"}]})
-        back = self.ok("GET", "/api/v2/temp-inside", query=self.q + "&code=T1")["rows"]
+        self.put_inside("T1", [{"balloon": "11", "part": "N", "quantity": "1"}, {"balloon": "11", "part": "S", "quantity": "1"},
+                               {"balloon": "12", "part": "V", "quantity": "1"}])
+        back = self.ok("GET", "/api/v2/structure")["inside"]["T1"]
         self.assertEqual(sorted((r["part"], r["quantity"]) for r in back), [("N", "1"), ("S", "1"), ("V", "1")])
 
     def test_the_new_code_of_an_assembly_is_asked_before_it_is_made(self) -> None:
@@ -342,8 +342,7 @@ class LevelApi(unittest.TestCase):
 
         self.ok("PUT", "/api/v2/temp-items", {"rows": [{"code": "T1", "name": "組立改", "base": "U"}]})
         self.assertNotIn("仮品番の中", book().sheetnames)
-        self.ok("PUT", "/api/v2/temp-inside", {"code": "T1", "rows": [{"balloon": "11", "part": "N", "quantity": "2"},
-                                                                      {"balloon": "12", "part": "V", "quantity": "1"}]})
+        self.put_inside("T1", [{"balloon": "11", "part": "N", "quantity": "2"}, {"balloon": "12", "part": "V", "quantity": "1"}])
         self.assertEqual(book().sheetnames[-2:], ["仮品番の中", "計算条件"])
         rows = list(book()["仮品番の中"].iter_rows(min_row=2, values_only=True))
         self.assertEqual(rows, [("T1", "組立改", "U", "置き換え", "K", "K の名称", "N", "N の名称", "11", None, 2, 2)])
