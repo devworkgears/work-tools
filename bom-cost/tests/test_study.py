@@ -10,6 +10,7 @@ from dataclasses import replace
 from decimal import Decimal
 
 import example_settings
+from test_study_level import lose_temps
 from bomcost import settings
 from bomcost.api import Api
 from bomcost.importer import load_openpyxl
@@ -308,7 +309,7 @@ class StructureRows(StudyCase):
     def test_problems_are_marked(self) -> None:
         self.store.save_temps(self.number, [{"code": "ZZ1"}])
         self.store.add_part(self.number, "A", "ZZ1", "1", ["P1"])
-        self.store.save_temps(self.number, [])
+        lose_temps(self.store, self.number)
         self.assertEqual(structure(self.store.workspace(self.number), "A", ["P1"]).bad, {("P1", None, None, "ZZ1")})  # 未登録
 
 
@@ -325,7 +326,7 @@ class Checks(StudyCase):
     def test_same_checks_whichever_input_wrote(self) -> None:
         self.store.save_temps(self.number, [{"code": "X1"}])
         self.store.add_part(self.number, "A", "X1", "1", ["P1"])
-        self.store.save_temps(self.number, [])  # 使った後に、仮品番が消えた
+        lose_temps(self.store, self.number)  # 使った後に、仮品番が消えた
         self.store.save_targets(self.number, ["Q9", "P2"], None)
         self.quantity("Q9", "1", "K120", "2")
         self.store.save_targets(self.number, ["P1", "P2", "P3"], "P1")  # Q9 は対象品番でない製品になる
@@ -646,7 +647,7 @@ class StudyApiFlow(unittest.TestCase):
         # 新品番を未登録の品番にすると、結果は不完全で、仮品番の画面に未登録として出る
         self.ok("PUT", "/api/v2/temp-items", q, {"rows": [{"code": tmp}]})
         self.ok("POST", "/api/v2/replace/apply", q + "&plan=A", {"old": OLD, "new": tmp})
-        self.ok("PUT", "/api/v2/temp-items", q, {"rows": []})
+        lose_temps(StudyStore(self.store.connection), number)
         self.assertTrue(all(r["incomplete"]["A"] for r in self.ok("GET", "/api/v2/calc", q + "&head=material")["rows"]))
         self.assertEqual(self.ok("GET", "/api/v2/temp-items", q)["unregistered"], [tmp])
         # 仮品番に新品番と同じ材料費を入れると、新品番に置き換えた時と同じ値で、不完全の印が外れる
@@ -669,7 +670,7 @@ class StudyApiFlow(unittest.TestCase):
         # 版確定で仮品番も固まる
         self.ok("POST", "/api/v2/replace/apply", q + "&plan=A", {"old": NEW, "new": tmp})
         version = self.ok("POST", "/api/v2/release", q, {})["version"]
-        self.ok("PUT", "/api/v2/temp-items", q, {"rows": []})
+        lose_temps(StudyStore(self.store.connection), number)
         fixed = f"{q}&version={version}"
         self.assertEqual(self.ok("GET", "/api/v2/temp-items", fixed)["rows"][0]["code"], tmp)
         self.assertEqual(self.ok("GET", "/api/v2/calc", fixed + "&head=material")["impact"], with_temp["impact"])

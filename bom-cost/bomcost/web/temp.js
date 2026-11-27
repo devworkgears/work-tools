@@ -86,8 +86,10 @@ async function tempScreen(main, cur) {
     items.clear();
     grid.render();
   }, async () => {
+    // 断られた時（使っている仮品番を消した・品番が重なった など）は、保存してある中身に戻す
     await load();
     grid.render();
+    done("保存できなかったので、元に戻しました");
   });
   const del = el("button", { class: "btn", disabled: ro }, "行削除");
   del.addEventListener("click", () => {

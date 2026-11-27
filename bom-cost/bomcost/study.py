@@ -1420,6 +1420,14 @@ class StudyStore:
         renamed = {old: new for old, new in renamed.items() if old != new}
         if renamed:
             temps = [t._replace(lines=tuple(s._replace(part=renamed.get(s.part, s.part)) for s in t.lines)) for t in temps]
+        # 使っている仮品番（変更に出てくる・ほかの仮品番の中にある）は消さない。中身は仮品番の側にしか無く、消すと戻せないため
+        gone = set(kept) - {t.code for t in temps} - set(renamed)
+        if gone:
+            used = {c for row in self._conn.execute("SELECT parent, part FROM v2_slot WHERE study_id = ?", (sid,)) for c in row}
+            used |= {s.part for t in temps for s in t.lines}
+            busy = sorted(gone & used)
+            if busy:
+                raise ValueError(f"仮品番 {'・'.join(busy)} は構成変更で使っているので消せません（先に構成変更で元に戻してください）")
         with self._conn:
             self._rename_changes(sid, renamed)
             self._conn.execute("DELETE FROM v2_temp_item WHERE study_id = ?", (sid,))

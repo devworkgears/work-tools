@@ -36,6 +36,15 @@ def bom(**material: str | None) -> Version:
     return v
 
 
+def lose_temps(store: StudyStore, number: str, keep: tuple[str, ...] = ()) -> None:
+    """使っている仮品番が消えた状態を作る（前の版で消した物など）。⑨からは使っている仮品番を消せないので、表から直に消す。"""
+    sid = store.study_id(number)
+    with store._conn:
+        for table in ("v2_temp_item", "v2_temp_slot"):
+            store._conn.execute(f"DELETE FROM {table} WHERE study_id = ? AND code NOT IN ({','.join('?' * len(keep))})", (sid, *keep))
+        store._touch(sid)
+
+
 class LevelCase(unittest.TestCase):
     def setUp(self) -> None:
         self.conn = sqlite3.connect(":memory:")
@@ -169,7 +178,7 @@ class Derived(LevelCase):
         self.store.save_temps(self.number, [{"code": "T1", "base": "U"}, {"code": "XX"}])
         rows = [{"balloon": "11", "part": "XX", "quantity": "2"}, {"balloon": "12", "part": "V", "quantity": "1"}]
         self.store.save_temp_lines(self.number, "T1", rows)
-        self.store.save_temps(self.number, [{"code": "T1", "base": "U"}])  # 使った後に XX が消えた
+        lose_temps(self.store, self.number, ("T1",))  # 使った後に XX が消えた
         self.store.apply_replace(self.number, "A", "U", "T1")
         self.assertIsNone(self.ws().bom.cost_value("T1", CostHead.MATERIAL))
         self.assertTrue(self.material()["P1"][2])
@@ -226,7 +235,7 @@ class Derived(LevelCase):
         self.store.apply_replace(self.number, "A", "U", "T1")
         before = self.material()
         version = self.store.take_release(self.number)
-        self.store.save_temps(self.number, [])
+        lose_temps(self.store, self.number)
         self.store.replace_bom(bom(N="999"), ALL)
         self.assertEqual(self.material(version), before)
         self.assertEqual(self.ws(version).temps[0].base, "U")
@@ -425,7 +434,7 @@ class Effects(LevelCase):
         self.store.apply_replace(self.number, "A", "K", "N")
         self.store.save_temps(self.number, [{"code": "ZZ"}])
         self.store.apply_places(self.number, "A", [{"product": "P1", "balloon": "3", "old": "S", "new": "ZZ"}])
-        self.store.save_temps(self.number, [])
+        lose_temps(self.store, self.number)
         self.deep_change()
         got = {(e["kind"], e["old"], e["new"], tuple(e["problems"])): e for e in self.effects()}
         swap = got[("置き換え", "K", "N", ())]
@@ -465,7 +474,7 @@ class RefuseUnregistered(LevelCase):
     def test_parts_lost_later_do_not_block_other_edits(self) -> None:
         self.store.save_temps(self.number, [{"code": "ZZ"}])
         self.store.apply_places(self.number, "A", [{"product": "P1", "balloon": "3", "old": "S", "new": "ZZ"}])
-        self.store.save_temps(self.number, [])
+        lose_temps(self.store, self.number)
         self.store.save_quantities(self.number, "A", [{"product": "P1", "balloon": "2", "part": "K", "quantity": "5"},
                                                       {"product": "P1", "balloon": "3", "part": "ZZ", "quantity": "2"}])
         self.assertEqual(self.changes(), {("P1", "2", "K"): ("K", "5"), ("P1", "3", "S"): ("ZZ", "2")})
@@ -626,6 +635,29 @@ class StudyApiRows:
         api = StudyApi.__new__(StudyApi)
         api._ws = lambda params: ws
         return api._change_rows({"plan": "A"})
+
+
+class RefuseDeletingUsedTemps(LevelCase):
+    """使っている仮品番（変更に出てくる・ほかの仮品番の中にある）は消さない。使っていない物と、品番の打ち替えは通す。"""
+
+    def codes(self) -> list[str]:
+        return [t.code for t in self.ws().temps]
+
+    def test_a_used_temp_is_not_deleted(self) -> None:
+        self.store.save_temps(self.number, [{"code": "T1", "base": "U"}, {"code": "T2"}, {"code": "T3"}])
+        self.store.save_temp_lines(self.number, "T1", [{"balloon": "11", "part": "T2", "quantity": "2"}, {"balloon": "12", "part": "V", "quantity": "1"}])
+        self.store.apply_places(self.number, "A", [{"product": "P1", "balloon": "3", "old": "S", "new": "T3"}])
+        for keep, busy in (([{"code": "T1", "base": "U"}, {"code": "T2"}], "T3"), ([{"code": "T1", "base": "U"}, {"code": "T3"}], "T2")):
+            with self.subTest(busy=busy), self.assertRaisesRegex(ValueError, f"仮品番 {busy} は構成変更で使っているので消せません"):
+                self.store.save_temps(self.number, keep)
+        self.assertEqual(self.codes(), ["T1", "T2", "T3"])
+        # 使っている仮品番も、品番の打ち替えはできる（使っている所も替わる）
+        self.store.save_temps(self.number, [{"code": "T1", "base": "U"}, {"code": "T2"}, {"key": "T3", "code": "T9"}])
+        self.assertEqual(self.codes(), ["T1", "T2", "T9"])
+        # 使っていない仮品番は消せる
+        self.store.save_temps(self.number, [{"code": "T1", "base": "U"}, {"code": "T2"}, {"code": "T9"}, {"code": "T4"}])
+        self.store.save_temps(self.number, [{"code": "T1", "base": "U"}, {"code": "T2"}, {"code": "T9"}])
+        self.assertEqual(self.codes(), ["T1", "T2", "T9"])
 
 
 if __name__ == "__main__":
