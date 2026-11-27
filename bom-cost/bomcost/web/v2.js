@@ -1734,7 +1734,8 @@ async function rewriteScreen(main, cur) {
   let parts = new Map(); // 行 → 品番（空は現行に戻す）
   let amounts = new Map(); // 行 → 親 → 数量（空は現行に戻す）
   const model = {
-    head: () => ["", { text: "風船", cls: "c" }, { text: "サブ番号", cls: "c" }, "品番", "名称", "仕様", "状態", "下位", { text: "一律", cls: "r" }, ...parents().map(me.head)],
+    head: () => [{ text: "", cls: "slim" }, { text: "風船", cls: "c slim" }, { text: "サブ番号", cls: "c slim" }, "品番", "名称", "仕様", { text: "状態", cls: "slim" }, { text: "下位", cls: "slim" },
+      { text: "一律", cls: "r slim" }, ...parents().map(me.head)],
     nRows: () => rows.length + (ro || !parents().length ? 0 : 1),
     nCols: () => left + parents().length,
     grow: ro ? undefined : () => {
@@ -1749,18 +1750,20 @@ async function rewriteScreen(main, cur) {
       const part = row ? row.part : "";
       if (c === BALLOON || c === BRANCH) {
         const text = !row ? "" : row.draft ? row[c === BALLOON ? "head" : "branch"] : c === BALLOON ? balloonText(row.balloon) : branchText(row.balloon);
-        return { text, editable: !ro && (!row || !!row.draft), lock: !!row && !row.draft, cls: "c q" };
+        return { text, editable: !ro && (!row || !!row.draft), lock: !!row && !row.draft, cls: "c q slim" };
       }
       if (c === PART) {
         const own = row && (row.draft ? part : [...row.cells.values()].some((s) => s.now !== s.part));
         return { text: part, editable: !ro && !(row && row.lost), lock: !!row && row.lost, cls: row && row.lost ? "bad" : own ? "own" : "",
           title: row && row.lost ? "現行の品番が部品表に無くなった（［戻す］で消す）" : null };
       }
-      if (c === NAME) return row && row.draft ? nameCell(part) : me.nameCell(part);
-      if (c === SPEC) return me.spec(part);
-      if (c === STATE) return me.state(part);
-      if (c === LOWER) return me.openCell(row);
-      if (c === UNIFORM) return !row || row.draft ? { text: row ? row.uniform : "", editable: !ro, cls: "r q" } : { text: "", lock: true, cls: "off" };
+      // 細い列と詰める列の印を足す（詰めた文字は、押さえた時の札で全部見える）
+      const fit = (cell, cls) => ({ ...cell, cls: `${cell.cls ?? ""} ${cls}`, title: cell.title ?? (cls.startsWith("clip") ? cell.text : null) });
+      if (c === NAME) return fit(row && row.draft ? nameCell(part) : me.nameCell(part), "clip");
+      if (c === SPEC) return fit(me.spec(part), "clip narrow");
+      if (c === STATE) return fit(me.state(part), "slim");
+      if (c === LOWER) return fit(me.openCell(row), "slim");
+      if (c === UNIFORM) return !row || row.draft ? { text: row ? row.uniform : "", editable: !ro, cls: "r q slim" } : { text: "", lock: true, cls: "off slim" };
       const parent = parents()[c - left];
       const edge = c === left ? " split" : "";
       if (!row) return { text: "", editable: !ro, cls: "r q" + edge };
