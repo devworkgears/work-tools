@@ -1339,6 +1339,18 @@ function balloonOrder(a, b) {
   return (a === null) - (b === null) || (a ?? "").localeCompare(b ?? "", "ja", { numeric: true });
 }
 
+// 「表示」の欄に並べる、出し方の切り替えのチェック
+function toggle(text, on, change) {
+  const input = el("input", { type: "checkbox" });
+  input.checked = on;
+  input.addEventListener("change", () => change(input.checked));
+  return el("label", { class: "tg" }, input, text);
+}
+
+function showGroup(...toggles) {
+  return el("div", { class: "f" }, "表示", el("div", { class: "tgs" }, toggles));
+}
+
 // いくつも選べる一覧。押すとチェックの一覧が開く。何も選んでいない時と全部選んだ時は、全部（set([])）
 // options() → [[値, 見せる文字]]・get() → 選んだ値（空は全部）・set(選んだ値)。draw() で見せ方を今の値に合わせる
 function checkList(options, get, set) {
@@ -1529,14 +1541,13 @@ async function structureView(key, redraw) {
   const codeBox = el("input", { class: "in" });
   const nameBox = el("input", { class: "in" });
   for (const box of [codeBox, nameBox]) box.addEventListener("input", () => redraw());
-  const only = el("button", { class: "chip", onclick: () => {
-    me.only = !me.only;
-    only.classList.toggle("on", me.only);
+  const only = toggle("変更行のみ", false, (on) => {
+    me.only = on;
     redraw();
-  } }, "変更行のみ");
+  });
   me.picks = [child ? null : el("label", { class: "f" }, "図面", drawingPick), el("div", { class: "f" }, child ? "組立品" : "製品", parentPick)]; // label で包むと、中のチェックを押した時に一覧のボタンも押される
   me.filters = [el("label", { class: "f" }, "品番", codeBox), el("label", { class: "f" }, "名称", nameBox)];
-  me.onlyButton = only;
+  me.onlyToggle = only;
   me.users = child ? users : null;
   await me.load();
   me.title = (text) => (child ? `${text}　${child.bases.slice(0, 3).join("・")}${child.bases.length > 3 ? ` ほか ${child.bases.length - 3}` : ""}` : text);
@@ -1561,20 +1572,15 @@ async function listScreen(main, cur) {
     draw();
   };
   const parents = () => me.columns();
-  const afterOf = (r) => (r.part === r.now ? null : r.part);
-  const gone = (r) => [...r.cells.values()].every((s) => Number(s.quantity) === 0);
-  const left = () => [
+  // 列は1組。［現行］［変更後］で出す品番と数量を切り替え、変わる所はどちらでも黄色にする
+  const moved = (r) => r.part !== r.now;
+  const code = (r) => (side === "now" ? r.now : r.part);
+  const mark = (r, cell) => (moved(r) ? { ...cell, cls: `${cell.cls ?? ""} own` } : cell);
+  const columns = () => [
     ...(balloons ? [[{ text: "風船", cls: "c" }, (r) => ({ text: r.balloon ?? NO_BALLOON, cls: "c q" })]] : []),
-    ["品番", (r) => ({ text: r.now ?? "" })], ["名称", (r) => me.nameCell(r.now)], ["仕様", (r) => me.spec(r.now)], ["状態", (r) => me.state(r.now)]];
-  const right = [
-    [{ text: "品番", cls: "after split" }, (r) => ({ text: afterOf(r) ?? "", cls: "split" + (afterOf(r) ? " own" : "") })],
-    [{ text: "名称", cls: "after" }, (r) => (gone(r) ? { text: "削除", cls: "auto" } : me.nameCell(afterOf(r)))],
-    [{ text: "仕様", cls: "after" }, (r) => me.spec(afterOf(r))], [{ text: "状態", cls: "after" }, (r) => me.state(afterOf(r))],
-    [{ text: "下位", cls: "after" }, (r) => me.openCell(r)]];
-  const columns = () => [...left(), ...right];
+    ["品番", (r) => mark(r, { text: code(r) ?? "" })], ["名称", (r) => mark(r, me.nameCell(code(r)))],
+    ["仕様", (r) => me.spec(code(r))], ["状態", (r) => me.state(code(r))], ["下位", (r) => me.openCell(r)]];
   const model = {
-    groups: () => [{ text: "", span: 1 }, { text: "現行", span: left().length }, { text: "変更後", span: right.length, cls: "after split" },
-      ...(parents().length ? [{ text: side === "now" ? "現行の数量" : "変更後の数量", span: parents().length, cls: "split" }] : [])],
     head: () => ["", ...columns().map((c) => c[0]), ...parents().map(me.head)],
     nRows: () => rows.length,
     nCols: () => 1 + columns().length + parents().length,
@@ -1586,7 +1592,7 @@ async function listScreen(main, cur) {
       const edge = c === cols.length + 1 ? " split" : "";
       if (!s) return { text: "", cls: "r q" + edge };
       const shown = side === "now" ? s.before : s.quantity;
-      return { text: shown === null ? "" : fmt(shown), cls: "r q" + edge + (s.problem ? " bad" : side === "after" && !same(s.before, s.quantity) ? " own" : ""),
+      return { text: shown === null ? "" : fmt(shown), cls: "r q" + edge + (s.problem ? " bad" : !same(s.before, s.quantity) ? " own" : ""),
         title: s.problem ? "要確認（変更一覧）" : null };
     },
     set() {},
@@ -1596,11 +1602,18 @@ async function listScreen(main, cur) {
     },
   };
   const grid = new Grid(body, model);
-  const balloonButton = el("button", { class: "chip on", onclick: () => {
-    balloons = !balloons;
-    balloonButton.classList.toggle("on", balloons);
+  const balloonToggle = toggle("風船", true, (on) => {
+    balloons = on;
     draw();
-  } }, "風船");
+  });
+  const sides = el("div", { class: "chips" });
+  const drawSides = () => fill(sides, [["now", "現行"], ["after", "変更後"]].map(([k, text]) =>
+    el("button", { class: "chip" + (side === k ? " on" : ""), onclick: () => {
+      side = k;
+      drawSides();
+      draw();
+    } }, text)));
+  drawSides();
   const pick = (options, set) => {
     const select = el("select", { class: "in", style: "min-width:90px", onchange: () => {
       set(select.value);
@@ -1629,8 +1642,7 @@ async function listScreen(main, cur) {
     me.child ? null : el("button", { class: "btn", onclick: conditionsDialog, disabled: !S.number }, "計算条件"),
   ], [
     el("div", { class: "row" }, me.picks, el("label", { class: "f" }, "並び", pick([["balloon", "風船番号"], ["part", "品番"], ["name", "名称"]], (v) => { sort = v; })),
-      el("label", { class: "f" }, "数量", pick([["after", "変更後"], ["now", "現行"]], (v) => { side = v; })),
-      me.filters, el("div", { class: "chips" }, me.onlyButton, balloonButton), me.users, me.note),
+      me.filters, sides, showGroup(me.onlyToggle, balloonToggle), me.users, me.note),
     body,
   ]));
   draw();
@@ -1647,7 +1659,6 @@ async function rewriteScreen(main, cur) {
   let place = new Map(); // 行の鍵 → 並びの位置（打った行が動かないように、開いた時・並べ直した時の位置を持つ）
   let zero = true; // 数量 0（消した箇所）を出すか
   let moved = false; // 現行と違う箇所があるか
-  let spread = false; // 足しかけの行に打った数量を、出ている親の全部に入れるか
   const body = el("div", { class: "listview" });
   const nowLine = el("div", { class: "nowline" }); // 選んだ行の現行
   const keyOf = (r) => JSON.stringify([r.balloon, me.base(r.part), r.n ?? 0, !!r.lost]);
@@ -1691,13 +1702,15 @@ async function rewriteScreen(main, cur) {
   });
   restart();
   const parents = () => me.columns();
-  const left = 7; // 番号・風船・品番・名称・仕様・状態・中
-  const newDraft = (near) => ({ draft: true, balloon: "", part: "", now: null, cells: new Map(), amounts: new Map(), after: near ? (near.draft ? near.after : keyOf(near)) : null });
+  const UNIFORM = 7; // 一律: 足しかけの行だけ打てる。打つと出ている親の全部に同じ数量が入る
+  const left = 8; // 番号・風船・品番・名称・仕様・状態・下位・一律
+  // uniform は一律に打った数量。spread は一律で入れたか（もう同じ物がある親には足さない）
+  const newDraft = (near) => ({ draft: true, balloon: "", part: "", now: null, cells: new Map(), amounts: new Map(), uniform: "", spread: false, after: near ? (near.draft ? near.after : keyOf(near)) : null });
   // 打ち替えは溜めて、changed() で1回に送る
   let parts = new Map(); // 行 → 品番（空は現行に戻す）
   let amounts = new Map(); // 行 → 親 → 数量（空は現行に戻す）
   const model = {
-    head: () => ["", { text: "風船", cls: "c" }, "品番", "名称", "仕様", "状態", "下位", ...parents().map(me.head)],
+    head: () => ["", { text: "風船", cls: "c" }, "品番", "名称", "仕様", "状態", "下位", { text: "一律", cls: "r" }, ...parents().map(me.head)],
     nRows: () => rows.length + (ro || !parents().length ? 0 : 1),
     nCols: () => left + parents().length,
     grow: ro ? undefined : () => {
@@ -1720,6 +1733,7 @@ async function rewriteScreen(main, cur) {
       if (c === 4) return me.spec(part);
       if (c === 5) return me.state(part);
       if (c === 6) return me.openCell(row);
+      if (c === UNIFORM) return !row || row.draft ? { text: row ? row.uniform : "", editable: !ro, cls: "r q" } : { text: "", lock: true, cls: "off" };
       const parent = parents()[c - left];
       const edge = c === left ? " split" : "";
       if (!row) return { text: "", editable: !ro, cls: "r q" + edge };
@@ -1733,23 +1747,27 @@ async function rewriteScreen(main, cur) {
         title: s.problem ? "要確認（変更一覧）" : changed && s.before !== null ? `現行 ${fmt(s.before)}` : null };
     },
     set(r, c, text) {
-      if (c < 1 || (c > 2 && c < left)) return;
+      if (c < 1 || (c > 2 && c < left && c !== UNIFORM)) return;
+      if (c === UNIFORM && rows[r] && !rows[r].draft) return;
       if (!rows[r]) {
         if (!text) return;
         model.grow();
       }
       const row = rows[r];
       const parent = parents()[c - left];
-      if (c >= left && text !== "" && !(isNumber(text) && Number(text) >= 0)) return alert(`数量は0以上の数で入力してください（${row.part || "品番なし"}「${text}」）`);
+      if ((c >= left || c === UNIFORM) && text !== "" && !(isNumber(text) && Number(text) >= 0)) return alert(`数量は0以上の数で入力してください（${row.part || "品番なし"}「${text}」）`);
       if (row.draft) {
         row.refused = false;
         if (c === 1) row.balloon = text === NO_BALLOON ? "" : text;
         else if (c === 2) row.part = text;
-        else if (text === "") row.amounts.delete(parent);
-        else {
-          row.amounts.set(parent, text);
-          if (spread) for (const p of parents()) if (!row.amounts.has(p)) row.amounts.set(p, text);
-        }
+        else if (c === UNIFORM) {
+          row.uniform = text;
+          if (text !== "") {
+            row.spread = true;
+            for (const p of parents()) row.amounts.set(p, text);
+          }
+        } else if (text === "") row.amounts.delete(parent);
+        else row.amounts.set(parent, text);
         return;
       }
       if (c === 1 || row.lost) return;
@@ -1837,18 +1855,13 @@ async function rewriteScreen(main, cur) {
   const allBack = button("全て戻す", () => later(backAll));
   rowBack.title = "選択行の品番と数量を現行に戻す";
   allBack.title = "表示中の全部を現行に戻す";
-  const zeroButton = el("button", { class: "chip on", onclick: () => {
-    zero = !zero;
-    zeroButton.classList.toggle("on", zero);
+  const zeroToggle = toggle("数量0の行", true, (on) => {
+    zero = on;
     const row = selected();
     draw();
     const r = row ? rows.findIndex((x) => x.draft ? x === row : !row.draft && keyOf(x) === keyOf(row)) : -1; // 選んでいた行のまま
     if (r >= 0) grid.select(r, grid.sel.c);
-  } }, "0表示");
-  const spreadButton = el("button", { class: "chip", disabled: ro, title: "追加する行に数量を1つ打つと、表示中の全部に同じ数量が入る", onclick: () => {
-    spread = !spread;
-    spreadButton.classList.toggle("on", spread);
-  } }, "数量一律");
+  });
   const grid = new Grid(body, model);
   // 足しかけの行がある間は、閉じる時に引き止める
   const later = sendQueue(cur, () => drafts.some((d) => d.part || d.balloon || d.amounts.size));
@@ -1903,7 +1916,7 @@ async function rewriteScreen(main, cur) {
     let kept = 0; // 全部に入れる時に、もうあるので足さない所
     for (const d of drafts) {
       if (!d.part || d.refused || d.sending) continue;
-      for (const parent of spread ? [...d.amounts.keys()] : []) {
+      for (const parent of d.spread ? [...d.amounts.keys()] : []) {
         if (!me.slots(parent).some((s) => s.balloon === (d.balloon || null) && s.part === d.part && Number(s.quantity) !== 0)) continue;
         d.amounts.delete(parent);
         kept += 1;
@@ -2116,7 +2129,7 @@ async function rewriteScreen(main, cur) {
     restart();
     draw();
   })], [
-    el("div", { class: "row" }, me.picks, me.filters, el("div", { class: "chips" }, me.onlyButton, zeroButton, spreadButton), me.users, me.note),
+    el("div", { class: "row" }, me.picks, me.filters, showGroup(me.onlyToggle, zeroToggle), me.users, me.note),
     body, nowLine,
   ]));
   draw();

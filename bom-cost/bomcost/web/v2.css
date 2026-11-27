@@ -27,6 +27,7 @@ body {
 .top { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
 .brand { font-weight: 700; font-size: 15px; }
 .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+.row > .chips { align-self: flex-end; margin-bottom: 4px; } /* 見出しのある欄と、下の線をそろえる */
 .modebar { background: var(--head); border-radius: 8px; padding: 8px 12px; }
 .mini { font-size: 11px; color: var(--sub); }
 .sp { flex: 1; }
@@ -51,6 +52,9 @@ label.f, div.f { display: flex; flex-direction: column; font-size: 11px; color: 
   cursor: pointer; font-family: inherit; color: var(--ink);
 }
 .chip.on { background: var(--soft); border-color: var(--accent); color: var(--accent); }
+.tgs { display: flex; gap: 12px; align-items: center; height: 26px; border: 1px solid var(--line); border-radius: 5px; padding: 0 8px; background: var(--panel); }
+.tg { display: flex; gap: 4px; align-items: center; font-size: 12px; color: var(--ink); cursor: pointer; }
+table.grid td.off { background: var(--head); }
 .checkwrap { position: relative; display: inline-block; }
 .in.pick { min-width: 150px; text-align: left; cursor: pointer; font-family: inherit; }
 .checks {
