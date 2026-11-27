@@ -1376,7 +1376,12 @@ function checkList(options, get, set) {
     }
   } }, label, " ▾");
   const wrap = el("span", { class: "checkwrap" }, button, panel);
-  document.addEventListener("mousedown", (e) => { if (!wrap.contains(e.target)) panel.hidden = true; });
+  // 外を押すと閉じる。画面を描き直して一覧が外れたら、見張りも外す
+  const outside = (e) => {
+    if (!wrap.isConnected) document.removeEventListener("mousedown", outside);
+    else if (!wrap.contains(e.target)) panel.hidden = true;
+  };
+  document.addEventListener("mousedown", outside);
   wrap.draw = () => {
     drawLabel();
     if (!panel.hidden) { // 開いている間は、外した途中の状態を残す（読み直しで無くなった値だけ落とす）
