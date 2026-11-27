@@ -910,11 +910,13 @@ class StudyApi:
         wb.remove(wb.active)
         for title, header, rows in sheets:
             sheet = wb.create_sheet(title)
-            for values in (header, *rows):
-                sheet.append([ILLEGAL.sub("", v) if isinstance(v, str) else v for v in values])
-                for cell in sheet[sheet.max_row]:
-                    if isinstance(cell.value, str):
-                        cell.data_type = "s"  # 「=」で始まる文字を式にしない
+            for at, values in enumerate((header, *rows), 1):
+                values = [ILLEGAL.sub("", v) if isinstance(v, str) else v for v in values]
+                sheet.append(values)
+                # 「=」で始まる文字を式にしない。sheet[sheet.max_row] は呼ぶたびに全セルを数え直す（行の数の2乗で遅い）ので、番号で指す
+                for col, v in enumerate(values, 1):
+                    if isinstance(v, str):
+                        sheet.cell(row=at, column=col).data_type = "s"
             sheet.freeze_panes = "A2"
         data = save_workbook(wb, {"まとめ": [1], "金額": [3], "計算条件": [1, 3]})
         return Response(200, data, XLSX_TYPE,

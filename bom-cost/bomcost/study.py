@@ -9,7 +9,7 @@
 import json
 import sqlite3
 import unicodedata
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, Collection, Container, Iterable, Mapping, NamedTuple, Sequence
@@ -47,6 +47,8 @@ CREATE TABLE IF NOT EXISTS v2_volume (
     annual TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS v2_bom_settings (settings TEXT NOT NULL);
+-- 部品表を書き換えるたびに1つ増やす（読み出しの控えを使い続けてよいかの印）
+CREATE TABLE IF NOT EXISTS v2_bom_stamp (n INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS v2_column_map (
     headers TEXT NOT NULL,
     kind TEXT NOT NULL,
@@ -885,6 +887,8 @@ class StudyStore:
 
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
+        # 部品表の読み出しの控え（印, 部品表, 属性）。部品表は取り込みの時だけ変わるので、要求のたびに全部を読み直さない
+        self._kept: tuple[int, Version, Attributes] | None = None
         conn.execute("PRAGMA foreign_keys = ON")
         conn.executescript(SCHEMA)
         # 属性の列より前に作った表には列を足す
@@ -961,6 +965,7 @@ class StudyStore:
                 c.execute("DELETE FROM v2_volume")
                 c.executemany("INSERT INTO v2_volume VALUES (?, ?)",
                               [(v.product, str(v.annual)) for v in version.volumes.values()])
+            self._bump_bom()
         self._take_deltas()
 
     def save_columns(self, headers: Sequence[str], kind: str, columns: Mapping[str, str]) -> None:
@@ -990,10 +995,36 @@ class StudyStore:
             if row is not None:
                 for table in ("v2_item", "v2_line", "v2_cost", "v2_volume", "v2_bom_settings", "v2_column_map"):
                     self._conn.execute(f"DELETE FROM {table}")
+                self._bump_bom()
             self._conn.execute("INSERT INTO v2_bom_settings VALUES (?)", (now,))
         return row is not None
 
+    def _bump_bom(self) -> None:
+        """部品表の表を書き換えた印を増やす（書き換えと同じトランザクションの中で呼ぶ）。"""
+        if self._conn.execute("UPDATE v2_bom_stamp SET n = n + 1").rowcount == 0:
+            self._conn.execute("INSERT INTO v2_bom_stamp VALUES (1)")
+
+    def _kept_bom(self) -> tuple[Version, Attributes]:
+        """控えた部品表と属性。印が変わっていれば（別の StudyStore や接続が取り込んでも）読み直す。"""
+        row = self._conn.execute("SELECT n FROM v2_bom_stamp").fetchone()
+        stamp = 0 if row is None else row[0]
+        if self._kept is None or self._kept[0] != stamp:
+            bom = self._read_bom()
+            bom._by_parent()  # 親ごとの子の索引を先に作り、写しと共有する
+            self._kept = (stamp, bom, self._read_attributes())
+        return self._kept[1], self._kept[2]
+
     def load_bom(self) -> Version:
+        """部品表の写し。品目・原価・年間台数の辞書は写しなので足してよい（merge_temps が足す）。構成の行は控えと共有するので足さない。"""
+        kept, _ = self._kept_bom()
+        bom = replace(kept, items=dict(kept.items), _costs=dict(kept._costs), volumes=dict(kept.volumes))
+        bom._children_index = kept._children_index
+        return bom
+
+    def load_attributes(self) -> Attributes:
+        return dict(self._kept_bom()[1])
+
+    def _read_bom(self) -> Version:
         v = Version("v2")
         q = self._conn.execute
         for code, name, kind, spec, life in q("SELECT code, name, kind, specification, lifecycle FROM v2_item ORDER BY rowid"):
@@ -1007,7 +1038,7 @@ class StudyStore:
             v.add_volume(Volume(product, Decimal(annual)))
         return v
 
-    def load_attributes(self) -> Attributes:
+    def _read_attributes(self) -> Attributes:
         names = [n for n, _ in ATTRIBUTES]
         rows = self._conn.execute(f"SELECT code, {', '.join(names)} FROM v2_item ORDER BY rowid")
         return {row[0]: dict(zip(names, row[1:])) for row in rows}
