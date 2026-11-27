@@ -267,7 +267,7 @@ class LevelApi(unittest.TestCase):
         self.assertEqual(r.status, 200)
         self.assertIn("filename*=UTF-8''%E6%A7%8B%E6%88%90_", r.headers["Content-Disposition"])
         book = load_openpyxl().load_workbook(io.BytesIO(r.body))
-        self.assertEqual(book.sheetnames, ["構成", "説明"])
+        self.assertEqual(book.sheetnames, ["構成"])
         # 品番は1列・親の下に子の順。数量（変更後）は、その箇所のレベルの列（見出しは 1・2・3）にだけ入る
         self.assertEqual([c.value for c in book["構成"][1]][11:14], ["1", "2", "3"])
         rows = list(book["構成"].iter_rows(min_row=2, values_only=True))
