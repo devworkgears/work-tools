@@ -1743,6 +1743,54 @@ def _rates_snapshot(rates: settings.Rates) -> list[str]:
     return [str(rates.adjustment), str(rates.indirect)]
 
 
+class Drift(NamedTuple):
+    """確定した版の控えと今の部品表で、値が違う所。行は Excel にそのまま並べる形。"""
+    costs: list[list[Any]]  # 品番・名称・費目・版の時・今・差
+    lines: list[list[Any]]  # 親品番・風船・子・名称・版の時の数量・今の数量
+    volumes: list[list[Any]]  # 製品・名称・版の時・今
+
+    def __bool__(self) -> bool:
+        return bool(self.costs or self.lines or self.volumes)
+
+
+def release_drift(then: Workspace, now: Version) -> Drift:
+    """版を確定した時に控えた品番（仮品番は除く）の原価・構成と、対象品番の年間台数を、今の部品表と比べる。"""
+    temps = {t.code for t in then.temps}
+    codes = [c for c in then.bom.items if c not in temps]
+
+    def name(code: str) -> str | None:
+        item = now.items.get(code) or then.bom.items.get(code)
+        return item.name if item else None
+
+    costs = []
+    for code in codes:
+        for _, head in COST_COLUMNS:
+            a, b = then.bom.cost_value(code, head), now.cost_value(code, head)
+            if a != b:
+                costs.append([code, name(code), head.value, a, b, None if a is None or b is None else b - a])
+
+    def quantities(bom: Version, parent: str) -> dict[tuple[str | None, str], Decimal]:
+        out: dict[tuple[str | None, str], Decimal] = {}
+        for line in bom.children(parent, by_balloon=True):
+            out[(line.balloon, line.child)] = out.get((line.balloon, line.child), Decimal(0)) + line.quantity
+        return out
+
+    lines = []
+    for parent in codes:
+        a, b = quantities(then.bom, parent), quantities(now, parent)
+        for key in sorted(a.keys() | b.keys(), key=lambda k: (k[0] is None, k[0] or "", k[1])):
+            if a.get(key) != b.get(key):
+                lines.append([parent, key[0], key[1], name(key[1]), a.get(key), b.get(key)])
+
+    volumes = []
+    for product in then.targets:
+        a, b = then.bom.volume(product), now.volume(product)
+        x, y = (None if a is None else a.annual), (None if b is None else b.annual)
+        if x != y:
+            volumes.append([product, name(product), x, y])
+    return Drift(costs, lines, volumes)
+
+
 def _snapshot(ws: Workspace) -> dict[str, Any]:
     bom = ws.bom
     codes: set[str] = set(ws.targets)

@@ -50,6 +50,7 @@ from .study import (
     calculate_heads,
     followers,
     own_rows,
+    release_drift,
     variation_bases,
     variation_shortfalls,
     after_places,
@@ -305,6 +306,7 @@ class StudyApi:
             ("POST", r"/api/v2/release", self.release),
             ("GET", r"/api/v2/export/study", self.export_study),
             ("GET", r"/api/v2/export/structure", self.export_structure),
+            ("GET", r"/api/v2/export/release-drift", self.export_release_drift),
         ]
 
     def _json(self, data: Any) -> "Response":
@@ -880,6 +882,23 @@ class StudyApi:
             ("構成", ["製品", "製品の名称", "レベル", "親品番", "風船", "サブ番号", "品番", "名称", "仕様", "現行の品番",
                     "数量（現行）", *levels, "変更"], rows),
         ])
+
+    def export_release_drift(self, params: dict[str, str]) -> "Response":
+        """確定した版の時と今の部品表で、原価・構成・年間台数が違う所だけを Excel に出す。違いが無ければ same を返す。"""
+        ws = self._ws(params)
+        if ws.version is None:
+            raise ValueError("比べる版を選んでください")
+        drift = release_drift(ws, self.store.load_bom())
+        if not drift:
+            return self._json({"same": True})
+        then = f"版{ws.version}の時"
+        sheets = [
+            ("原価の違い", ["品番", "名称", "費目", then, "今", "差"], drift.costs),
+            ("構成の違い", ["親品番", "風船", "サブ番号", "子", "名称", f"数量（{then}）", "数量（今）"],
+             [[r[0], *split_balloon(r[1]), *r[2:]] for r in drift.lines]),
+            ("年間台数の違い", ["製品", "名称", then, "今"], drift.volumes),
+        ]
+        return self._xlsx(f"部品表の違い_{ws.number}_版{ws.version}", [s for s in sheets if s[2]])  # 違いの無いシートは出さない
 
     @staticmethod
     def _condition_rows(ws: Workspace, plan: str) -> list[list[Any]]:

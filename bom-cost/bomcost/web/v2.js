@@ -141,6 +141,8 @@ async function api(method, path, params = {}, body) {
 async function download(path, params, name) {
   const res = await request(path + query(params));
   if (!res.ok) throw new Error((await res.json()).error);
+  // ファイルでなく JSON が返った時は、落とさずにその中身を返す
+  if ((res.headers.get("Content-Type") || "").includes("json")) return res.json();
   const url = URL.createObjectURL(await res.blob());
   const a = el("a", { href: url, download: name });
   document.body.append(a);

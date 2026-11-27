@@ -146,8 +146,16 @@ function pastHub(main) {
       el("div", { class: "h" }, el("span", { class: "no" }, S.number), el("span", { class: "ver" }, `版${S.version}　${day(at)}`)),
       el("div", { class: "b" }, el("div", { class: "row", style: "margin:0" },
         field("題目", "title", 260), field("担当", "owner"), field("承認者", "approver"), field("案件番号", "dev_number")))),
-    el("div", { class: "groups" }, el("fieldset", { class: "grp" }, [5, 6, 7].map(open))),
+    el("div", { class: "groups" }, el("fieldset", { class: "grp" }, [5, 6, 7].map(open)),
+      el("fieldset", { class: "grp" }, el("button", { class: "btn", onclick: () => compareBom().catch(fail) }, "今の部品表と比べる"))),
   );
+}
+
+// 版を確定した時と今の部品表で、原価・構成・年間台数が違う所を Excel で出す
+async function compareBom() {
+  const got = await work("今の部品表と比べています", () =>
+    download("/api/v2/export/release-drift", q(), `部品表の違い_${S.number}_版${S.version}.xlsx`));
+  if (got && got.same) done(`版${S.version}の時から変わっていません`);
 }
 
 function endDraft() {
