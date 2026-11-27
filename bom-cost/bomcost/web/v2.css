@@ -127,6 +127,7 @@ table.grid td.auto { color: var(--sub); background: #fafbfc; }
 /* 細い列（風船・サブ番号・状態・下位・一律）と、長い文字を詰める列（名称・仕様。全部は押さえた時の札に出す） */
 table.grid th.slim, table.grid td.slim, table.grid td.in.slim, table.grid td.q.slim { min-width: 28px; padding: 3px 4px; }
 table.grid th.slim { white-space: normal; }
+table.grid td.wide { min-width: 100px; } /* 打てない行も、打てる品番の列と同じ幅（サブ番号） */
 table.grid td.clip { max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
 table.grid td.clip.narrow { max-width: 90px; }
 table.grid td.r, table.grid th.r { text-align: right; font-variant-numeric: tabular-nums; }

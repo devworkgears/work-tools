@@ -1734,7 +1734,7 @@ async function rewriteScreen(main, cur) {
   let parts = new Map(); // 行 → 品番（空は現行に戻す）
   let amounts = new Map(); // 行 → 親 → 数量（空は現行に戻す）
   const model = {
-    head: () => [{ text: "", cls: "slim" }, { text: "風船", cls: "c slim" }, { text: "サブ番号", cls: "c slim" }, "品番", "名称", "仕様", { text: "状態", cls: "slim" }, { text: "下位", cls: "slim" },
+    head: () => [{ text: "", cls: "slim" }, { text: "風船", cls: "c slim" }, { text: "サブ番号", cls: "c" }, "品番", "名称", "仕様", { text: "状態", cls: "slim" }, { text: "下位", cls: "slim" },
       { text: "一律", cls: "r slim" }, ...parents().map(me.head)],
     nRows: () => rows.length + (ro || !parents().length ? 0 : 1),
     nCols: () => left + parents().length,
@@ -1750,7 +1750,7 @@ async function rewriteScreen(main, cur) {
       const part = row ? row.part : "";
       if (c === BALLOON || c === BRANCH) {
         const text = !row ? "" : row.draft ? row[c === BALLOON ? "head" : "branch"] : c === BALLOON ? balloonText(row.balloon) : branchText(row.balloon);
-        return { text, editable: !ro && (!row || !!row.draft), lock: !!row && !row.draft, cls: "c q slim" };
+        return { text, editable: !ro && (!row || !!row.draft), lock: !!row && !row.draft, cls: c === BALLOON ? "c q slim" : "c q wide" };
       }
       if (c === PART) {
         const own = row && (row.draft ? part : [...row.cells.values()].some((s) => s.now !== s.part));
