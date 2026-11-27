@@ -267,9 +267,10 @@ class LevelApi(unittest.TestCase):
         self.assertEqual(r.status, 200)
         self.assertIn("filename*=UTF-8''%E6%A7%8B%E6%88%90_", r.headers["Content-Disposition"])
         book = load_openpyxl().load_workbook(io.BytesIO(r.body))
-        self.assertEqual(book.sheetnames, ["構成（数量をレベル）", "構成（品番をレベル）", "説明"])
-        # 数量をレベルの列に置く形: 品番は1列・親の下に子の順。数量（変更後）は、その箇所のレベルの列にだけ入る
-        rows = list(book["構成（数量をレベル）"].iter_rows(min_row=2, values_only=True))
+        self.assertEqual(book.sheetnames, ["構成", "説明"])
+        # 品番は1列・親の下に子の順。数量（変更後）は、その箇所のレベルの列（見出しは 1・2・3）にだけ入る
+        self.assertEqual([c.value for c in book["構成"][1]][11:14], ["1", "2", "3"])
+        rows = list(book["構成"].iter_rows(min_row=2, values_only=True))
         self.assertEqual([(x[2], x[3], x[4], x[6], x[9], x[10], x[11:14], x[14]) for x in rows if x[0] == "P1"], [
             (1, "P1", "1", "U", "U", 1, (1, None, None), None),
             (2, "U", "11", "K", "K", 2, (None, 2, None), None),
@@ -279,11 +280,6 @@ class LevelApi(unittest.TestCase):
             (1, "P1", "3", "N", "S", 1, (1, None, None), "変更")])
         self.assertEqual({x[0] for x in rows}, {"P1", "P2"})
         self.assertEqual(sum(1 for x in rows if x[0] == "P2"), 6)
-        # 品番をレベルの列に置く形（字下げ）: 同じ行・同じ順
-        code = list(book["構成（品番をレベル）"].iter_rows(min_row=2, values_only=True))
-        self.assertEqual([(x[2], x[3:6], x[12], x[13]) for x in code if x[0] == "P1"], [
-            (1, ("U", None, None), 1, None), (2, (None, "K", None), 2, None), (2, (None, "V", None), 1, None),
-            (3, (None, None, "B"), 3, None), (1, ("K", None, None), 1, None), (1, ("N", None, None), 1, "変更")])
 
     def test_screens_show_the_inside_of_a_derived_temp(self) -> None:
         got = self.ok("PUT", "/api/v2/temp-items", {"rows": [{"code": "T1", "name": "組立改", "material": "", "base": "U"}]})["rows"]

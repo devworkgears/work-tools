@@ -858,7 +858,7 @@ class StudyApi:
     def export_structure(self, params: dict[str, str]) -> "Response":
         """対象品番の全部の構成（変えた後・全階層）を1行1箇所で出す。量が多いので、検討の Excel とは別のファイルにする。
 
-        同じ行を2つの形で出す: 数量をレベルの列に置く形（品番は1列）と、品番をレベルの列に置く形（字下げ）。
+        品番は1列にそろえ、数量（変更後）をその箇所のレベルの列（見出しは 1・2・…）に置く。
         """
         ws = self._ws(params)
         found = structure(ws, self._plan(params), list(ws.targets))
@@ -880,25 +880,17 @@ class StudyApi:
         for product in ws.targets:
             walk(product, product, found.direct.get(product, []), 1, frozenset({product}))
         depth = max((n["level"] for n in nodes), default=1)
-        levels = [f"レベル{i}" for i in range(1, depth + 1)]
-
-        def at_level(n: dict[str, Any], value: Any) -> list[Any]:
-            return [value if i == n["level"] else None for i in range(1, depth + 1)]
-
-        by_quantity = [[n["product"], n["product_name"], n["level"], n["parent"], *n["balloon"], n["part"], n["name"], n["spec"],
-                        n["now"], n["before"], *at_level(n, n["after"]), n["mark"]] for n in nodes]
-        by_code = [[n["product"], n["product_name"], n["level"], *at_level(n, n["part"]), n["name"], n["spec"], *n["balloon"],
-                    n["now"], n["before"], n["after"], n["mark"]] for n in nodes]
+        levels = [str(i) for i in range(1, depth + 1)]
+        rows = [[n["product"], n["product_name"], n["level"], n["parent"], *n["balloon"], n["part"], n["name"], n["spec"],
+                 n["now"], n["before"], *(n["after"] if i == n["level"] else None for i in range(1, depth + 1)), n["mark"]]
+                for n in nodes]
         return self._xlsx(f"構成_{ws.number}", [
-            ("構成（数量をレベル）", ["製品", "製品の名称", "レベル", "親品番", "風船", "サブ番号", "品番", "名称", "仕様", "現行の品番",
-                              "数量（現行）", *levels, "変更"], by_quantity),
-            ("構成（品番をレベル）", ["製品", "製品の名称", "レベル", *levels, "名称", "仕様", "風船", "サブ番号", "現行の品番",
-                              "数量（現行）", "数量（変更後）", "変更"], by_code),
+            ("構成", ["製品", "製品の名称", "レベル", "親品番", "風船", "サブ番号", "品番", "名称", "仕様", "現行の品番",
+                    "数量（現行）", *levels, "変更"], rows),
             ("説明", ["項目", "説明"], [
                 ["検討番号", ws.number], ["版", "仮" if ws.version is None else ws.version],
-                ["行", "1行＝対象品番×箇所。変えた後の構成を、製品の直下（レベル1）から全階層まで、親の下に子の順で並べる。2つのシートは同じ行"],
-                ["構成（数量をレベル）", "レベルの列に、その箇所の数量（変更後）を入れる。品番は1列にそろう"],
-                ["構成（品番をレベル）", "レベルの列に品番を入れる（字下げ）"],
+                ["行", "1行＝対象品番×箇所。変えた後の構成を、製品の直下（レベル1）から全階層まで、親の下に子の順で並べる"],
+                ["1・2・…", "レベルの列。その箇所の数量（変更後）を入れる"],
                 ["数量", "親品番1つあたり。置き換えた箇所は、数量（現行）が現行の品番の数"],
                 ["変更", "現行と品番か数量が違う箇所。足した箇所は現行の品番が空"]]),
         ])
