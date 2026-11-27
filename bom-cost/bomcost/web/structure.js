@@ -139,7 +139,7 @@ async function structureView(key, redraw) {
   const view = (S.structure ??= {})[key] ??= { drawing: child ? child.range[0] : null, picked: [] };
   view.picked ??= [];
   const rangePicked = child ? [child.range[1] || []].flat() : null; // 前の形の窓の URL（製品1つか空）も読む
-  let data = { drawing: null, drawings: [], products: [], main_product: null, direct: {}, inside: {}, bases: {}, items: {} };
+  let data = { drawing: null, drawings: [], products: [], direct: {}, inside: {}, bases: {}, items: {} };
   let parents = [];
   const base = (code) => data.bases[code] ?? code;
   const me = {
@@ -185,7 +185,6 @@ async function structureView(key, redraw) {
     // 行 { balloon, first, part, now, cells: 親 → 箇所 }。compare なら現行の品番も行の組に入れ、balloons が偽なら風船番号をまとめる。
     // compare でなければ、1つの親の同じ風船番号に同じ品番が2つある時は行を分け（n＝何番目か・変えていない箇所が先）、無くなった箇所（lost）も出す
     rows({ compare = false, balloons = true, sort = null } = {}) {
-      const lead = child ? parents : [...new Set([...(data.main_product ? [data.main_product] : []), ...parents])];
       // 風船番号の順。風船番号の無い行は最後に、現行の品番の順（打ち替えても動かないように）
       const code = (r) => r.now ?? r.part;
       const byCode = (a, b) => code(a).localeCompare(code(b), "ja", { numeric: true });
@@ -203,7 +202,7 @@ async function structureView(key, redraw) {
           const k = JSON.stringify([balloons ? s.balloon : "", compare ? s.now : "", s.part, n, !!s.lost]);
           if (!found.has(k)) found.set(k, { balloon: balloons ? s.balloon : null, first: s.balloon, part: s.part, now: s.now, n, lost: !!s.lost, rank: Infinity, cells: new Map() });
           const row = found.get(k);
-          row.rank = Math.min(row.rank, lead.indexOf(p));
+          row.rank = Math.min(row.rank, parents.indexOf(p));
           row.cells.set(p, add(s, row.cells.get(p)));
         }
       }
@@ -219,8 +218,7 @@ async function structureView(key, redraw) {
       return found.slice(0, MAX_STRUCTURE_ROWS);
     },
     head(code) {
-      const star = !child && code === data.main_product ? "★ " : "";
-      return { text: `${star}${code}\n${me.name(code) || "未登録"}`, cls: "vh" + (data.items[code] ? "" : " bad"), title: `${star}${code} ${me.name(code)}` };
+      return { text: `${code}\n${me.name(code) || "未登録"}`, cls: "vh" + (data.items[code] ? "" : " bad"), title: `${code} ${me.name(code)}` };
     },
     opens: (row) => !row.draft && !row.lost && !!data.inside[row.part] && [...row.cells.values()].some((s) => Number(s.quantity) !== 0),
     openCell: (row) => (row && me.opens(row) ? { text: "開く", cls: "link", title: "同じ風船番号の組立品を並べて開く" } : { text: "" }),
@@ -357,18 +355,7 @@ async function listScreen(main, cur) {
     if (!at) return alert("品番の行を選んでください");
     whereUsedDialog(at.part);
   };
-  // 主対象は対象品番の中から1つ。替えると並びと★だけが変わる
-  const mainPick = el("select", { class: "in", disabled: !canWrite(), onchange: async () => {
-    try {
-      await api("PUT", "/api/v2/main-product", { number: S.number }, { main_product: mainPick.value || null });
-      await me.load();
-      draw();
-    } catch (e) {
-      fail(e);
-    }
-  } }, el("option", { value: "" }, "（なし）"), S.targets.map((code) => el("option", { value: code, selected: code === me.data.main_product }, code)));
   main.append(card(me.title("構成一覧"), [
-    me.child ? null : el("label", { class: "inline" }, "主対象 ", mainPick),
     el("button", { class: "btn", onclick: whereUsed, disabled: !S.number }, "使用先"),
     // 対象品番の全部の構成（全階層）。量が多いので、⑦の検討の Excel とは別のファイル
     me.child ? null : el("button", { class: "btn", disabled: !S.number, onclick: () => work("Excel を作っています",

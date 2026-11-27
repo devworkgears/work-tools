@@ -560,7 +560,7 @@ class StudyApi:
     def structure(self, params: dict[str, str]) -> "Response":
         """図面が同じ対象品番の構成: 製品ごとの直下の箇所・組立品の中の箇所（全階層）・出てくる品番の名称など。
 
-        drawing が無ければ主対象（無ければ先頭の製品）の図面、blank=1 なら図面の無い製品、all=1 なら対象品番の全部。
+        drawing が無ければ先頭の製品の図面、blank=1 なら図面の無い製品、all=1 なら対象品番の全部。
         kind=product（⑧）ならバリエーションを除く。variation=1 なら対象品番のバリエーションだけを全部出す（⑪バリエーション）。
         """
         ws = self._ws(params)
@@ -570,7 +570,7 @@ class StudyApi:
         pool = ([p for p in ws.targets if p in variations] if only_variations
                 else [p for p in ws.targets if p not in variations] if params.get("kind") == "product" else ws.targets)
         drawings = {p: ws.attribute(p, "drawing") for p in pool}
-        first = ws.main_product if ws.main_product in drawings else next(iter(pool), None)
+        first = next(iter(pool), None)
         drawing = params.get("drawing") or ("" if params.get("blank") == "1" else drawings.get(first or "", ""))
         if params.get("all") == "1" or only_variations:
             drawing = None
