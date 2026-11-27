@@ -561,8 +561,7 @@ class StudyApi:
         """図面が同じ対象品番の構成: 製品ごとの直下の箇所・組立品の中の箇所（全階層）・出てくる品番の名称など。
 
         drawing が無ければ主対象（無ければ先頭の製品）の図面、blank=1 なら図面の無い製品、all=1 なら対象品番の全部。
-        kind=product（⑧）ならバリエーションを除く。variation=1 なら対象品番のバリエーションだけを全部出し、
-        直下から、直下に持つ製品の行を除く（⑪バリエーション。足し引きの行だけになる）。
+        kind=product（⑧）ならバリエーションを除く。variation=1 なら対象品番のバリエーションだけを全部出す（⑪バリエーション）。
         """
         ws = self._ws(params)
         plan = self._plan(params)
@@ -577,8 +576,6 @@ class StudyApi:
             drawing = None
         products = [p for p in pool if drawing in (None, drawings[p])]
         found = structure(ws, plan, products)
-        if only_variations:
-            found.direct.update({p: [s for s in lines if variations[p] not in (s.part, s.now)] for p, lines in found.direct.items()})
         short = variation_shortfalls(ws, plan) if variations else {}
         items = ws.bom.items
 

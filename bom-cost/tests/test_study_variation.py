@@ -146,12 +146,13 @@ class Screens(VariationCase):
         got = self.ok("GET", "/api/v2/structure", query=self.q + "&kind=product&all=1")
         self.assertEqual(got["products"], ["P1"])
 
-    def test_the_variation_screen_shows_every_variation_with_only_the_rows_added_or_taken(self) -> None:
+    def test_the_variation_screen_shows_every_variation_with_the_product_below_and_the_rows_added_or_taken(self) -> None:
         self.replace_b()
         got = self.ok("GET", "/api/v2/structure", query=self.q + "&variation=1")
         self.assertEqual(got["products"], ["P1V", "P1W"])
         self.assertEqual({p: [(r["part"], r["quantity"], r.get("problem", False)) for r in rows] for p, rows in got["direct"].items()},
-                         {"P1V": [("H", "1", False), ("C", "-2", False)], "P1W": [("B", "-1", True)]})
+                         {"P1V": [("P1", "1", False), ("H", "1", False), ("C", "-2", False)],
+                          "P1W": [("P1", "1", False), ("B", "-1", True)]})
         # 直下に持つ製品の中は変えた後
         self.assertIn("N", [r["part"] for r in got["inside"]["P1"]])
 

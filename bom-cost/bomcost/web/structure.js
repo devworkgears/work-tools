@@ -133,7 +133,7 @@ function movedSlot(s) {
 // 組立品の中の窓は、親（流用元の品番）と、開いた時に出していた製品の範囲（図面・製品）を URL に持つ
 async function structureView(key, redraw) {
   const child = PARAMS.has("parents") ? { bases: PARAMS.get("parents").split(","), range: JSON.parse(PARAMS.get("range")) } : null;
-  const VARIATION = key === 11; // ⑪バリエーション（⑧と同じ表で、対象品番のバリエーション全部の足し引きの行だけ）
+  const VARIATION = key === 11; // ⑪バリエーション（⑧と同じ表で、対象品番のバリエーション全部の直下）
   // 選んでいる図面・親は、ほかの窓の保存で描き直しても残す
   // picked は選んだ製品（組立品の窓では組立品）。空は全部
   const view = (S.structure ??= {})[key] ??= { drawing: child ? child.range[0] : null, picked: [] };
