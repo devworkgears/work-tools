@@ -157,6 +157,7 @@ NEGATIVE = "数量がマイナス"
 UNREGISTERED = "未登録"
 WAITING = "単価待ち"  # 変更の問題ではなく、⑦ と Excel の影響の印
 DEEP = "2階層目の変更"
+SHORT = "バリエーションでマイナス"  # 元の製品の変更で、バリエーションが引いている部品の数がマイナスになった（計算には入れる）
 # 計算に入れない問題。未登録と元の数量が変わった物は入れる
 EXCLUDING = frozenset({NOT_TARGET, NO_PLACE, OTHER_PART, NEGATIVE, DEEP})
 
@@ -581,6 +582,71 @@ def where_used(bom: Version, part: str, targets: Sequence[str]) -> tuple[list[st
     return inside, outside, len(users) - len(inside) - len(outside)
 
 
+# バリエーション ---------------------------------------------------------------
+# バリエーション＝製品（年間台数のある品目か対象品番）を直下に持つ対象品番。直下のその製品が元の製品で、
+# ほかの直下の行で足し引きする（元の製品の部品を引く行はマイナスの数）。変えるのは選んだ製品だけなので、
+# 元の製品の変更は、元の製品も対象品番の時だけバリエーションに効く
+
+
+def variation_bases(ws: Workspace) -> dict[str, str]:
+    """対象品番のバリエーション → 元の製品。"""
+    known = set(ws.bom.volumes) | set(ws.targets) | set(ws.conditions)
+    out: dict[str, str] = {}
+    for v in ws.targets:
+        base = next((line.child for line in ws.bom.children(v, by_balloon=True)
+                     if line.child != v and line.child in known and line.quantity > 0 and ws.bom.children(line.child)), None)
+        if base is not None:
+            out[v] = base
+    return out
+
+
+def base_count(ws: Workspace, variation: str, base: str) -> Decimal:
+    """バリエーション1台あたりの、直下の元の製品の数。"""
+    return sum((q for (_, part), q in direct_lines(ws.bom, variation).items() if part == base), Decimal(0))
+
+
+def followers(ws: Workspace) -> dict[str, list[tuple[str, Decimal]]]:
+    """対象品番の元の製品 → 元の製品の変更が効くバリエーションと、1台あたりの元の製品の数。"""
+    out: dict[str, list[tuple[str, Decimal]]] = {}
+    for v, base in variation_bases(ws).items():
+        if base in ws.targets:
+            out.setdefault(base, []).append((v, base_count(ws, v, base)))
+    return out
+
+
+def variation_shortfalls(ws: Workspace, plan: str) -> dict[str, dict[str, Decimal]]:
+    """バリエーション → 変えた後に数がマイナスになる部品と、その数（元の製品の中の数＋バリエーションの直下の数）。
+
+    見るのは、バリエーションの直下でマイナスの数の部品だけ。元の製品は対象品番なら変えた後、ほかは現行。
+    """
+    usages: dict[str, dict[str, Decimal]] = {}
+
+    def inside(lines: Mapping[SlotKey, Decimal], part: str) -> Decimal:
+        total = Decimal(0)
+        for (_, child), q in lines.items():
+            if child == part:
+                total += q
+            elif ws.bom.children(child):
+                total += q * usages.setdefault(child, product_usage(ws.bom, child)).get(part, Decimal(0))
+        return total
+
+    out: dict[str, dict[str, Decimal]] = {}
+    for v, base in variation_bases(ws).items():
+        mine: dict[str, Decimal] = {}
+        for (_, part), q in placed_lines(ws.placed(plan, v)).items():
+            mine[part] = mine.get(part, Decimal(0)) + q
+        count = mine.pop(base, Decimal(0))
+        minus = [p for p, q in mine.items() if q < 0]
+        if not minus:
+            continue
+        lines = placed_lines(ws.placed(plan, base)) if base in ws.targets else direct_lines(ws.bom, base)
+        for part in minus:
+            net = mine[part] + count * inside(lines, part)
+            if net < 0:
+                out.setdefault(v, {})[part] = net
+    return out
+
+
 # 確かめる・計算する ---------------------------------------------------------
 
 
@@ -599,6 +665,18 @@ def check_changes(ws: Workspace, changes: Iterable[Change] | None = None) -> lis
         for p in place_slots(direct_lines(bom, parent), [c.slot for c in members]):
             if p.slot is not None:
                 found[Change(plan, product, parent, p.slot).key] = p
+    variations = variation_bases(ws)
+    shortfalls: dict[str, dict[str, dict[str, Decimal]]] = {}  # 案 → バリエーション → マイナスになる部品
+
+    def short(c: Change) -> bool:
+        """バリエーションでマイナスになる部品に触れる変更（バリエーション自身の直下か、その元の製品の直下）。"""
+        if c.parent != c.product:
+            return False
+        if c.plan not in shortfalls:
+            shortfalls[c.plan] = variation_shortfalls(ws, c.plan) if variations else {}
+        codes = {c.slot.now, c.slot.part}
+        return any(c.product in (v, variations[v]) and codes & parts.keys() for v, parts in shortfalls[c.plan].items())
+
     for c in chosen:
         s, p = c.slot, found[c.key]
         problems: list[str] = []
@@ -613,10 +691,13 @@ def check_changes(ws: Workspace, changes: Iterable[Change] | None = None) -> lis
             problems.append(OTHER_PART if s.balloon is not None and any(k[0] == s.balloon for k in direct_lines(bom, c.parent)) else NO_PLACE)
         elif p.before != s.given:
             problems.append(MOVED)
-        if s.quantity < 0 and s.quantity != p.before:
+        # バリエーションの直下は、元の製品の部品をマイナスの数で引く
+        if s.quantity < 0 and s.quantity != p.before and not (c.product in variations and c.parent == c.product):
             problems.append(NEGATIVE)
         if any(code is not None and code not in bom.items for code in (s.now, s.part)):
             problems.append(UNREGISTERED)
+        if short(c):
+            problems.append(SHORT)
         result.append(Checked(c, p.now, p.before, tuple(problems)))
     return result
 
@@ -773,6 +854,10 @@ def calculate_heads(ws: Workspace, heads: Sequence[Head] = COMPARE_HEADS) -> dic
             return b.value(head), False
         return b.value(head), b.is_incomplete(head)
 
+    variations = variation_bases(ws)
+    # バリエーション → （元の製品, 1台あたりの数）。元の製品の直下の変更は、元の製品の数を掛けてバリエーションにも足す
+    inherit = {v: (base, n) for base, found in followers(ws).items() for v, n in found}
+    short = {plan: variation_shortfalls(ws, plan) for plan in plans} if variations else {}
     for product in ws.targets:
         own = registered_own(bom, product)
         now_material, full = prices.of(product)
@@ -781,16 +866,23 @@ def calculate_heads(ws: Workspace, heads: Sequence[Head] = COMPARE_HEADS) -> dic
         annual = annual_of(ws, product)
         usage = product_usage(bom, product)
         after_b: dict[str, tuple[Breakdown | None, bool]] = {}
+        base, count = inherit.get(product, (None, Decimal(0)))
         for plan in plans:
             delta = Decimal(0)
             missing = False
             for c in checked:
-                if c.change.plan != plan or c.change.product != product:
+                if c.change.plan != plan:
+                    continue
+                if c.change.product == product:
+                    times = usage.get(c.change.parent, Decimal(0))
+                elif c.change.product == base and c.change.parent == base:
+                    times = count
+                else:
                     continue
                 effect = change_effect(ws, c, prices)
                 missing |= effect.missing
                 if effect.value is not None:
-                    delta += usage.get(c.change.parent, Decimal(0)) * effect.value
+                    delta += times * effect.value
             b = None if now_material is None else breakdown(now_material + delta, own_values(ws, plan, product, own),
                                                                rates=rates)
             after_b[plan] = (b, missing)
@@ -805,12 +897,14 @@ def calculate_heads(ws: Workspace, heads: Sequence[Head] = COMPARE_HEADS) -> dic
                 "now_incomplete": now_missing or now_flag,
                 "plans": {},
                 "incomplete": {},
+                "base": variations.get(product),  # バリエーションなら元の製品
+                "short": {p: sorted(short[p].get(product, {})) for p in short if short[p].get(product)},  # 案 → マイナスになる部品
             }
             for plan in plans:
                 b, missing = after_b[plan]
                 after, flag = pick(b, head)
                 row["plans"][plan] = after
-                row["incomplete"][plan] = now_missing or flag or missing or (plan, product) in dropped
+                row["incomplete"][plan] = now_missing or flag or missing or (plan, product) in dropped or (plan, base) in dropped
                 if after is None or now is None or annual is None:
                     res["impact_incomplete"][plan] = True
                 else:
@@ -1311,7 +1405,7 @@ class StudyStore:
                 raise ValueError(f"{product} の同じ風船番号に {part} が {len(found)} つあります。構成変更で直してください")
             value = r.get("quantity")
             amount = (found[0].before or Decimal(0)) if value is None or str(value).strip() == "" else input_amount(value)
-            if amount < 0 and amount != found[0].before:
+            if amount < 0 and amount != found[0].before and product not in variation_bases(ws):
                 raise ValueError(f"数量は0以上で入力してください（{value}）")
             work.append((product, found[0], amount))
         with self._conn:
@@ -1362,7 +1456,8 @@ class StudyStore:
             part = known_code(r.get("part"), ws.bom.items)
             amount = input_amount(r.get("quantity"))
             refuse_loop(ws, product, part)
-            if amount <= 0:
+            # バリエーションの直下には、元の製品の部品を引く行（マイナスの数）も足せる
+            if amount == 0 or amount < 0 and product not in variation_bases(ws):
                 raise ValueError(f"数量は0より大きい数で入力してください（{r.get('quantity')}）")
             key = (known_balloon(r.get("balloon"), {p.balloon for p in placed}), part)
             if (product, key) in work or key in placed_lines(placed):

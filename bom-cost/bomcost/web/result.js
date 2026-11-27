@@ -120,9 +120,37 @@ async function resultScreen(main) {
   };
   // 費目全部: 製品ごとに 現行・変更後・差 の3行、列＝費目。見出しを押すと並べ替える（費目は差の順）
   const sort = sortable(() => draw());
+  const closed = new Set(); // バリエーションを閉じた元の製品
+  // バリエーションは、元の製品も対象品番なら、その下にまとめる（▾▸で開け閉め）
+  const grouped = (list) => {
+    const shown = new Set(list.map((x) => x.r.product));
+    const under = (x) => (x.r.base && shown.has(x.r.base) ? x.r.base : null);
+    const out = [];
+    for (const x of list) {
+      if (under(x)) continue;
+      out.push(x);
+      for (const y of list) if (under(y) === x.r.product && !closed.has(x.r.product)) out.push(y);
+    }
+    return out;
+  };
   const drawProducts = () => {
     const heads = data.heads;
-    const rows = sort.apply(heads.length ? heads[0].rows.map((r, i) => ({ r, i })) : []);
+    const all = heads.length ? heads[0].rows.map((r, i) => ({ r, i })) : [];
+    const rows = sort.apply(grouped(all));
+    const kids = (code) => all.filter((x) => x.r.base === code).length;
+    const productCell = (r) => {
+      const n = kids(r.product);
+      const short = (r.short || {})[plan];
+      const inGroup = !!r.base && all.some((x) => x.r.product === r.base);
+      return el("td", { rowspan: "3" },
+        n > 0 ? el("span", { style: "cursor:pointer", title: "バリエーションを開け閉めする", onclick: () => {
+          closed.has(r.product) ? closed.delete(r.product) : closed.add(r.product);
+          draw();
+        } }, `${closed.has(r.product) ? "▸" : "▾"} `) : inGroup ? "　└ " : "",
+        r.product, n > 0 && closed.has(r.product) ? el("span", { class: "mini" }, `（バリエーション ${n} 件）`) : null,
+        r.base && !inGroup ? el("div", { class: "mini" }, `元の製品 ${r.base}`) : null,
+        short && short.length ? el("div", { class: "pill warn", title: `元の製品の変更で、${short.join("・")} の数がマイナス（⑪で直す）` }, "要確認") : null);
+    };
     const head = (text, value, number, cls) => {
       const s = sort.head(text, value, number);
       return el("th", { class: cls, title: s.title, style: "cursor:pointer", onclick: s.action }, s.text);
@@ -133,7 +161,7 @@ async function resultScreen(main) {
       el("tr", {}, head("対象品番", (x) => x.r.product), head("名称", (x) => x.r.name), head("年間台数", (x) => x.r.annual, true, "r"), el("th", {}),
         heads.map((h) => head(h.label, (x) => diffOf(h.rows[x.i]), true, "r"))),
       rows.flatMap(({ r: r0, i }) => [
-        el("tr", {}, el("td", { rowspan: "3" }, r0.product), el("td", { rowspan: "3" }, r0.name ?? "未登録"), el("td", { class: "r", rowspan: "3" }, fmt(r0.annual)),
+        el("tr", {}, productCell(r0), el("td", { rowspan: "3" }, r0.name ?? "未登録"), el("td", { class: "r", rowspan: "3" }, fmt(r0.annual)),
           line("現行", heads.map((h) => el("td", { ...incomplete(h.rows[i].now_incomplete), class: "r low" + (h.rows[i].now_incomplete ? " inc" : "") }, fmt(h.rows[i].now))))),
         el("tr", {}, line("変更後", heads.map((h) => el("td", { ...incomplete(h.rows[i].incomplete[plan]), class: "r low" + (h.rows[i].incomplete[plan] ? " inc" : "") }, fmt(h.rows[i].plans[plan]))))),
         el("tr", {}, line("増減", heads.map((h) => {

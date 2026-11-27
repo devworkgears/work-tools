@@ -3,7 +3,8 @@
 
 // ⑧ 品番と数量を、その欄で打ち替える。品番は行に出ている親の全部に、数量は親ごとに効く。空にすると現行に戻る。
 // 親が組立品なら、中を変えた組立品に新しい品番が付き（サーバが決める）、開いた時に出していた製品の範囲に効く
-async function rewriteScreen(main, cur) {
+// key 11 は⑪バリエーション: 同じ表で、元の製品を除いた足し引きの行を打つ（元の製品の部品を引く行はマイナスの数）
+async function rewriteScreen(main, cur, key = 8) {
   const ro = !canWrite();
   let rows = [];
   let drawing = null;
@@ -45,7 +46,7 @@ async function rewriteScreen(main, cur) {
     place = new Map();
     me.rows().forEach((r, i) => { if (!place.has(keyOf(r))) place.set(keyOf(r), i); });
   };
-  const me = await structureView(8, () => {
+  const me = await structureView(key, () => {
     if (drawing !== me.view.drawing) {
       drafts = [];
       restart();
@@ -53,6 +54,7 @@ async function rewriteScreen(main, cur) {
     draw();
   });
   restart();
+  const minus = key === 11 && !me.child; // バリエーションの直下は、元の製品の部品をマイナスの数で引く
   const parents = () => me.columns();
   // 列: 番号・風船・サブ番号・品番・名称・仕様・状態・下位・一律、その右に親ごとの数量
   const [BALLOON, BRANCH, PART, NAME, SPEC, STATE, LOWER, UNIFORM] = [1, 2, 3, 4, 5, 6, 7, 8]; // 一律は足しかけの行だけ打てる。打つと出ている親の全部に同じ数量が入る
@@ -104,7 +106,7 @@ async function rewriteScreen(main, cur) {
       const changed = !same(s.before, s.quantity);
       const shown = zero || Number(s.quantity) !== 0;
       return { text: shown ? fmt(s.quantity) : "", edit: shown ? s.quantity : "", editable: !ro, cls: "r q" + edge + (s.problem ? " bad" : changed ? " own" : ""),
-        title: s.problem ? "要確認（変更一覧）" : changed && s.before !== null ? `現行 ${fmt(s.before)}` : null };
+        title: s.short ? "元の製品の変更で、この部品の数がマイナスになる（ここで直す）" : s.problem ? "要確認（変更一覧）" : changed && s.before !== null ? `現行 ${fmt(s.before)}` : null };
     },
     set(r, c, text) {
       if (c < BALLOON || (c > PART && c < left && c !== UNIFORM)) return;
@@ -115,7 +117,9 @@ async function rewriteScreen(main, cur) {
       }
       const row = rows[r];
       const parent = parents()[c - left];
-      if ((c >= left || c === UNIFORM) && text !== "" && !(isNumber(text) && Number(text) >= 0)) return alert(`数量は0以上の数で入力してください（${row.part || "品番なし"}「${text}」）`);
+      if ((c >= left || c === UNIFORM) && text !== "" && !(isNumber(text) && (minus || Number(text) >= 0))) {
+        return alert(`数量は${minus ? "" : "0以上の"}数で入力してください（${row.part || "品番なし"}「${text}」）`);
+      }
       if (row.draft) {
         row.refused = false;
         if (c === BALLOON || c === BRANCH) {
@@ -578,12 +582,13 @@ async function rewriteScreen(main, cur) {
     amounts.set(row, all);
     apply();
   };
-  main.append(card(me.title("構成変更"), [button("行追加", addRow), button("行削除", dropRow), button("一括置換", () => bulkDialog().catch(fail)), rowBack, allBack, button("風船順", () => {
-    restart();
-    draw();
-  })], [
+  main.append(card(me.title(key === 11 ? "バリエーション" : "構成変更"), [button("行追加", addRow), button("行削除", dropRow),
+    key === 11 ? null : button("一括置換", () => bulkDialog().catch(fail)), rowBack, allBack, button("風船順", () => {
+      restart();
+      draw();
+    })], [
     el("div", { class: "row" }, me.picks, me.filters, showGroup(me.onlyToggle, zeroToggle), me.users, me.note),
-    body, nowLine,
+    me.baseLine, body, nowLine,
   ]));
   draw();
   grid.firstEditable();

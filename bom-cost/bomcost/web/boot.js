@@ -10,6 +10,7 @@ const SCREENS = {
   8: rewriteScreen,
   9: tempScreen,
   10: ownScreen,
+  11: (main, cur) => rewriteScreen(main, cur, 11),
 };
 
 // 新規作成の ③: 下書きの中身は ② の窓が持つ

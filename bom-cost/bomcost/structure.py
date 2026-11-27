@@ -23,7 +23,9 @@ def structure(ws: Workspace, plan: str, products: Sequence[str]) -> Structure:
         if code in seen:
             continue
         seen.add(code)
-        placed = temp_placed(ws.bom, temps[code]) if code in temps else place_slots(direct_lines(ws.bom, code), ())
+        # 対象品番の中の対象品番（バリエーションの中の元の製品）は、変えた後の直下
+        placed = (temp_placed(ws.bom, temps[code]) if code in temps else ws.placed(plan, code) if code in ws.targets
+                  else place_slots(direct_lines(ws.bom, code), ()))
         found = [p for p in placed if not p.lost and (p.before or p.quantity)]
         if found:
             inside[code] = found

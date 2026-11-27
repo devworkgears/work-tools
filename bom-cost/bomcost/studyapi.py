@@ -47,7 +47,10 @@ from .study import (
     check_changes,
     calculate,
     calculate_heads,
+    followers,
     own_rows,
+    variation_bases,
+    variation_shortfalls,
     after_places,
     annual_of,
     input_optional_code,
@@ -473,13 +476,14 @@ class StudyApi:
             "plans": ws.plan_ids(),
             "targets": ws.targets,
             "problems": problem_count(ws),
+            "variations": variation_bases(ws),  # バリエーション → 元の製品
         })
 
     # ③ 対象品番 -------------------------------------------------------------
 
     def targets(self, params: dict[str, str]) -> "Response":
         ws = self._ws(params)
-        return self._json({"targets": ws.targets, "main_product": ws.main_product})
+        return self._json({"targets": ws.targets, "main_product": ws.main_product, "variations": variation_bases(ws)})
 
     def put_targets(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
         products = body.get("products") or []
@@ -555,28 +559,44 @@ class StudyApi:
         """図面が同じ対象品番の構成: 製品ごとの直下の箇所・組立品の中の箇所（全階層）・出てくる品番の名称など。
 
         drawing が無ければ主対象（無ければ先頭の製品）の図面、blank=1 なら図面の無い製品、all=1 なら対象品番の全部。
+        kind=product（⑧）ならバリエーションを除く。variation（元の製品）があれば、その元の製品のバリエーションだけを出し、
+        直下から元の製品の行を除く（⑪バリエーション。足し引きの行だけになる）。
         """
         ws = self._ws(params)
-        drawings = {p: ws.attribute(p, "drawing") for p in ws.targets}
-        first = ws.main_product if ws.main_product in drawings else next(iter(ws.targets), None)
+        plan = self._plan(params)
+        variations = variation_bases(ws)
+        base = params.get("variation", "").strip() or None
+        pool = ([p for p in ws.targets if variations.get(p) == base] if base is not None
+                else [p for p in ws.targets if p not in variations] if params.get("kind") == "product" else ws.targets)
+        drawings = {p: ws.attribute(p, "drawing") for p in pool}
+        first = ws.main_product if ws.main_product in drawings else next(iter(pool), None)
         drawing = params.get("drawing") or ("" if params.get("blank") == "1" else drawings.get(first or "", ""))
-        if params.get("all") == "1":
+        if params.get("all") == "1" or base is not None:
             drawing = None
-        products = [p for p in ws.targets if drawing in (None, drawings[p])]
-        found = structure(ws, self._plan(params), products)
+        products = [p for p in pool if drawing in (None, drawings[p])]
+        found = structure(ws, plan, products)
+        if base is not None:
+            found.direct.update({p: [s for s in lines if s.part != base and s.now != base] for p, lines in found.direct.items()})
+        short = variation_shortfalls(ws, plan) if variations else {}
         items = ws.bom.items
 
         def rows(code: str | None, lines: list[Any]) -> list[dict[str, Any]]:
+            minus = short.get(code or "", {})
             return [{"balloon": s.balloon, "now": s.now, "part": s.part, "before": _s(s.before), "quantity": _s(s.quantity),
                      **({"lost": True} if s.lost else {}),
-                     **({"problem": True} if (code, s.balloon, s.now, s.part) in found.bad else {})}
+                     **({"problem": True} if (code, s.balloon, s.now, s.part) in found.bad or s.part in minus else {}),
+                     **({"short": True} if s.part in minus else {})}
                     for s in lines]
 
         everything = [s for lines in (*found.direct.values(), *found.inside.values()) for s in lines]
-        codes = dict.fromkeys([*products, *(c for s in everything for c in (s.now, s.part) if c is not None)])
+        codes = dict.fromkeys([*products, *(c for s in everything for c in (s.now, s.part) if c is not None),
+                               *variations.values()])
+        counts = Counter(variations.values())
         return self._json({
             "drawing": drawing, "drawings": [{"drawing": d, "count": n} for d, n in Counter(drawings.values()).items()],
             "products": products, "main_product": ws.main_product,
+            # ⑪ の元の製品の選択肢（target＝元の製品も対象品番で、変えた後が効く）
+            "variation": base, "variation_bases": [{"code": b, "count": n, "target": b in ws.targets} for b, n in counts.items()],
             "direct": {p: rows(p, lines) for p, lines in found.direct.items()},
             "inside": {code: rows(None, lines) for code, lines in found.inside.items()},
             "bases": {t.code: t.base for t in ws.temps if t.base is not None and t.code in ws.temp_merged},
@@ -1006,6 +1026,7 @@ def change_effects(ws: Workspace, plan: str, rows: list[dict[str, Any]]) -> list
     """
     rates = ws.use_rates()
     material = material_effects(ws, plan)
+    follow = followers(ws)  # 元の製品の直下の変更は、それを直下に持つバリエーションにも効く
     out: list[dict[str, Any]] = []
 
     def add(head: str | None, group: dict[str, Any], units: dict[str, Decimal | None], unknown: bool = False) -> None:
@@ -1032,6 +1053,11 @@ def change_effects(ws: Workspace, plan: str, rows: list[dict[str, Any]]) -> list
             waiting |= effect.missing and effect.value is None
             if effect.value is not None:
                 units[d["product"]] = (before or Decimal(0)) + effect.value * rates.factor
+            if d["key"][1] == d["key"][2]:
+                for v, n in follow.get(d["product"], ()):
+                    held = units.setdefault(v, None)
+                    if effect.value is not None:
+                        units[v] = (held or Decimal(0)) + effect.value * n * rates.factor
         add(None, {**g, "problems": [*g["problems"], *([WAITING] if waiting else [])]}, units, unknown)
     prices = Prices(ws.bom)
     for key, head in OWN_HEADS.items():

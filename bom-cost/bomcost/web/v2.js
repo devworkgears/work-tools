@@ -1,7 +1,7 @@
-// 設計検討の画面の共通の道具と画面の枠（画面ごとの中身は hub.js〜temp.js・起動は boot.js）。② から ③〜⑩ を別の窓で開く（② は開いたまま）。入れた値はその場で一時保存する（⑦の［実行］は点検と計算だけで、書かない）。
+// 設計検討の画面の共通の道具と画面の枠（画面ごとの中身は hub.js〜temp.js・起動は boot.js）。② から ③〜⑪ を別の窓で開く（② は開いたまま）。入れた値はその場で一時保存する（⑦の［実行］は点検と計算だけで、書かない）。
 "use strict";
 
-const NUM = { 2: "②", 3: "③", 4: "④", 5: "⑤", 6: "⑥", 7: "⑦", 8: "⑧", 9: "⑨", 10: "⑩" };
+const NUM = { 2: "②", 3: "③", 4: "④", 5: "⑤", 6: "⑥", 7: "⑦", 8: "⑧", 9: "⑨", 10: "⑩", 11: "⑪" };
 const S = {
   mode: "edit", // new・edit・view
   number: "",
@@ -10,13 +10,14 @@ const S = {
   versions: [],
   targets: [],
   problems: 0,
+  variations: {}, // 対象品番のバリエーション → 元の製品
   draft: null, // 新規作成で番号が付く前に入れた物 { header, targets, main }
 };
 const items = new Map(); // 品番 → 右の列の値（/api/v2/lookup）
 let current = null; // 開いている画面 { key, saver }
 
-// 別の窓: ② から ③〜⑩ を開く。窓の URL に画面・検討番号・版・処理（新規作成の ③ は下書きの印 draft）を載せる
-const NAMES = { 3: "対象品番", 5: "構成一覧", 6: "変更一覧", 7: "結果", 8: "構成変更", 9: "仮品番", 10: "費目変更" };
+// 別の窓: ② から ③〜⑪ を開く。窓の URL に画面・検討番号・版・処理（新規作成の ③ は下書きの印 draft）を載せる
+const NAMES = { 3: "対象品番", 5: "構成一覧", 6: "変更一覧", 7: "結果", 8: "構成変更", 9: "仮品番", 10: "費目変更", 11: "バリエーション" };
 const PARAMS = new URLSearchParams(location.search);
 const POPUP = PARAMS.has("screen");
 // 窓どうしの知らせ。saved＝その検討を一時保存した（ほかの窓は戻った時に読み直す）・switch＝② が別の検討・版に替えた（別の窓は閉じる）。
@@ -462,4 +463,5 @@ function applyStudy(data) {
   S.versions = data.versions;
   S.targets = data.targets;
   S.problems = data.problems;
+  S.variations = data.variations || {};
 }

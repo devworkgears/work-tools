@@ -7,9 +7,11 @@ async function targetsScreen(main, cur) {
   const ro = !(canWrite() || draft);
   const EMPTY_ROW = () => "";
   let rows = draft ? draft.targets : [];
+  let variations = {}; // バリエーション → 元の製品（保存した対象品番でサーバが見分ける）
   if (S.number) {
     const d = await api("GET", "/api/v2/targets", q());
     rows = d.targets.slice();
+    variations = d.variations;
   }
   await lookup(rows);
   const value = (code, key) => (items.get(code) ? items.get(code)[key] : "");
@@ -21,24 +23,26 @@ async function targetsScreen(main, cur) {
   });
   const body = el("div");
   const model = {
-    head: () => ["", sort.head("品番", (code) => code), ...[["名称", "name"], ["系列", "model"], ["タイプ", "product_spec"], ["図面", "drawing"]].map(([t, k]) => sort.head(t, (code) => value(code, k))),
+    head: () => ["", sort.head("品番", (code) => code), sort.head("名称", (code) => value(code, "name")), sort.head("元の製品", (code) => variations[code] ?? ""),
+      ...[["系列", "model"], ["タイプ", "product_spec"], ["図面", "drawing"]].map(([t, k]) => sort.head(t, (code) => value(code, k))),
       ...[["年間台数", "annual"], ["材料費", "material"], ["製造原価", "manufacturing"]].map(([t, k]) => ({ ...sort.head(t, (code) => value(code, k), true), cls: "r" }))],
     nRows: () => rows.length + (ro ? 0 : 1),
     grow: ro ? undefined : () => { rows.push(EMPTY_ROW()); return true; },
-    nCols: () => 9,
+    nCols: () => 10,
     cell(r, c) {
       const code = rows[r] || "";
       if (c === 0) return { text: String(r + 1), cls: "n" };
       if (c === 1) return { text: code, editable: !ro };
       if (!code) return { text: "" };
       if (c === 2) return nameCell(code);
+      if (c === 3) return { text: variations[code] ?? "", cls: "auto", title: variations[code] ? "バリエーション（足し引きは⑪）" : null };
       const info = items.get(code);
       if (!info || !info.registered) return { text: "" };
-      if (c === 3) return { text: info.model, cls: "auto" };
-      if (c === 4) return { text: info.product_spec, cls: "auto" };
-      if (c === 5) return { text: info.drawing, cls: "auto" };
-      if (c === 6) return { text: fmt(info.annual), cls: "auto r" };
-      if (c === 7) return { text: fmt(info.material), cls: "auto r" };
+      if (c === 4) return { text: info.model, cls: "auto" };
+      if (c === 5) return { text: info.product_spec, cls: "auto" };
+      if (c === 6) return { text: info.drawing, cls: "auto" };
+      if (c === 7) return { text: fmt(info.annual), cls: "auto r" };
+      if (c === 8) return { text: fmt(info.material), cls: "auto r" };
       return { text: fmt(info.manufacturing), cls: "auto r" };
     },
     set(r, c, text) {
@@ -57,9 +61,13 @@ async function targetsScreen(main, cur) {
   const saver = autosaver(cur, async () => {
     const d = await api("PUT", "/api/v2/targets", { number: S.number }, { products: rows.filter(Boolean) });
     S.targets = d.targets;
+    S.variations = d.variations;
+    variations = d.variations;
+    grid.render();
   }, async () => {
     const d = await api("GET", "/api/v2/targets", q());
     rows = d.targets.slice();
+    variations = d.variations;
     grid.render();
   });
   // 変えた時: 番号の前は S.draft に持ち、番号があればその場で一時保存
