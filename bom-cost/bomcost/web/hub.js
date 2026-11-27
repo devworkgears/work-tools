@@ -61,7 +61,6 @@ async function hubScreen(main, cur) {
       openScreen(key);
     },
   }, label, extra);
-  const arrow = () => el("span", { class: "arrow" }, "→");
   const release = el("button", { class: "btn", disabled: !S.number || !canWrite() }, "版確定");
   release.addEventListener("click", async () => {
     await leave(cur);
@@ -112,9 +111,9 @@ async function hubScreen(main, cur) {
         el("label", { class: "f" }, "最終更新日", el("input", { class: "in ro", value: updated, readonly: true, style: "min-width:100px;width:110px" })),
         run))),
     el("div", { class: "groups" },
-      // 左から使う順。まん中（青）が打つ画面、右が見る画面
-      el("fieldset", { class: "grp" }, big(3, "対象品番"), big(9, "仮品番")), arrow(),
-      el("fieldset", { class: "grp edit" }, big(8, "構成変更"), big(10, "費目変更")), arrow(),
+      // 左が準備、まん中（青）が打つ画面、右が見る画面。行き来して使うので、順の矢印は置かない
+      el("fieldset", { class: "grp" }, big(3, "対象品番"), big(9, "仮品番")),
+      el("fieldset", { class: "grp edit" }, big(8, "構成変更"), big(10, "費目変更")),
       el("fieldset", { class: "grp" }, big(5, "構成一覧"), big(6, "変更一覧", S.problems ? [" ", el("span", { class: "pill warn" }, S.problems)] : null), big(7, "結果"))),
   );
 }
