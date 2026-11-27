@@ -1022,7 +1022,8 @@ class StudyStore:
         return bom
 
     def load_attributes(self) -> Attributes:
-        return dict(self._kept_bom()[1])
+        """品目の属性の写し（品番ごとの辞書も写すので、書き換えても控えに残らない）。"""
+        return {code: dict(values) for code, values in self._kept_bom()[1].items()}
 
     def _read_bom(self) -> Version:
         v = Version("v2")
