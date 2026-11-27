@@ -42,7 +42,7 @@ class Replace(WordsCase):
     def test_each_word_is_listed_once(self) -> None:
         words = [w for g in word_groups() for w in g.words]
         self.assertEqual(len(words), len(set(words)))
-        for word in ("品番", "系列", "加工費", "構成一覧", "風船番号"):
+        for word in ("品番", "系列", "加工費", "構成一覧", "風船番号", "子"):
             self.assertIn(word, words)
 
 

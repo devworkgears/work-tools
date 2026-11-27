@@ -56,7 +56,7 @@ async function rewriteScreen(main, cur, key = 8) {
   restart();
   const minus = key === 11 && !me.child; // バリエーションの直下は、元の製品の部品をマイナスの数で引く
   const parents = () => me.columns();
-  // 列: 番号・風船・サブ番号・品番・名称・仕様・状態・下位・一律、その右に親ごとの数量
+  // 列: 番号・風船・サブ番号・品番・名称・仕様・状態・子・一律、その右に親ごとの数量
   const [BALLOON, BRANCH, PART, NAME, SPEC, STATE, LOWER, UNIFORM] = [1, 2, 3, 4, 5, 6, 7, 8]; // 一律は足しかけの行だけ打てる。打つと出ている親の全部に同じ数量が入る
   const left = 9;
   // head・branch は足しかけの行に打った風船番号とサブ番号（balloon はその2つを合わせた箇所の印）。
@@ -66,7 +66,7 @@ async function rewriteScreen(main, cur, key = 8) {
   let parts = new Map(); // 行 → 品番（空は現行に戻す）
   let amounts = new Map(); // 行 → 親 → 数量（空は現行に戻す）
   const model = {
-    head: () => [{ text: "", cls: "slim" }, { text: "風船", cls: "c slim" }, { text: "サブ番号", cls: "c" }, "品番", "名称", "仕様", { text: "状態", cls: "slim" }, { text: "下位", cls: "slim" },
+    head: () => [{ text: "", cls: "slim" }, { text: "風船", cls: "c slim" }, { text: "サブ番号", cls: "c" }, "品番", "名称", "仕様", { text: "状態", cls: "slim" }, { text: "子", cls: "slim" },
       { text: "一律", cls: "r slim" }, ...parents().map(me.head)],
     nRows: () => rows.length + (ro || !parents().length ? 0 : 1),
     nCols: () => left + parents().length,

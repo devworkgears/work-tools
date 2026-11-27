@@ -325,7 +325,7 @@ async function listScreen(main, cur) {
     ...(balloons ? [[{ text: "風船", cls: "c" }, (r) => ({ text: balloonText(r.balloon), cls: "c q" })],
       [{ text: "サブ番号", cls: "c" }, (r) => ({ text: branchText(r.balloon), cls: "c q" })]] : []),
     ["品番", (r) => mark(r, { text: code(r) ?? "" })], ["名称", (r) => mark(r, me.nameCell(code(r)))],
-    ["仕様", (r) => me.spec(code(r))], ["状態", (r) => me.state(code(r))], ["下位", (r) => me.openCell(r)]];
+    ["仕様", (r) => me.spec(code(r))], ["状態", (r) => me.state(code(r))], ["子", (r) => me.openCell(r)]];
   const model = {
     head: () => ["", ...columns().map((c) => c[0]), ...parents().map(me.head)],
     nRows: () => rows.length,

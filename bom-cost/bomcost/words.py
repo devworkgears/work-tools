@@ -27,7 +27,7 @@ def word_groups() -> list[WordGroup]:
         raw.append(WordGroup(f"取り込みの見出し（{_IMPORT_NAMES[table]}）", tuple(words), True))
     raw.append(WordGroup("計算した費目", tuple(h.value for h in Head)))
     raw.append(WordGroup("画面の名前", ("対象品番", "仮品番", "構成変更", "費目変更", "バリエーション", "構成一覧", "変更一覧", "結果", "計算条件",
-                                      "版確定", "品番検索", "使用先", "主対象", "風船")))
+                                      "版確定", "品番検索", "使用先", "主対象", "風船", "子")))
     raw.append(WordGroup("検討の項目", ("検討番号", "題目", "担当", "承認者", "案件番号", "年間の影響", "1台あたりの平均の増減")))
     seen: set[str] = set()
     out = []
