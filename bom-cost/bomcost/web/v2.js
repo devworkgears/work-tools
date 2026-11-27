@@ -1334,7 +1334,6 @@ async function listScreen(main, cur) {
   main.append(card(me.title("構成一覧"), [
     me.child ? null : el("label", { class: "inline" }, "主対象 ", mainPick),
     el("button", { class: "btn", onclick: whereUsed, disabled: !S.number }, "使用先"),
-    me.child ? null : el("button", { class: "btn", onclick: conditionsDialog, disabled: !S.number }, "計算条件"),
   ], [
     el("div", { class: "row" }, me.picks, el("label", { class: "f" }, "並び", pick([["balloon", "風船番号"], ["part", "品番"], ["name", "名称"]], (v) => { sort = v; })),
       me.filters, sides, showGroup(me.onlyToggle, balloonToggle), me.users, me.note),
@@ -1957,42 +1956,58 @@ async function whereUsedDialog(code) {
   }
 }
 
-async function conditionsDialog() {
+// 年間台数（計算条件）: 対象品番ごとの年間台数を、表で打つ・Excel から列で貼る。空は部品表の値で計算する
+async function annualDialog() {
   try {
     const d = await api("GET", "/api/v2/conditions", q());
-    const inputs = new Map();
     const ro = !canWrite();
-    const owner = {};
-    const saver = autosaver(owner, async () => {
-      const annual = {};
-      for (const [p, input] of inputs) annual[p] = input.value.trim() || null;
-      await api("PUT", "/api/v2/conditions", { number: S.number }, { annual });
+    const rows = d.rows.map((r) => ({ product: r.product, bom: r.bom_annual, annual: r.annual ?? "" }));
+    await lookup(rows.map((r) => r.product));
+    const saver = autosaver({}, async () => {
+      await api("PUT", "/api/v2/conditions", { number: S.number }, { annual: Object.fromEntries(rows.map((r) => [r.product, r.annual.trim() || null])) });
     }, async () => {
       const again = await api("GET", "/api/v2/conditions", q());
-      for (const r of again.rows) if (inputs.has(r.product)) inputs.get(r.product).value = r.annual ?? "";
+      for (const x of again.rows) {
+        const row = rows.find((r) => r.product === x.product);
+        if (row) row.annual = x.annual ?? "";
+      }
+      grid.render();
     });
-    const box = dialog("計算条件", el("table", { class: "list" },
-      el("tr", {}, el("th", {}, "対象品番"), el("th", {}, "年間台数（部品表）"), el("th", {}, "年間台数")),
-      d.rows.map((r) => {
-        const input = el("input", { class: "in", value: r.annual ?? "", readonly: ro, style: "min-width:90px;width:100px;text-align:right" });
-        let kept = input.value;
-        // 数でない台数はその場で弾く（元の値に戻す）。通った値はその場で一時保存
-        input.addEventListener("change", () => {
-          const text = input.value.trim();
-          if (text !== "" && !isNumber(text)) {
-            alert(`年間台数は数で入力してください（${r.product}「${text}」）`);
-            input.value = kept;
-            return;
-          }
-          kept = input.value;
-          saver.schedule();
-        });
-        inputs.set(r.product, input);
-        return el("tr", {}, el("td", {}, r.product), el("td", { class: "r" }, fmt(r.bom_annual)), el("td", {}, input));
-      })), [
+    const body = el("div");
+    const model = {
+      head: () => ["", "対象品番", "名称", { text: "部品表", cls: "r" }, { text: "年間台数", cls: "r" }],
+      nRows: () => rows.length,
+      nCols: () => 5,
+      cell(r, c) {
+        const row = rows[r];
+        if (c === 0) return { text: String(r + 1), cls: "n" };
+        if (c === 1) return { text: row.product };
+        if (c === 2) return { text: nameCell(row.product).text, cls: "auto" };
+        if (c === 3) return { text: fmt(row.bom), cls: "r auto" };
+        return { text: row.annual, editable: !ro, cls: "r" + (row.annual !== "" && !same(row.annual, row.bom) ? " own" : "") };
+      },
+      set(r, c, text) {
+        if (c !== 4) return;
+        // 数でない台数はその場で弾く（入れずに元の値のまま）
+        if (text !== "" && !isNumber(text)) return alert(`年間台数は数で入力してください（${rows[r].product}「${text}」）`);
+        rows[r].annual = text;
+        saver.schedule();
+      },
+    };
+    const before = Grid.active;
+    const grid = new Grid(body, model);
+    const finish = async () => {
+      grid.commit();
+      Grid.active = before;
+      await saver.flush();
+    };
+    const box = dialog("年間台数", body, [
       el("span", { class: "sp" }),
-      el("button", { class: "btn", onclick: async () => { await saver.flush(); box.close(); } }, "閉じる"),
+      el("button", { class: "btn", onclick: async () => { await finish(); box.close(); } }, "閉じる"),
     ]);
+    box.overlay.querySelector(".close").addEventListener("click", () => finish().catch(fail));
+    grid.render();
+    grid.focus();
   } catch (e) {
     fail(e);
   }
@@ -2259,7 +2274,7 @@ async function resultScreen(main) {
     }
   };
   main.append(card(["結果", stamp], [
-    el("button", { class: "btn", onclick: conditionsDialog }, "計算条件"),
+    el("button", { class: "btn", onclick: annualDialog }, "年間台数"),
     el("button", { class: "btn", onclick: () => exportStudy().catch(fail) }, "Excel"),
     el("button", { class: "btn pri", onclick: compute }, "実行"),
   ], body));
