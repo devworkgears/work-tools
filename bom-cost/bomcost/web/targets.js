@@ -330,6 +330,19 @@ async function importDialog(after) {
   sheet.addEventListener("change", () => load(sheet.value).catch(fail));
   kind.addEventListener("change", drawMapping);
 
+  // 取り込んだ部品表を全部消す（検討は残る）
+  const clearBom = async () => {
+    if (!confirm("取り込んだ部品表（品目・構成・原価・年間台数）を全部消します。検討は残ります。よろしいですか？")) return;
+    try {
+      const r = await work("消しています", () => api("POST", "/api/v2/bom/clear", {}, {}));
+      showNow(r.counts);
+      done("部品表を消しました");
+      after();
+    } catch (e) {
+      fail(e);
+    }
+  };
+
   let status = { samples: false, counts: null };
   try {
     status = await api("GET", "/api/v2/bom");
@@ -342,6 +355,7 @@ async function importDialog(after) {
     mapping, list, check,
   ], [
     status.samples ? el("button", { class: "btn", onclick: () => work("取り込んでいます", () => api("POST", "/api/v2/bom/import", {}, { sample: true })).then(finish, fail) }, "見本") : null,
+    el("button", { class: "btn", onclick: clearBom }, "消す"),
     el("span", { class: "sp" }),
     checkButton,
     el("button", { class: "btn", onclick: () => d.close() }, "閉じる"),

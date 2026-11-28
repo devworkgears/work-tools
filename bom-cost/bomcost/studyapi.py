@@ -276,6 +276,7 @@ class StudyApi:
             ("GET", r"/api/v2/bom", self.bom_status),
             ("POST", r"/api/v2/bom/preview", self.bom_preview),
             ("POST", r"/api/v2/bom/import", self.bom_import),
+            ("POST", r"/api/v2/bom/clear", self.bom_clear),
             ("POST", r"/api/v2/lookup", self.lookup),
             ("GET", r"/api/v2/products", self.products),
             ("GET", r"/api/v2/studies", self.studies),
@@ -328,6 +329,11 @@ class StudyApi:
 
     def bom_status(self, params: dict[str, str]) -> "Response":
         return self._json({"counts": self.store.bom_counts(), "samples": SAMPLES_DIR.is_dir()})
+
+    def bom_clear(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
+        """取り込んだ部品表を全部消す。検討は残す。"""
+        self.store.clear_bom()
+        return self._json({"counts": self.store.bom_counts()})
 
     def bom_preview(self, params: dict[str, str], body: dict[str, Any]) -> "Response":
         """送られたファイルの見出しと先頭の行、表ごとの項目と列の当たり（保存した対応づけがあれば saved）。"""

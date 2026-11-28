@@ -1077,6 +1077,10 @@ class StudyStore:
             self._bump_bom()
         self._take_deltas()
 
+    def clear_bom(self) -> None:
+        """取り込んだ部品表（品目・構成・原価・年間台数）を全部消す。検討と列の対応づけは残す。"""
+        self.replace_bom(Version("empty"), ("item", "bom_line", "cost", "volume"))
+
     def save_columns(self, headers: Sequence[str], kind: str, columns: Mapping[str, str]) -> None:
         """取り込みの列の対応（項目 → 見出し）を、見出しの並びと表の種類ごとに残す。"""
         with self._conn:
