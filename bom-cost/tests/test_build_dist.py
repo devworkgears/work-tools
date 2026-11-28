@@ -202,6 +202,14 @@ class BuildDist(unittest.TestCase):
         self.assertIn("bom-cost/app/bomcost/web/index.html", names)
         self.assertFalse([n for n in names if "__pycache__" in n or n.endswith(".pyc") or "/tests/" in n or "/samples/" in n])
 
+    def test_app_sources_go_in_without_comments(self) -> None:
+        (self.app / "app.py").write_text('"""説明。"""\n# 書き手のメモ\nprint("# 文字列の中は残す")  # 行末\n', encoding="utf-8")
+        (self.app / "web" / "a.js").write_text('// 説明\nconst u = "http://x"; /* 中 */ f(1);\n', encoding="utf-8")
+        z = self.build()
+        self.assertEqual(z.read("bom-cost/app/bomcost/app.py").decode(), "print('# 文字列の中は残す')\n")
+        self.assertEqual(z.read("bom-cost/app/bomcost/web/a.js").decode(), 'const u = "http://x";   f(1);\n')
+        self.assertEqual(z.read("bom-cost/app/bomcost/web/index.html").decode(), "<!doctype html>")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -13,7 +13,7 @@ zip の中:
     bom-cost/start.bat     --version を渡すとウィンドウの title に版を出す
     bom-cost/VERSION.txt   --version を渡したときだけ（版と commit の sha）
     bom-cost/python/   embeddable 版を展開したもの（._pth に ..\\app と ..\\lib を足す）
-    bom-cost/app/bomcost/
+    bom-cost/app/bomcost/  .py・.js・.css はコメントと docstring を落とした物
     bom-cost/lib/      wheel を展開したもの
     bom-cost/licenses/ Python・openpyxl・et_xmlfile のライセンス
     （DB は start.bat が bom-cost/data/bom-cost.sqlite に作る）
@@ -25,6 +25,8 @@ import re
 import sys
 import zipfile
 from pathlib import Path, PurePosixPath
+
+from strip_comments import strip
 
 ROOT = Path(__file__).resolve().parent
 APP_DIR = ROOT / "bomcost"
@@ -129,7 +131,7 @@ def _is_license(path: PurePosixPath) -> bool:
 
 def build(cache: Path, out_dir: Path, app_dir: Path = APP_DIR, version: str | None = None,
           commit: str | None = None, materials_sha256: Path | None = None) -> Path:
-    """zip を out_dir に作ってそのパスを返す。同じ名前の zip は置き換える。"""
+    """zip を out_dir に作ってそのパスを返す。同じ名前の zip は置き換える。アプリのソースはコメントを落として入れる。"""
     if version is not None and not VERSION_RE.match(version):
         raise ValueError(f"版の形が不正: {version!r}")
     if commit is not None and (version is None or not COMMIT_RE.match(commit)):
@@ -182,7 +184,7 @@ def build(cache: Path, out_dir: Path, app_dir: Path = APP_DIR, version: str | No
             rel = path.relative_to(app_dir)
             if not path.is_file() or SKIP_DIRS.intersection(rel.parts) or path.suffix in SKIP_SUFFIXES:
                 continue
-            out.writestr(str(top / "app" / app_dir.name / PurePosixPath(*rel.parts)), path.read_bytes())
+            out.writestr(str(top / "app" / app_dir.name / PurePosixPath(*rel.parts)), strip(path.name, path.read_bytes()))
     partial.replace(target)
     return target
 
