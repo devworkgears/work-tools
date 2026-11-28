@@ -3,6 +3,8 @@
 
 // 版（作業中の版の番号・［版確定］・［過去の版］）を画面に出すか。今は隠す（仕組みは残す）
 const SHOW_VERSIONS = false;
+// ⑤構成一覧・⑥変更一覧のボタンを出すか。今は隠す（画面は残す）
+const SHOW_LISTS = false;
 
 async function hubScreen(main, cur) {
   if (S.version !== null) return pastHub(main);
@@ -127,7 +129,7 @@ async function hubScreen(main, cur) {
       // 左が準備、まん中（青）が打つ画面、右が見る画面。行き来して使うので、順の矢印は置かない
       el("fieldset", { class: "grp" }, big(3, "対象品番"), big(9, "仮品番")),
       el("fieldset", { class: "grp edit" }, big(8, "構成変更"), big(10, "費目変更"), variationButton),
-      el("fieldset", { class: "grp" }, big(5, "構成一覧"), big(6, "変更一覧", S.problems ? [" ", el("span", { class: "pill warn" }, S.problems)] : null), big(7, "結果"))),
+      el("fieldset", { class: "grp" }, SHOW_LISTS ? [big(5, "構成一覧"), big(6, "変更一覧", S.problems ? [" ", el("span", { class: "pill warn" }, S.problems)] : null)] : null, big(7, "結果"))),
   );
 }
 
