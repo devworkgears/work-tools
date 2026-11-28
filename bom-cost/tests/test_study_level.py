@@ -267,7 +267,7 @@ class LevelApi(unittest.TestCase):
         self.assertEqual(r.status, 200)
         self.assertIn("filename*=UTF-8''%E6%A7%8B%E6%88%90_", r.headers["Content-Disposition"])
         book = load_openpyxl().load_workbook(io.BytesIO(r.body))
-        self.assertEqual(book.sheetnames, ["構成"])
+        self.assertEqual(book.sheetnames, ["構成", "品目"])
         # 品番は1列・親の下に子の順。数量（変更後）は、その箇所のレベルの列（見出しは 1・2・3）にだけ入る
         self.assertEqual([c.value for c in book["構成"][1]][11:14], ["1", "2", "3"])
         rows = list(book["構成"].iter_rows(min_row=2, values_only=True))
@@ -280,6 +280,15 @@ class LevelApi(unittest.TestCase):
             (1, "P1", "3", "N", "S", 1, (1, None, None), "変更")])
         self.assertEqual({x[0] for x in rows}, {"P1", "P2"})
         self.assertEqual(sum(1 for x in rows if x[0] == "P2"), 6)
+        # 品目: 構成に出てくる品番を1行に1つ（出てきた順）。材料費・製造原価は画面の品番の右の列と同じ値
+        self.assertEqual([c.value for c in book["品目"][1]], ["品番", "名称", "仕様", "材料費", "製造原価"])
+        listed = list(book["品目"].iter_rows(min_row=2, values_only=True))
+        self.assertTrue(all(x[3] is not None and x[4] is not None for x in listed))
+        self.assertEqual([x[0] for x in listed], list(dict.fromkeys(x[6] for x in rows)))
+        shown = self.ok("POST", "/api/v2/lookup", {"codes": [x[0] for x in listed]})["items"]
+        for code, name, _, material, manufacturing in listed:
+            self.assertEqual((name, material, manufacturing),
+                             (shown[code]["name"], *(None if shown[code][k] is None else float(shown[code][k]) for k in ("material", "manufacturing"))))
 
     def test_screens_show_the_inside_of_a_derived_temp(self) -> None:
         got = self.ok("PUT", "/api/v2/temp-items", {"rows": [{"code": "T1", "name": "組立改", "material": "", "base": "U"}]})["rows"]

@@ -884,9 +884,22 @@ class StudyApi:
         rows = [[n["product"], n["product_name"], n["level"], n["parent"], *n["balloon"], n["part"], n["name"], n["spec"],
                  n["now"], n["before"], *(n["after"] if i == n["level"] else None for i in range(1, depth + 1)), n["mark"]]
                 for n in nodes]
+        # 品目: 構成に出てくる品番を1行に1つ（出てきた順）。材料費と製造原価は1個あたり（画面の品番の右の列と同じ求め方）
+        calc = CostCalculator(ws.bom, CostHead.MATERIAL)
+        parts: list[list[Any]] = []
+        for code in dict.fromkeys(n["part"] for n in nodes):
+            item = items.get(code)
+            try:
+                material = calc.item_cost(code) if item else None
+            except ValueError:
+                material = None
+            manufacturing = (breakdown(material, registered_own(ws.bom, code), rates=ws.rates).value(CostHead.MANUFACTURING)
+                             if material is not None else None)
+            parts.append([code, item.name if item else None, item.specification if item else None, material, manufacturing])
         return self._xlsx(f"構成_{ws.number}", [
             ("構成", ["製品", "製品の名称", "レベル", "親品番", "風船", "サブ番号", "品番", "名称", "仕様", "現行の品番",
                     "数量（現行）", *levels, "変更"], rows),
+            ("品目", ["品番", "名称", "仕様", "材料費", "製造原価"], parts),
         ])
 
     def export_release_drift(self, params: dict[str, str]) -> "Response":
