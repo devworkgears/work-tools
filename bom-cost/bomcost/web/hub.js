@@ -92,13 +92,11 @@ async function hubScreen(main, cur) {
     }
   });
 
-  // 部品表は全部の検討で共通なので、検討の操作と離して置く
-  const bomNote = el("span", { class: "mini" });
+  // 部品表は全部の検討で共通なので、検討の操作と離して置く。件数は出さず、空の時だけ知らせる
+  const bomNote = el("span", { class: "pill warn", style: "display:none" }, "部品表なし");
   const showBom = async () => {
     const { counts } = await api("GET", "/api/v2/bom");
-    const empty = !counts.item && !counts.bom_line;
-    bomNote.className = empty ? "pill warn" : "mini";
-    bomNote.textContent = empty ? "部品表なし" : `部品表 品目 ${fmt(counts.item)}・構成 ${fmt(counts.bom_line)}`;
+    bomNote.style.display = counts.item || counts.bom_line ? "none" : "";
   };
   showBom().catch(fail);
   const imported = async () => {
@@ -119,7 +117,7 @@ async function hubScreen(main, cur) {
       el("button", { class: "btn", onclick: read, disabled: S.mode === "new" }, "読込"),
       el("button", { class: "btn", onclick: studyListDialog, disabled: S.mode === "new" }, "一覧検索"),
       el("span", { class: "sp" }), bomNote,
-      el("button", { class: "btn quiet", onclick: () => importDialog(() => imported().catch(fail)) }, "部品表データ取込")),
+      el("button", { class: "btn quiet", onclick: () => importDialog(() => imported().catch(fail)) }, "⋯")),
     el("div", { class: "card" },
       el("div", { class: "h" }, el("span", { class: "no" }, S.number || "　"), SHOW_VERSIONS ? [working, release, past] : null),
       el("div", { class: "b" }, el("div", { class: "row", style: "margin:0" }, fields,
