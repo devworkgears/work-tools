@@ -119,7 +119,7 @@ async function hubScreen(main, cur) {
       el("button", { class: "btn", onclick: read, disabled: S.mode === "new" }, "読込"),
       el("button", { class: "btn", onclick: studyListDialog, disabled: S.mode === "new" }, "一覧検索"),
       el("span", { class: "sp" }), bomNote,
-      el("button", { class: "btn quiet", onclick: () => importDialog(() => imported().catch(fail)) }, "部品表データ取込（モック）")),
+      el("button", { class: "btn quiet", onclick: () => importDialog(() => imported().catch(fail)) }, "部品表データ取込")),
     el("div", { class: "card" },
       el("div", { class: "h" }, el("span", { class: "no" }, S.number || "　"), SHOW_VERSIONS ? [working, release, past] : null),
       el("div", { class: "b" }, el("div", { class: "row", style: "margin:0" }, fields,

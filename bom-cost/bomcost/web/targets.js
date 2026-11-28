@@ -336,7 +336,7 @@ async function importDialog(after) {
   } catch (e) {
     fail(e);
   }
-  const d = dialog("部品表データ取込（モック）", [
+  const d = dialog("部品表データ取込", [
     now,
     el("div", { class: "row" }, file, sheetLabel, el("label", { class: "mini" }, "表 ", kind)),
     mapping, list, check,
