@@ -59,18 +59,17 @@ async function rewriteScreen(main, cur, key = 8) {
   const products = new Set(minus ? Object.values(S.variations || {}) : []);
   const fixed = (row) => !!row && !row.draft && (products.has(row.part) || [...row.cells.values()].some((s) => products.has(s.now)));
   const parents = () => me.columns();
-  // 列: 番号・風船・サブ番号・品番・名称・仕様・状態・子・一律、その右に親ごとの数量
-  const [BALLOON, BRANCH, PART, NAME, SPEC, STATE, LOWER, UNIFORM] = [1, 2, 3, 4, 5, 6, 7, 8]; // 一律は足しかけの行だけ打てる。打つと出ている親の全部に同じ数量が入る
-  const left = 9;
-  // head・branch は足しかけの行に打った風船番号とサブ番号（balloon はその2つを合わせた箇所の印）。
-  // uniform は一律に打った数量。spread は一律で入れたか（もう同じ物がある親には足さない）
-  const newDraft = (near) => ({ draft: true, balloon: "", head: "", branch: "", part: "", now: null, cells: new Map(), amounts: new Map(), uniform: "", spread: false, after: near ? (near.draft ? near.after : keyOf(near)) : null });
+  // 列: 番号・風船・サブ番号・品番・名称・仕様・状態・子、その右に親ごとの数量
+  const [BALLOON, BRANCH, PART, NAME, SPEC, STATE, LOWER] = [1, 2, 3, 4, 5, 6, 7];
+  const left = 8;
+  // head・branch は足しかけの行に打った風船番号とサブ番号（balloon はその2つを合わせた箇所の印）
+  const newDraft = (near) => ({ draft: true, balloon: "", head: "", branch: "", part: "", now: null, cells: new Map(), amounts: new Map(), after: near ? (near.draft ? near.after : keyOf(near)) : null });
   // 打ち替えは溜めて、changed() で1回に送る
   let parts = new Map(); // 行 → 品番（空は現行に戻す）
   let amounts = new Map(); // 行 → 親 → 数量（空は現行に戻す）
   const model = {
     head: () => [{ text: "", cls: "slim" }, { text: "風船", cls: "c slim" }, { text: "サブ番号", cls: "c" }, "品番", "名称", "仕様", { text: "状態", cls: "slim" }, { text: "子", cls: "slim" },
-      { text: "一律", cls: "r slim" }, ...parents().map(me.head)],
+      ...parents().map(me.head)],
     nRows: () => rows.length + (ro || !parents().length ? 0 : 1),
     nCols: () => left + parents().length,
     grow: ro ? undefined : () => {
@@ -99,7 +98,6 @@ async function rewriteScreen(main, cur, key = 8) {
       if (c === SPEC) return fit(me.spec(part), "clip narrow");
       if (c === STATE) return fit(me.state(part), "slim");
       if (c === LOWER) return fit(me.openCell(row), "slim");
-      if (c === UNIFORM) return !row || row.draft ? { text: row ? row.uniform : "", editable: !ro, cls: "r q slim" } : { text: "", lock: true, cls: "off slim" };
       const parent = parents()[c - left];
       const edge = c === left ? " split" : "";
       if (!row) return { text: "", editable: !ro, cls: "r q" + edge };
@@ -114,8 +112,7 @@ async function rewriteScreen(main, cur, key = 8) {
         title: s.short ? "マイナス" : s.problem ? "要確認（変更一覧）" : changed && s.before !== null ? `現行 ${fmt(s.before)}` : null };
     },
     set(r, c, text) {
-      if (c < BALLOON || (c > PART && c < left && c !== UNIFORM)) return;
-      if (c === UNIFORM && rows[r] && !rows[r].draft) return;
+      if (c < BALLOON || (c > PART && c < left)) return;
       if (fixed(rows[r])) return;
       if (!rows[r]) {
         if (!text) return;
@@ -123,7 +120,7 @@ async function rewriteScreen(main, cur, key = 8) {
       }
       const row = rows[r];
       const parent = parents()[c - left];
-      if ((c >= left || c === UNIFORM) && text !== "" && !(isNumber(text) && (minus || Number(text) >= 0))) {
+      if (c >= left && text !== "" && !(isNumber(text) && (minus || Number(text) >= 0))) {
         return alert(`数量は${minus ? "" : "0以上の"}数で入力してください（${row.part || "品番なし"}「${text}」）`);
       }
       if (row.draft) {
@@ -133,13 +130,7 @@ async function rewriteScreen(main, cur, key = 8) {
           row[c === BALLOON ? "head" : "branch"] = c === BALLOON && text === NO_BALLOON ? "" : text;
           row.balloon = joinBalloon(row.head, row.branch) ?? "";
         } else if (c === PART) row.part = text;
-        else if (c === UNIFORM) {
-          row.uniform = text;
-          if (text !== "") {
-            row.spread = true;
-            for (const p of parents()) row.amounts.set(p, text);
-          }
-        } else if (text === "") row.amounts.delete(parent);
+        else if (text === "") row.amounts.delete(parent);
         else row.amounts.set(parent, text);
         return;
       }
@@ -300,24 +291,17 @@ async function rewriteScreen(main, cur, key = 8) {
     amounts = new Map();
     const shown = new Set(parents());
     const ready = [];
-    let kept = 0; // 全部に入れる時に、もうあるので足さない所
     for (const d of drafts) {
       if (!d.part || d.refused || d.sending) continue;
-      for (const parent of d.spread ? [...d.amounts.keys()] : []) {
-        if (!me.slots(parent).some((s) => s.balloon === (d.balloon || null) && s.part === d.part && Number(s.quantity) !== 0)) continue;
-        d.amounts.delete(parent);
-        kept += 1;
-      }
       const list = new Map([...d.amounts].filter(([parent]) => shown.has(parent))); // 出していない親に入れた数量は送らない
       if (!list.size) continue;
       d.sending = true;
       ready.push({ d, part: d.part, balloon: d.balloon || null, list });
     }
-    if (typed.size || counts.size || ready.length) return later(() => run(typed, counts, ready, kept));
-    if (kept) alert("同じ風船番号と品番が、もう全部にあります");
+    if (typed.size || counts.size || ready.length) return later(() => run(typed, counts, ready));
     lookup(drafts.map((d) => d.part)).then((got) => got && grid.render()).catch(fail);
   };
-  const run = async (typed, counts, ready, kept) => {
+  const run = async (typed, counts, ready) => {
     await lookup([...typed.values(), ...ready.map((x) => x.part)]);
     const body = { back: [], quantity: [], replace: [], add: [], inside: [] };
     const renames = [];
@@ -387,7 +371,7 @@ async function rewriteScreen(main, cur, key = 8) {
       const k = keyOf({ balloon, part });
       if (!place.has(k)) place.set(k, place.has(d.after) ? place.get(d.after) + 1e-7 : Math.max(0, ...place.values()) + 1);
       try {
-        await send("/api/v2/structure", me.child ? { inside: adding } : { add: adding }, `${adding.length} 箇所に足しました${kept ? `（もうある ${kept} 箇所は足していません）` : ""}`);
+        await send("/api/v2/structure", me.child ? { inside: adding } : { add: adding }, `${adding.length} 箇所に足しました`);
         const shown = new Set(parents());
         for (const parent of [...d.amounts.keys()]) if (list.has(parent) || !shown.has(parent)) d.amounts.delete(parent);
         for (const [parent] of list) d.amounts.delete(newest(parent));

@@ -135,7 +135,7 @@ table.grid td.n { color: var(--sub); text-align: right; min-width: 32px; backgro
 table.grid td.in { background: #fff; min-width: 100px; }
 table.grid td.q { min-width: 44px; }
 table.grid td.auto { color: var(--sub); background: #fafbfc; }
-/* 細い列（風船・サブ番号・状態・下位・一律）と、長い文字を詰める列（名称・仕様。全部は押さえた時の札に出す） */
+/* 細い列（風船・サブ番号・状態・下位）と、長い文字を詰める列（名称・仕様。全部は押さえた時の札に出す） */
 table.grid th.slim, table.grid td.slim, table.grid td.in.slim, table.grid td.q.slim { min-width: 28px; padding: 3px 4px; }
 table.grid th.slim { white-space: normal; }
 table.grid td.wide { min-width: 100px; } /* 打てない行も、打てる品番の列と同じ幅（サブ番号） */
