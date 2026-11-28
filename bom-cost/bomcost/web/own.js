@@ -18,7 +18,7 @@ async function ownScreen(main, cur) {
   const body = el("div");
   // 列: # | 対象品番 | 名称 | 費目ごとに 今（台帳・読むだけ）と 変更後（打つ）
   const model = {
-    head: () => ["", "対象品番", "名称", ...heads.flatMap((h) => [{ text: `${h.label} 現行`, cls: "r" }, { text: `${h.label} 変更後`, cls: "r" }])],
+    head: () => ["", "対象品番", "名称", ...heads.flatMap((h) => [{ text: `${label(h.label)} 現行`, cls: "r" }, { text: `${label(h.label)} 変更後`, cls: "r" }])],
     nRows: () => rows.length,
     nCols: () => 3 + heads.length * 2,
     cell(r, c) {
@@ -35,7 +35,7 @@ async function ownScreen(main, cur) {
       if (c < 3 || (c - 3) % 2 === 0) return;
       const h = heads[Math.floor((c - 3) / 2)];
       // 数でない値はその場で弾く（入れずに元の値のまま）
-      if (text !== "" && !isNumber(text)) return alert(`${h.label}は数で入力してください（${rows[r].product}「${text}」）`);
+      if (text !== "" && !isNumber(text)) return alert(`${label(h.label)}は数で入力してください（${rows[r].product}「${text}」）`);
       rows[r].after[h.key] = text;
       saver.schedule();
     },
