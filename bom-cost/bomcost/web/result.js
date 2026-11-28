@@ -1,5 +1,6 @@
 "use strict";
 // ⑦ 結果 -----------------------------------------------------------------
+const IMPACT_HEADS = ["material", "total"];
 
 function signed(v) {
   if (v === null || v === undefined) return "—";
@@ -148,9 +149,12 @@ async function resultScreen(main) {
           return el("td", { class: "r" + tone(diff) + (inc ? " inc" : ""), title: inc ? "不完全" : null }, diff === null ? "—" : signed(diff), rate ? `（${rate}）` : "");
         }))),
       ]),
+      // 年間の影響は材料費小計と製造原価だけ出す
       el("tr", {}, el("th", { colspan: "3" }, "年間の影響"), el("th", {}),
-        heads.map((h) => el("th", { class: "r" + tone(h.impact[plan]) + (h.impact_incomplete[plan] ? " inc" : ""), title: h.impact_incomplete[plan] ? "不完全" : null },
-          man(h.impact[plan]), Number(h.impact[plan]) ? `（${percent(h.impact[plan], h.base[plan])}）` : ""))),
+        heads.map((h) => (IMPACT_HEADS.includes(h.key)
+          ? el("th", { class: "r" + tone(h.impact[plan]) + (h.impact_incomplete[plan] ? " inc" : ""), title: h.impact_incomplete[plan] ? "不完全" : null },
+            man(h.impact[plan]), Number(h.impact[plan]) ? `（${percent(h.impact[plan], h.base[plan])}）` : "")
+          : el("th", {})))),
       el("tr", {}, el("th", { colspan: "3" }, "1台あたりの平均の増減"), el("th", { class: "mini" }, "年間台数で重み付け"),
         heads.map((h) => el("th", { class: "r" + tone(h.weighted[plan]) + (h.impact_incomplete[plan] ? " inc" : ""), title: h.impact_incomplete[plan] ? "不完全" : null }, signed(h.weighted[plan])))));
   };
