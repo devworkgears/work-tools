@@ -361,7 +361,14 @@ class VersionImport:
         self.version.add_cost(row)
 
     def _add_volume(self, file: str, number: int, r: dict[str, Any]) -> None:
-        volume = Volume(r["product"], r["annual"])
+        # 年間台数の製品は ERP の品番で来るので、原価の品番と同じ桁の規則で設計の品番に直す
+        product = to_code(r["product"], name="製品の品番")
+        try:
+            code = mbom_to_ebom(product)
+        except ValueError:
+            code = product
+            self._warn(file, number, f"製品の品番が設定の桁に合わないので変換せずに取り込んだ: {product}")
+        volume = Volume(code, r["annual"])
         kept = self.version.volume(volume.product)
         if kept is not None and kept != volume:
             self._warn(file, number, f"年間台数 {volume.product} が別の値で重複したので後の行を採った")

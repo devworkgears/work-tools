@@ -191,6 +191,18 @@ class ImportFiles(TempDir):
         self.assertIn("XYZ-9", imp.warnings[0].message)
         self.assertEqual((imp.warnings[0].file, imp.warnings[0].row), ("cost.csv", 5))
 
+    def test_volume_product_is_turned_like_cost_code(self) -> None:
+        """年間台数の製品の品番も、原価の品番と同じ桁の規則で設計の品番に直す。合わない品番は変換せずに警告。"""
+        path = self.dir / "volume.csv"
+        write_csv(path, ["製品品番", "年間台数"], [["AB1234000", 100], ["AB1234010", 200], ["XYZ-9", 300]], "utf-8")
+        imp = VersionImport(Version("t"))
+        imp.add_file(path, ColumnMap("volume", ["製品品番", "年間台数"], {"product": "製品品番", "annual": "年間台数"}))
+        self.assertEqual({p: v.annual for p, v in imp.version.volumes.items()},
+                         {"AB1234": d(100), "AB123401": d(200), "XYZ-9": d(300)})
+        self.assertEqual(len(imp.warnings), 1)
+        self.assertIn("XYZ-9", imp.warnings[0].message)
+        self.assertEqual((imp.warnings[0].file, imp.warnings[0].row), ("volume.csv", 4))
+
     def test_many_product_files_fold_and_keep_conflicts(self) -> None:
         bom_map = ColumnMap("bom_line", BOM_HEADERS, BOM_MAP)
         p1, p2 = self.dir / "p1.csv", self.dir / "p2.csv"

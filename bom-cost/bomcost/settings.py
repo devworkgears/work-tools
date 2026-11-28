@@ -35,7 +35,7 @@ class Rates:
 class Settings:
     adjustment_percent: Decimal | None = None
     indirect_percent: Decimal | None = None
-    # 原価の表の品番 ＝ 基本の品番（code_base 桁）＋枝番（code_branch 桁）＋後ろを埋める 0（合わせて code_total 桁）
+    # 原価の表と年間台数の表の品番 ＝ 基本の品番（code_base 桁）＋その後ろの番号（code_branch 桁）＋後ろを埋める 0（合わせて code_total 桁）
     code_total: int | None = None
     code_base: int | None = None
     code_branch: int | None = None
