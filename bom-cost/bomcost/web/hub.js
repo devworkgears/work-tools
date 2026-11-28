@@ -1,6 +1,9 @@
 "use strict";
 // ② 設計検討 -------------------------------------------------------------
 
+// 版（作業中の版の番号・［版確定］・［過去の版］）を画面に出すか。今は隠す（仕組みは残す）
+const SHOW_VERSIONS = false;
+
 async function hubScreen(main, cur) {
   if (S.version !== null) return pastHub(main);
   const ro = S.mode === "view";
@@ -118,7 +121,7 @@ async function hubScreen(main, cur) {
       el("span", { class: "sp" }), bomNote,
       el("button", { class: "btn quiet", onclick: () => importDialog(() => imported().catch(fail)) }, "部品表データ取込（モック）")),
     el("div", { class: "card" },
-      el("div", { class: "h" }, el("span", { class: "no" }, S.number || "　"), working, release, past),
+      el("div", { class: "h" }, el("span", { class: "no" }, S.number || "　"), SHOW_VERSIONS ? [working, release, past] : null),
       el("div", { class: "b" }, el("div", { class: "row", style: "margin:0" }, fields,
         el("label", { class: "f" }, "最終更新日", el("input", { class: "in ro", value: updated, readonly: true, style: "min-width:100px;width:110px" })),
         run))),
