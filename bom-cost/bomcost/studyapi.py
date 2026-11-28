@@ -73,6 +73,7 @@ ILLEGAL = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f]")  # Excel に書けない制
 # 設計検討の見本（製品をまたぐ差し替えを試せる大きさ）。パッケージの外に置き、配る zip には入れない
 SAMPLES_DIR = Path(__file__).resolve().parent.parent / "samples_v2"
 XLSX_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+IMPACT_HEADS = (Head.MATERIAL, Head.MANUFACTURING)  # 年間の影響を出す費目（⑦の画面と同じ）
 
 
 def _s(value: Decimal | None) -> str | None:
@@ -796,55 +797,49 @@ class StudyApi:
     # Excel -----------------------------------------------------------------
 
     def export_study(self, params: dict[str, str]) -> "Response":
-        """検討1つを1つの Excel に出す（構成の変更と金額の変更を別のシートに・1行1件）。"""
+        """検討1つを1つの Excel に出す（金額の横持ち・縦持ち、構成の変更、計算条件）。"""
         ws = self._ws(params)
         plan = self._plan(params)
         changes = self._change_rows({**params, "product": ""})
         results = calculate_heads(ws)
-        money, incomplete = [], False
+        money: list[list[Any]] = []
+        wide: dict[str, list[list[Any]]] = {p: [] for p in ws.targets}
         for head in HEADS.values():
             for r in results[head]["rows"]:
                 now, after = r["now"], r["plans"].get(plan)
                 diff = None if now is None or after is None else after - now
                 flag = bool(r["now_incomplete"] or r["incomplete"].get(plan))
-                incomplete |= flag
                 money.append([r["product"], r["name"], head.value, now, after, diff, _percent(diff, now), r["annual"],
                               None if diff is None or r["annual"] is None else diff * r["annual"], "不完全" if flag else ""])
+                wide.setdefault(r["product"], []).append([r["name"], r["annual"], now, after, diff, _percent(diff, now), flag])
         order = {p: i for i, p in enumerate(ws.targets)}
         money.sort(key=lambda r: order[r[0]])  # 対象品番の順（同じ品番の中は費目の順のまま）
-        effects = change_effects(ws, plan, changes)
-
-        def new_name(e: dict[str, Any]) -> Any:
-            return settings.word(e["head"]) if e["head"] else e["new_name"]
-
+        # 横持ち: 画面の製品別と同じく、製品ごとに 現行・変更後・増減・増減（％）の4行、列＝費目
+        across: list[list[Any]] = []
+        for product, cells in wide.items():
+            if not cells:
+                continue
+            name, annual, flag = cells[0][0], cells[0][1], any(c[6] for c in cells)
+            for at, line in enumerate(("現行", "変更後", "増減", "増減（％）"), 2):
+                across.append([product, name, annual, line, *(c[at] for c in cells), "不完全" if flag else ""])
+        across.append(["年間の影響", None, None, None,
+                       *(results[h]["impact"].get(plan) if h in IMPACT_HEADS else None for h in HEADS.values()), None])
+        across.append(["年間の影響（現行比％）", None, None, None,
+                       *(_percent(results[h]["impact"].get(plan), results[h]["base"].get(plan)) if h in IMPACT_HEADS else None
+                         for h in HEADS.values()), None])
+        across.append(["1台あたりの平均の増減", None, None, "年間台数で重み付け",
+                       *(results[h]["weighted"].get(plan) for h in HEADS.values()), None])
+        heading = [["検討", None, "検討番号", ws.number, None], ["検討", None, "版", "仮" if ws.version is None else ws.version, None],
+                   ["検討", None, "題目", ws.header.get("title"), None], ["検討", None, "担当", ws.header.get("owner"), None],
+                   ["検討", None, "出力日時", datetime.now().replace(microsecond=0).isoformat(sep=" "), None]]
         sheets: list[tuple[str, list[str], list[list[Any]]]] = [
-            ("まとめ", ["項目", "値"], [
-                ["検討番号", ws.number], ["版", "仮" if ws.version is None else ws.version],
-                ["題目", ws.header.get("title")], ["担当", ws.header.get("owner")],
-                ["出力日時", datetime.now().replace(microsecond=0).isoformat(sep=" ")],
-                ["対象品番の数", len(ws.targets)], ["不完全", "あり" if incomplete else "なし"],
-                *([f"年間の影響（{h.value}）", results[h]["impact"].get(plan)] for h in HEADS.values()),
-                *([f"年間の影響の現行比％（{h.value}）", _percent(results[h]["impact"].get(plan), results[h]["base"].get(plan))]
-                  for h in HEADS.values()),
-                *([f"1台あたりの平均の増減（年間台数で重み付け・{h.value}）", results[h]["weighted"].get(plan)] for h in HEADS.values())]),
-            ("金額", ["対象品番", "名称", "費目", "現行", "変更後", "1台あたりの増減", "増減（％）", "年間台数", "年間の影響", "不完全"], money),
-            ("変更ごとの影響", ["変更", "元品番", "元の名称", "新品番", "新の名称", "製品の数", "年間の影響", "現行比（％）", "不完全", "要確認"],
-             [[e["kind"], e["old"], e["old_name"], e["new"], new_name(e), len(e["products"]), e["impact"],
-               _percent(e["impact"], results[Head.MANUFACTURING]["base"].get(plan)), "不完全" if e["incomplete"] else "",
-               "・".join(e["problems"])] for e in effects]),
-            ("変更ごとの影響（製品別）", ["変更", "元品番", "新品番", "新の名称", "製品", "名称", "1台あたりの増減", "年間台数", "年間の影響"],
-             [[e["kind"], e["old"], e["new"], new_name(e), p["product"], p["name"], p["unit"], p["annual"], p["impact"]]
-              for e in effects for p in e["products"]]),
+            ("金額（横持ち）", ["対象品番", "名称", "年間台数", "", *(h.value for h in HEADS.values()), "不完全"], across),
+            ("金額（縦持ち）", ["対象品番", "名称", "費目", "現行", "変更後", "1台あたりの増減", "増減（％）", "年間台数", "年間の影響", "不完全"],
+             money),
             ("構成の変更", ["変更", "元品番", "元の名称", "新品番", "新の名称", "数量", "製品の数", "製品", "要確認"],
              [[s["kind"], s["old"], s["old_name"], s["new"], s["new_name"], s["quantity"], len(s["products"]),
                "・".join(s["products"]), "・".join(s["problems"])] for s in summarize_changes(changes)]),
-            ("構成の明細", ["製品", "名称", "変更", "元品番", "元の名称", "新品番", "新の名称", "数量（現行）", "数量（変更後）", "親品番", "風船", "サブ番号",
-                       "要確認"],
-             [[r["product"], ws.bom.items[r["product"]].name if r["product"] in ws.bom.items else None, r["kind"],
-               r["old"], r["old_name"], r["new"], r["new_name"], _num(r["before"]), _num(r["after"]), r["parent"],
-               *split_balloon(r["balloon"]), "・".join(r["problems"])]
-              for r in changes_by_product(summarize_changes(changes), ws.targets)]),
-            ("計算条件", ["種類", "対象", "項目", "値", "備考"], self._condition_rows(ws, plan)),
+            ("計算条件", ["種類", "対象", "項目", "値", "備考"], heading + self._condition_rows(ws, plan)),
         ]
         inner = [[t.code, t.name, t.base, s["kind"], s["old"], s["old_name"], s["new"], s["new_name"], *split_balloon(d["balloon"]),
                   _num(d["before"]), _num(d["after"])]
@@ -956,7 +951,7 @@ class StudyApi:
                     if isinstance(v, str):
                         sheet.cell(row=at, column=col).data_type = "s"
             sheet.freeze_panes = "A2"
-        data = save_workbook(wb, {"まとめ": [1], "金額": [3], "計算条件": [1, 3]})
+        data = save_workbook(wb, {"金額（横持ち）": [1, 4], "金額（縦持ち）": [3], "計算条件": [1, 3]})
         return Response(200, data, XLSX_TYPE,
                         {"Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}.xlsx"})
 

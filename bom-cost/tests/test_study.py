@@ -699,8 +699,8 @@ class StudyApiFlow(unittest.TestCase):
         single = self.ok("GET", "/api/v2/calc", q + "&head=total")
         self.assertEqual((single["rows"], single["impact"]), (heads["total"]["rows"], heads["total"]["impact"]))
         book = load_openpyxl().load_workbook(io.BytesIO(self.api.handle("GET", "/api/v2/export/study", q, b"").body))
-        self.assertEqual(book["金額"].max_row, 1 + 2 * 8)  # 2製品×8費目
-        money = [r for r in book["金額"].iter_rows(min_row=2, values_only=True) if r[0] == P1 and r[2] == "製造原価"][0]
+        self.assertEqual(book["金額（縦持ち）"].max_row, 1 + 2 * 8)  # 2製品×8費目
+        money = [r for r in book["金額（縦持ち）"].iter_rows(min_row=2, values_only=True) if r[0] == P1 and r[2] == "製造原価"][0]
         self.assertAlmostEqual(money[5], float(total))
         self.assertAlmostEqual(money[6], round(float(total) / money[3] * 100, 2))
         self.assertAlmostEqual(money[8], float(total) * money[7])
@@ -776,25 +776,29 @@ class StudyApiFlow(unittest.TestCase):
         excel = self.api.handle("GET", "/api/v2/export/study", q)
         self.assertEqual(excel.status, 200)
         book = load_openpyxl().load_workbook(io.BytesIO(excel.body))
-        self.assertEqual(book.sheetnames, ["まとめ", "金額", "変更ごとの影響", "変更ごとの影響（製品別）", "構成の変更", "構成の明細", "計算条件"])
-        # まとめに説明の行は置かない
-        self.assertFalse([r[0] for r in book["まとめ"].iter_rows(values_only=True) if str(r[0]).startswith("説明")])
-        # 製品別は、した事×効く製品の行。足すと、変更ごとの影響の年間の影響になる
-        effects = list(book["変更ごとの影響"].iter_rows(min_row=2, values_only=True))
-        per_product = list(book["変更ごとの影響（製品別）"].iter_rows(min_row=2, values_only=True))
-        self.assertEqual(len(per_product), sum(r[5] for r in effects))
-        for e in effects:
-            mine = [r for r in per_product if r[:3] == (e[0], e[1], e[3])]
-            self.assertEqual(sum(Decimal(str(r[8])) for r in mine if r[8] is not None), Decimal(str(e[6] or 0)))
-        # 構成の変更は、した事ごとに1行（2製品の置き換えが1行）・明細は箇所ごと
+        self.assertEqual(book.sheetnames, ["金額（横持ち）", "金額（縦持ち）", "構成の変更", "計算条件"])
+        # 横持ちは画面の製品別と同じ形: 製品ごとに4行、列は8費目。値は縦持ちと同じ
+        across = list(book["金額（横持ち）"].iter_rows(values_only=True))
+        heads = list(across[0][4:12])
+        self.assertEqual(len(heads), 8)
+        result = self.ok("GET", "/api/v2/calc", q + "&head=all")
+        products = [r["product"] for r in result["heads"][0]["rows"]]
+        self.assertEqual([r[3] for r in across[1:1 + 4 * len(products)]], ["現行", "変更後", "増減", "増減（％）"] * len(products))
+        down = {(r[0], r[2]): r for r in book["金額（縦持ち）"].iter_rows(min_row=2, values_only=True)}
+        for row in across[1:1 + 4 * len(products)]:
+            at = {"現行": 3, "変更後": 4, "増減": 5, "増減（％）": 6}[row[3]]
+            self.assertEqual(list(row[4:12]), [down[(row[0], h)][at] for h in heads])
+        # 一番下に年間の影響（材料費小計と製造原価だけ）と、1台あたりの平均の増減
+        bottom = {r[0]: r for r in across[-3:]}
+        impact = {h["label"]: h["impact"]["A"] for h in result["heads"]}
+        self.assertEqual([None if v is None else Decimal(str(v)) for v in bottom["年間の影響"][4:12]],
+                         [Decimal(impact[h]) if h in ("材料費小計", "製造原価") else None for h in heads])
+        self.assertEqual(len([v for v in bottom["1台あたりの平均の増減"][4:12] if v is not None]), 8)
+        # 計算条件の先頭に検討の見出し
+        self.assertEqual(list(book["計算条件"].iter_rows(min_row=2, max_row=2, values_only=True))[0][2:4], ("検討番号", number))
+        # 構成の変更は、した事ごとに1行（2製品の置き換えが1行）
         self.assertIn(("置き換え", OLD, NEW, 2), [(r[0], r[1], r[3], r[6]) for r in
                                               book["構成の変更"].iter_rows(min_row=2, values_only=True)])
-        # 構成の明細は製品から（画面の「製品から」と同じ行・変更の無い対象品番も出る）
-        by_product = self.ok("GET", "/api/v2/changes", q + "&plan=A")["by_product"]
-        self.assertEqual([(r[0], r[2]) for r in book["構成の明細"].iter_rows(min_row=2, values_only=True)],
-                         [(r["product"], r["kind"]) for r in by_product])
-        self.assertEqual(sorted(r["kind"] for r in self.ok("GET", "/api/v2/changes", q + f"&product={P2}")["by_product"]),
-                         sorted(r["kind"] for r in by_product if r["product"] == P2))
 
     def test_replacing_the_common_part_keeps_every_product_positive(self) -> None:
         self.ok("POST", "/api/v2/bom/import", body={"sample": True})
