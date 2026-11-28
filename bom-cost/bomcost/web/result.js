@@ -84,6 +84,11 @@ function exportStudy() {
   return work("Excel を作っています", () => download("/api/v2/export/study", q({ plan: PLAN }), `検討_${S.number}.xlsx`));
 }
 
+// 対象品番の全部の構成（全階層）と品目。量が多いので、検討の Excel とは別のファイル
+function exportStructure() {
+  return work("Excel を作っています", () => download("/api/v2/export/structure", q({ plan: PLAN }), `構成_${S.number}.xlsx`));
+}
+
 async function resultScreen(main) {
   let data = null;
   const plan = PLAN;
@@ -181,6 +186,7 @@ async function resultScreen(main) {
   main.append(card(["結果", stamp], [
     el("button", { class: "btn", onclick: annualDialog }, "年間台数"),
     el("button", { class: "btn", onclick: () => exportStudy().catch(fail) }, "Excel"),
+    el("button", { class: "btn", onclick: () => exportStructure().catch(fail) }, "構成Excel"),
     el("button", { class: "btn pri", onclick: compute }, "実行"),
   ], body));
 }

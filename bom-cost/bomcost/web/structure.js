@@ -357,9 +357,6 @@ async function listScreen(main, cur) {
   };
   main.append(card(me.title("構成一覧"), [
     el("button", { class: "btn", onclick: whereUsed, disabled: !S.number }, "使用先"),
-    // 対象品番の全部の構成（全階層）。量が多いので、⑦の検討の Excel とは別のファイル
-    me.child ? null : el("button", { class: "btn", disabled: !S.number, onclick: () => work("Excel を作っています",
-      () => download("/api/v2/export/structure", q({ plan: PLAN }), `構成_${S.number}.xlsx`)).catch(fail) }, "構成Excel"),
   ], [
     el("div", { class: "row" }, me.picks, el("label", { class: "f" }, "並び", pick([["balloon", "風船番号"], ["part", "品番"], ["name", "名称"]], (v) => { sort = v; })),
       me.filters, sides, showGroup(me.onlyToggle, balloonToggle), me.users, me.note),
