@@ -153,8 +153,9 @@ input.cellin { width: 100%; min-width: 80px; border: 0; outline: 0; padding: 0; 
 
 /* 結果の表 */
 table.res { border-collapse: separate; border-spacing: 0; font-size: 12px; white-space: nowrap; width: 100%; }
-table.res th, table.res td { border-bottom: 1px solid var(--line); padding: 4px 8px; text-align: left; }
+table.res th, table.res td { border-bottom: 1px solid var(--line); padding: 4px 5px; text-align: left; }
 table.res th { background: var(--head); color: var(--sub); font-weight: 600; }
+table.res td.wrap { white-space: normal; min-width: 6em; max-width: 10em; } /* 名称は折り返して、横に見切れさせない */
 table.res .r { text-align: right; font-variant-numeric: tabular-nums; }
 table.res td.inc, table.res th.inc { background: var(--warn-bg); }
 table.res .minus { color: var(--sel-ink); font-weight: 700; }

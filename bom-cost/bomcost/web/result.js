@@ -139,21 +139,21 @@ async function resultScreen(main) {
       el("tr", {}, head("対象品番", (x) => x.r.product), head("名称", (x) => x.r.name), head("年間台数", (x) => x.r.annual, true, "r"), el("th", {}),
         heads.map((h) => head(h.label, (x) => diffOf(h.rows[x.i]), true, "r"))),
       rows.flatMap(({ r: r0, i }) => [
-        el("tr", {}, productCell(r0), el("td", { rowspan: "3" }, r0.name ?? "未登録"), el("td", { class: "r", rowspan: "3" }, fmt(r0.annual)),
+        el("tr", {}, productCell(r0), el("td", { rowspan: "3", class: "wrap" }, r0.name ?? "未登録"), el("td", { class: "r", rowspan: "3" }, fmt(r0.annual)),
           line("現行", heads.map((h) => el("td", { ...incomplete(h.rows[i].now_incomplete), class: "r low" + (h.rows[i].now_incomplete ? " inc" : "") }, fmt(h.rows[i].now))))),
         el("tr", {}, line("変更後", heads.map((h) => el("td", { ...incomplete(h.rows[i].incomplete[plan]), class: "r low" + (h.rows[i].incomplete[plan] ? " inc" : "") }, fmt(h.rows[i].plans[plan]))))),
         el("tr", {}, line("増減", heads.map((h) => {
           const diff = diffOf(h.rows[i]);
           const rate = diff === null || Number(diff) === 0 ? "" : percent(diff, h.rows[i].now);
           const inc = h.rows[i].incomplete[plan];
-          return el("td", { class: "r" + tone(diff) + (inc ? " inc" : ""), title: inc ? "不完全" : null }, diff === null ? "—" : signed(diff), rate ? `（${rate}）` : "");
+          return el("td", { class: "r" + tone(diff) + (inc ? " inc" : ""), title: inc ? "不完全" : null }, diff === null ? "—" : signed(diff), rate ? el("div", { class: "d" }, `（${rate}）`) : null);
         }))),
       ]),
       // 年間の影響は材料費小計と製造原価だけ出す
       el("tr", {}, el("th", { colspan: "3" }, "年間の影響"), el("th", {}),
         heads.map((h) => (IMPACT_HEADS.includes(h.key)
           ? el("th", { class: "r" + tone(h.impact[plan]) + (h.impact_incomplete[plan] ? " inc" : ""), title: h.impact_incomplete[plan] ? "不完全" : null },
-            man(h.impact[plan]), Number(h.impact[plan]) ? `（${percent(h.impact[plan], h.base[plan])}）` : "")
+            man(h.impact[plan]), Number(h.impact[plan]) ? el("div", { class: "d" }, `（${percent(h.impact[plan], h.base[plan])}）`) : null)
           : el("th", {})))),
       el("tr", {}, el("th", { colspan: "3" }, "1台あたりの平均の増減"), el("th", { class: "mini" }, "年間台数で重み付け"),
         heads.map((h) => el("th", { class: "r" + tone(h.weighted[plan]) + (h.impact_incomplete[plan] ? " inc" : ""), title: h.impact_incomplete[plan] ? "不完全" : null }, signed(h.weighted[plan])))));
