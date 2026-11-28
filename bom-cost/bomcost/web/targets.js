@@ -13,21 +13,33 @@ async function targetsScreen(main, cur) {
   }
   await lookup(rows);
   const value = (code, key) => (items.get(code) ? items.get(code)[key] : "");
+  // 行削除の印（行の番号で持つ。並べ替えと読み直しで外す）
+  const marks = new Set();
+  const allMarked = () => rows.length > 0 && rows.every((_, r) => marks.has(r));
+  const markAll = () => {
+    const all = !allMarked();
+    marks.clear();
+    if (all) rows.forEach((_, r) => marks.add(r));
+  };
   // 並びは対象品番の順そのもの（ほかの画面の並びにもなる）
   const sort = sortable(() => {
     const ordered = sort.apply(rows.filter(Boolean));
     rows.splice(0, rows.length, ...ordered);
+    marks.clear();
     if (!ro) touched();
   });
   const body = el("div");
   const model = {
-    head: () => ["", sort.head("品番", (code) => code), sort.head("名称", (code) => value(code, "name")),
+    head: () => [{ text: allMarked() ? "☑" : "☐", cls: "c", title: "全部の行に印", action: ro ? null : markAll },
+      "", sort.head("品番", (code) => code), sort.head("名称", (code) => value(code, "name")),
       ...[["系列", "model"], ["タイプ", "product_spec"], ["図面", "drawing"]].map(([t, k]) => sort.head(t, (code) => value(code, k))),
       ...[["年間台数", "annual"], ["材料費", "material"], ["製造原価", "manufacturing"]].map(([t, k]) => ({ ...sort.head(t, (code) => value(code, k), true), cls: "r" }))],
     nRows: () => rows.length + (ro ? 0 : 1),
     grow: ro ? undefined : () => { rows.push(EMPTY_ROW()); return true; },
-    nCols: () => 9,
+    nCols: () => 10,
     cell(r, c) {
+      if (c === 0) return { text: r < rows.length ? (marks.has(r) ? "☑" : "☐") : "", cls: "act" };
+      c -= 1;
       const code = rows[r] || "";
       if (c === 0) return { text: String(r + 1), cls: "n" };
       if (c === 1) return { text: code, editable: !ro };
@@ -43,12 +55,17 @@ async function targetsScreen(main, cur) {
       return { text: fmt(info.manufacturing), cls: "auto r" };
     },
     set(r, c, text) {
-      if (c !== 1) return;
+      if (c !== 2) return;
       if (r >= rows.length) {
         if (!text) return;
         rows.push(text);
       } else rows[r] = text;
       touched();
+    },
+    action(r, c) {
+      if (ro || c !== 0 || r >= rows.length) return false;
+      if (!marks.delete(r)) marks.add(r);
+      return true;
     },
     changed() {
       lookup(rows).then((got) => got && grid.render()).catch(fail);
@@ -63,6 +80,7 @@ async function targetsScreen(main, cur) {
   }, async () => {
     const d = await api("GET", "/api/v2/targets", q());
     rows = d.targets.slice();
+    marks.clear();
     grid.render();
   });
   // 変えた時: 番号の前は S.draft に持ち、番号があればその場で一時保存
@@ -80,11 +98,15 @@ async function targetsScreen(main, cur) {
     el("button", { class: "btn", disabled: ro, onclick: () => productSearchDialog(addCodes) }, "品番検索"),
     el("button", {
       class: "btn", disabled: ro, onclick: () => {
-        if (grid.sel.r < rows.length) {
-          rows.splice(grid.sel.r, 1);
-          touched();
-          grid.render();
-        }
+        if (Grid.active) Grid.active.commit();
+        const n = marks.size;
+        if (!n) return alert("消す行の左端に印を付けてください");
+        // 新規作成の間は S.draft と同じ配列なので、入れ替えずに中身を詰める
+        rows.splice(0, rows.length, ...rows.filter((_, r) => !marks.has(r)));
+        marks.clear();
+        touched();
+        grid.render();
+        done(`${n} 行を消しました`);
       },
     }, "行削除"),
   ], [body]));
